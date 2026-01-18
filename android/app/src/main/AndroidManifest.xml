@@ -1,6 +1,40 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    
+    <!-- Push Notifications (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- WebRTC Permissions -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    
+    <!-- Call Management -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    
+    <!-- Foreground Service Permissions (for background call handling) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    
+    <!-- Income library: full-screen incoming call (WhatsApp-like) -->
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Android 14+ -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    
+    <!-- Features -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
       android:name=".MainApplication"
@@ -22,5 +56,44 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+
+      <!-- Incoming Call Activity - Full-screen call UI (like thredmobile) -->
+      <activity
+        android:name=".IncomingCallActivity"
+        android:label="Incoming Call"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+        android:launchMode="singleTop"
+        android:excludeFromRecents="true"
+        android:exported="true"
+        android:showOnLockScreen="true"
+        android:turnScreenOn="true"
+        android:showWhenLocked="true"
+        android:taskAffinity=""
+        android:allowEmbedded="false" />
+
+      <!-- Call Action Receiver -->
+      <receiver
+        android:name=".CallActionReceiver"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.compnay.CALL_ANSWERED" />
+          <action android:name="com.compnay.CALL_DECLINED" />
+        </intent-filter>
+      </receiver>
+
+      <!-- Ringtone Service - Plays ringtone and vibrates for incoming calls -->
+      <service
+        android:name=".RingtoneService"
+        android:enabled="true"
+        android:exported="false" />
+
+      <!-- Firebase Messaging Service - Handles FCM when app is killed -->
+      <service
+        android:name=".MyFirebaseMessagingService"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.google.firebase.MESSAGING_EVENT" />
+        </intent-filter>
+      </service>
     </application>
 </manifest>

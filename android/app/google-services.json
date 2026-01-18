@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "516464094484",
+    "project_id": "mern-382a3",
+    "storage_bucket": "mern-382a3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:516464094484:android:4b6efa18f41ea98005a601",
+        "android_client_info": {
+          "package_name": "com.compnay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyASYljipJcvwUoCJxl4bDfvcqSSMegsAAQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,121 @@
+// API Configuration
+export const API_URL = __DEV__ 
+  ? 'https://media-1-aue5.onrender.com' // Production backend (you can test locally by changing this to 'http://10.0.2.2:5000')
+  : 'https://media-1-aue5.onrender.com'; // Production URL
+
+export const SOCKET_URL = API_URL;
+
+// API Endpoints
+export const ENDPOINTS = {
+  // Auth
+  LOGIN: '/api/user/login',
+  SIGNUP: '/api/user/signup',
+  LOGOUT: '/api/user/logout',
+  
+  // User
+  GET_USER: '/api/user/profile',
+  UPDATE_USER: '/api/user/update',
+  FOLLOW_USER: '/api/user/follow',
+  UNFOLLOW_USER: '/api/user/unfollow',
+  SEARCH_USER: '/api/user/search',
+  GET_FOLLOWING: '/api/user/following',
+  
+  // Posts
+  GET_FEED: '/api/post/feed/feedpost',
+  CREATE_POST: '/api/post/create',
+  DELETE_POST: '/api/post',
+  LIKE_POST: '/api/post/like',
+  GET_POST: '/api/post/getPost',
+  GET_USER_POSTS: '/api/post/user',
+  
+  // Collaborative Posts
+  ADD_CONTRIBUTOR: '/api/post/collaborative',
+  REMOVE_CONTRIBUTOR: '/api/post/collaborative',
+  
+  // Comments
+  ADD_COMMENT: '/api/post/reply',
+  
+  // Weather
+  GET_WEATHER_CITIES: '/api/weather/cities',
+  SAVE_WEATHER_PREFERENCES: '/api/weather/preferences',
+  GET_USER_WEATHER: '/api/user/getUserPro/Weather',
+  
+  // Football
+  GET_MATCHES: '/api/football/matches',
+  
+  // Chess
+  CREATE_CHESS_CHALLENGE: '/api/chess/challenge',
+  ACCEPT_CHESS_CHALLENGE: '/api/chess/accept',
+  MAKE_CHESS_MOVE: '/api/chess/move',
+  GET_CHESS_GAME: '/api/chess/game',
+  
+  // Notifications
+  GET_NOTIFICATIONS: '/api/notifications',
+  MARK_READ: '/api/notifications/read',
+  
+  // Messages
+  GET_CONVERSATIONS: '/api/message/conversations',
+  GET_MESSAGES: '/api/message',
+  SEND_MESSAGE: '/api/message',
+  MARK_MESSAGES_SEEN: '/api/message/seen',
+};
+
+// Socket Events
+export const SOCKET_EVENTS = {
+  NEW_POST: 'newPost',
+  POST_UPDATED: 'postUpdated',
+  POST_DELETED: 'postDeleted',
+  NEW_COMMENT: 'newComment',
+  FOOTBALL_MATCH_UPDATE: 'footballMatchUpdate',
+  CHESS_CHALLENGE: 'chessChallenge',
+  CHESS_MOVE: 'chessMove',
+  NOTIFICATION: 'notification',
+};
+
+// Storage Keys
+export const STORAGE_KEYS = {
+  USER: '@user',
+  TOKEN: '@token',
+  THEME: '@theme',
+};
+
+// Colors
+export const COLORS = {
+  primary: '#1DA1F2',
+  background: '#000000',
+  backgroundLight: '#16181C',
+  text: '#FFFFFF',
+  textGray: '#8B98A5',
+  border: '#2F3336',
+  error: '#F4212E',
+  success: '#00BA7C',
+  warning: '#FFD400',
+};
+
+// WebRTC Configuration
+// Using STUN servers only (works for most cases)
+// TURN servers are optional - only needed if users are behind restrictive firewalls/NATs
+export const WEBRTC_CONFIG = {
+  // STUN servers (free, for NAT discovery - sufficient for most use cases)
+  STUN_SERVERS: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+  ],
+  // TURN servers (optional - add only if needed for restrictive networks)
+  // Most calls will work fine with STUN only
+  // Uncomment and configure if you encounter connection issues:
+  TURN_SERVERS: [
+    // {
+    //   urls: 'turn:your-turn-server.com:3478',
+    //   username: 'your-username',
+    //   credential: 'your-password',
+    // },
+  ],
+  // ICE candidate gathering timeout (ms)
+  ICE_GATHERING_TIMEOUT: 10000,
+  // Connection timeout (ms)
+  CONNECTION_TIMEOUT: 30000,
+  // Max reconnection attempts
+  MAX_RECONNECTION_ATTEMPTS: 3,
+};

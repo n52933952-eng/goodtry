@@ -1,4 +1,4 @@
-package com.mobile
+package com.compnay
 
 import android.app.Application
 import com.facebook.react.PackageList
@@ -40,5 +40,7 @@ class MainApplication : Application(), ReactApplication {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
+    // Note: Notification channel for incoming calls is created by the income library
+    // when displayNotification is called. We don't create it here to avoid conflicts.
   }
 }

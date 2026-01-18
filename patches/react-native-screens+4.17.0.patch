@@ -1,0 +1,18 @@
+diff --git a/node_modules/react-native-screens/src/index.tsx b/node_modules/react-native-screens/src/index.tsx
+index 739fff4..4a370c5 100644
+--- a/node_modules/react-native-screens/src/index.tsx
++++ b/node_modules/react-native-screens/src/index.tsx
+@@ -1,6 +1,12 @@
+ // Side effects import declaration to ensure our TurboModule
+ // is loaded.
+-import './fabric/NativeScreensModule';
++// Disabled when New Architecture is not enabled (newArchEnabled=false)
++// This prevents CodeGen errors when New Architecture is disabled
++// @ts-ignore
++if (false) {
++  // @ts-ignore
++  require('./fabric/NativeScreensModule');
++}
+ 
+ export * from './types';
+ 
