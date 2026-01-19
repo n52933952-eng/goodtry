@@ -100,6 +100,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const lastProcessedSignalSdpRef = useRef<string | null>(null); // Track last processed signal SDP to prevent duplicates
   const requestSignalTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track requestSignal timeout to cancel it
   const hasRequestedSignalRef = useRef<{ callerId: string; timestamp: number } | null>(null); // Track if we've already requested signal for this call
+  const receiverTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track receiver timeout - clears "Incoming call..." if no connection
 
   // Update user ID ref when user changes (for reliable checks in socket handlers)
   useEffect(() => {
@@ -467,6 +468,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       clearTimeout(iceDisconnectedTimeoutRef.current);
       iceDisconnectedTimeoutRef.current = null;
     }
+    if (receiverTimeoutRef.current) {
+      clearTimeout(receiverTimeoutRef.current);
+      receiverTimeoutRef.current = null;
+    }
     
     // Close peer connection
     if (peerConnection.current) {
@@ -526,6 +531,11 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     try {
       console.log('═══════════════════════════════════════════════════════');
       console.log(`📞 [CallUser] ========== STARTING CALL ==========`);
+      
+      // CRITICAL: Reset cancel flag for NEW calls
+      // This prevents stale pending cancels from interfering with new calls
+      callWasCanceledRef.current = false;
+      console.log('✅ [CallUser] Reset callWasCanceledRef for new call');
       console.log(`📞 [CallUser] Target: ${userName} (${userId})`);
       console.log(`📞 [CallUser] Type: ${type}`);
       console.log(`📞 [CallUser] Current user: ${user?._id}`);
@@ -603,11 +613,19 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (pendingAnswerRef.current && peerConnection.current) {
         console.log('📞 [CallUser] Processing pending answer that arrived before peer connection was ready...');
         try {
-          await peerConnection.current.setRemoteDescription(pendingAnswerRef.current);
-          console.log('✅ [CallUser] Pending answer processed successfully');
-          setCallAccepted(true);
-          setIsCalling(false);
-          pendingAnswerRef.current = null; // Clear after processing
+          // CRITICAL: Check signaling state before setting remote description
+          const currentState = peerConnection.current.signalingState;
+          if (currentState !== 'have-local-offer') {
+            console.warn('⚠️ [CallUser] Cannot set pending answer - wrong signaling state:', currentState);
+            console.warn('⚠️ [CallUser] Expected "have-local-offer" but got:', currentState);
+            pendingAnswerRef.current = null; // Clear the stale answer
+          } else {
+            await peerConnection.current.setRemoteDescription(pendingAnswerRef.current);
+            console.log('✅ [CallUser] Pending answer processed successfully');
+            setCallAccepted(true);
+            setIsCalling(false);
+            pendingAnswerRef.current = null; // Clear after processing
+          }
         } catch (error: any) {
           console.error('❌ [CallUser] Error processing pending answer:', error);
           pendingAnswerRef.current = null; // Clear on error to prevent retry loops
@@ -763,6 +781,12 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       
       console.log(`📞 [AnswerCall] Step 2: Creating peer connection...`);
+      // Clear receiver timeout since we're now answering
+      if (receiverTimeoutRef.current) {
+        clearTimeout(receiverTimeoutRef.current);
+        receiverTimeoutRef.current = null;
+        console.log('✅ [AnswerCall] Receiver timeout cleared - call is being answered');
+      }
       const pc = createPeerConnection(stream);
       console.log(`✅ [AnswerCall] Peer connection created`);
       
@@ -1074,6 +1098,29 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           receiverId: currentUserId,
           timestamp: now,
         });
+        
+        // CRITICAL: Set timeout to retry signal request if no response within 5 seconds
+        // This handles cases where backend can't find the call or signal is lost
+        if (requestSignalTimeoutRef.current) {
+          clearTimeout(requestSignalTimeoutRef.current);
+        }
+        requestSignalTimeoutRef.current = setTimeout(() => {
+          // Check if we still don't have the signal
+          if (pendingSignalRequestRef.current && 
+              pendingSignalRequestRef.current.callerId === callerId &&
+              !call.signal) {
+            console.warn('⚠️ [NotificationCall] Signal request timeout - retrying...');
+            // Retry the request
+            if (socket?.isSocketConnected?.()) {
+              socket.emit('requestCallSignal', {
+                callerId: callerId,
+                receiverId: currentUserId,
+              });
+              console.log('🔄 [NotificationCall] Signal request retried');
+            }
+          }
+          requestSignalTimeoutRef.current = null;
+        }, 5000); // 5 second timeout
       } catch (error) {
         console.error('❌ [NotificationCall] Error emitting requestCallSignal:', error);
         // Store as pending if socket not ready
@@ -1249,6 +1296,11 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.log('📞 [IncomingCall] Valid incoming call from:', data.name, `(${data.from})`);
       pendingIceCandidates.current = [];
       
+      // CRITICAL: Reset cancel flag for NEW incoming calls
+      // This prevents stale pending cancels from interfering with new calls
+      callWasCanceledRef.current = false;
+      console.log('✅ [IncomingCall] Reset callWasCanceledRef for new incoming call');
+      
       const shouldAutoAnswerFromRef = shouldAutoAnswerRef.current === data.from;
       const wasAlreadyReceiving = call.isReceivingCall && call.from === data.from;
       const shouldAutoAnswer = shouldAutoAnswerFromRef || wasAlreadyReceiving;
@@ -1264,6 +1316,61 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // CRITICAL: Store caller ID persistently for timeout handling (survives cleanup)
       if (data.from) {
         persistentCallerIdRef.current = data.from;
+      }
+      
+      // CRITICAL: Clear any stale state from previous calls when receiving a new call
+      // This prevents old state from interfering with new calls
+      
+      // 1. Clear ALL pending cancels when receiving a new call (even if same caller - it's a new call)
+      getPendingCallData().then((pendingData) => {
+        if (pendingData?.hasPendingCancel && pendingData?.callerIdToCancel) {
+          console.log('🧹 [IncomingCall] Clearing pending cancel - new call received:', {
+            pendingCancelCaller: pendingData.callerIdToCancel,
+            newCaller: data.from,
+            isSameCaller: pendingData.callerIdToCancel === data.from,
+          });
+          // Clear even if same caller - this is a NEW call, not the old one
+          clearCallData().catch((error) => {
+            console.error('❌ [IncomingCall] Error clearing pending cancel:', error);
+          });
+        }
+      }).catch((error) => {
+        // Ignore errors - not critical
+        console.log('ℹ️ [IncomingCall] Could not check pending cancel (non-critical):', error);
+      });
+      
+      // 2. Clear stale shouldAutoAnswerRef if it's for a different caller
+      if (shouldAutoAnswerRef.current && shouldAutoAnswerRef.current !== data.from) {
+        console.log('🧹 [IncomingCall] Clearing stale shouldAutoAnswerRef for different caller:', {
+          staleCaller: shouldAutoAnswerRef.current,
+          newCaller: data.from,
+        });
+        shouldAutoAnswerRef.current = null;
+      }
+      
+      // 3. Clear stale pending signal request if it's for a different caller
+      if (pendingSignalRequestRef.current && pendingSignalRequestRef.current.callerId !== data.from) {
+        console.log('🧹 [IncomingCall] Clearing stale pending signal request for different caller:', {
+          staleCaller: pendingSignalRequestRef.current.callerId,
+          newCaller: data.from,
+        });
+        pendingSignalRequestRef.current = null;
+        hasRequestedSignalRef.current = null;
+        // Clear the timeout
+        if (requestSignalTimeoutRef.current) {
+          clearTimeout(requestSignalTimeoutRef.current);
+          requestSignalTimeoutRef.current = null;
+        }
+      }
+      
+      // 4. Clear receiver timeout if it exists (even if same caller - this is a new call)
+      if (receiverTimeoutRef.current) {
+        console.log('🧹 [IncomingCall] Clearing receiver timeout - new call received:', {
+          previousCaller: call.from,
+          newCaller: data.from,
+        });
+        clearTimeout(receiverTimeoutRef.current);
+        receiverTimeoutRef.current = null;
       }
       
       const incomingCallState = {
@@ -1319,6 +1426,67 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       } else {
         console.log('📞 [IncomingCall] Waiting for user to answer...');
+        
+        // SAFETY GUARD: Set receiver timeout to clear "Incoming call..." if no connection is established
+        // This prevents the UI from being stuck if the caller times out or disconnects
+        if (receiverTimeoutRef.current) {
+          clearTimeout(receiverTimeoutRef.current);
+        }
+        receiverTimeoutRef.current = setTimeout(() => {
+          // Check if we're still receiving this call and no connection was established
+          if (call.isReceivingCall && call.from === data.from && !callAccepted && !peerConnection.current) {
+            console.warn('⚠️ [IncomingCall] Receiver timeout - no connection established, clearing call state');
+            console.warn('⚠️ [IncomingCall] This prevents stuck "Incoming call..." UI');
+            
+            // CRITICAL: Dismiss native notification/IncomingCallActivity to close the UI
+            try {
+              const { NativeModules } = require('react-native');
+              const { CallDataModule } = NativeModules;
+              if (CallDataModule && CallDataModule.dismissCallNotification) {
+                CallDataModule.dismissCallNotification().then(() => {
+                  console.log('✅ [IncomingCall] Native notification/UI dismissed due to timeout');
+                }).catch((error: any) => {
+                  console.warn('⚠️ [IncomingCall] Could not dismiss notification:', error);
+                });
+              }
+            } catch (error) {
+              console.warn('⚠️ [IncomingCall] Could not dismiss notification:', error);
+            }
+            
+            // Clear the incoming call state
+            setCall({
+              isReceivingCall: false,
+              from: undefined,
+              userToCall: undefined,
+              name: undefined,
+              signal: undefined,
+              callType: 'audio',
+            });
+            setCallEnded(true);
+            setCallAccepted(false);
+            setIsCalling(false);
+            remoteUserIdRef.current = null;
+            persistentCallerIdRef.current = null;
+            
+            // CRITICAL: Notify caller that receiver timed out - this ensures caller also clears their UI
+            if (socket?.isSocketConnected?.() && data.from && userIdRef.current) {
+              console.log('📤 [IncomingCall] Notifying caller about receiver timeout');
+              socket.emit('cancelCall', {
+                conversationId: data.from,
+                sender: userIdRef.current,
+              });
+              console.log('✅ [IncomingCall] cancelCall event sent to caller');
+            } else {
+              console.warn('⚠️ [IncomingCall] Cannot notify caller - missing requirements:', {
+                hasSocket: !!socket,
+                isConnected: socket?.isSocketConnected?.(),
+                callerId: data.from,
+                currentUserId: userIdRef.current,
+              });
+            }
+          }
+          receiverTimeoutRef.current = null;
+        }, WEBRTC_CONFIG.CONNECTION_TIMEOUT + 5000); // Give extra 5 seconds beyond caller timeout
       }
       
       // CRITICAL: Reset processing flag after handler completes
@@ -1415,6 +1583,31 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       
       if (peerConnection.current && signal) {
         try {
+          // CRITICAL: Check signaling state before setting remote description
+          // An answer can only be set in "have-local-offer" state (we sent offer, waiting for answer)
+          // If state is "stable", "have-remote-offer", or "closed", it's a stale answer - ignore it
+          const currentState = peerConnection.current.signalingState;
+          console.log('📞 [CallAccepted] Current signaling state:', currentState);
+          
+          if (currentState !== 'have-local-offer') {
+            console.warn('⚠️ [CallAccepted] Cannot set remote answer - wrong signaling state:', currentState);
+            console.warn('⚠️ [CallAccepted] Expected "have-local-offer" but got:', currentState);
+            console.warn('⚠️ [CallAccepted] This is likely a stale answer from a previous call - ignoring');
+            pendingAnswerRef.current = null; // Clear any pending answer
+            return; // Don't try to set the remote description
+          }
+          
+          // Double-check state right before setting (race condition protection)
+          const stateBeforeSet = peerConnection.current.signalingState;
+          if (stateBeforeSet !== 'have-local-offer') {
+            console.log('ℹ️ [CallAccepted] State changed between check and set - ignoring answer:', {
+              previousState: currentState,
+              currentState: stateBeforeSet,
+            });
+            pendingAnswerRef.current = null;
+            return; // State changed, don't set
+          }
+          
           console.log('📞 [CallAccepted] Setting remote description (answer)...');
           await peerConnection.current.setRemoteDescription(
             new RTCSessionDescription(signal)
@@ -1443,9 +1636,26 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             console.log('✅ [CallAccepted] All queued ICE candidates processed');
           }
         } catch (error: any) {
-          console.error('❌ [CallAccepted] Error setting remote description:', error);
-          console.error('❌ [CallAccepted] Error message:', error?.message);
-          console.error('❌ [CallAccepted] Error stack:', error?.stack);
+          // CRITICAL: Handle "wrong state" errors gracefully - they're non-fatal
+          // This can happen if the answer arrives after the connection is already established
+          // or if there's a race condition where the state changes between check and execution
+          const errorMessage = error?.message || '';
+          const isWrongStateError = errorMessage.includes('wrong state') || 
+                                   errorMessage.includes('Called in wrong state') ||
+                                   errorMessage.includes('stable');
+          
+          if (isWrongStateError) {
+            // This is a harmless error - the call is already working, just log as info
+            console.log('ℹ️ [CallAccepted] Answer arrived in wrong state (call already established) - ignoring:', {
+              state: peerConnection.current?.signalingState,
+              connectionState: peerConnection.current?.connectionState,
+            });
+            // Clear any pending answer to prevent retries
+            pendingAnswerRef.current = null;
+          } else {
+            // For other errors, log as warning (not error) since call might still work
+            console.warn('⚠️ [CallAccepted] Error setting remote description (non-fatal):', errorMessage);
+          }
         }
       } else {
         console.error('❌ [CallAccepted] Missing peer connection or signal:', {
@@ -1532,8 +1742,21 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.log('📴 [WebRTC] ========== CALL CANCELED RECEIVED ==========');
       console.log('📴 [WebRTC] Other user canceled the call');
       
-      // Hide FCM notification (important for incoming call UI)
-      // Native IncomingCallActivity handles notification hiding
+      // CRITICAL: Dismiss native notification/IncomingCallActivity to close the UI
+      // This ensures the "Incoming call..." screen closes when the call is canceled
+      try {
+        const { NativeModules } = require('react-native');
+        const { CallDataModule } = NativeModules;
+        if (CallDataModule && CallDataModule.dismissCallNotification) {
+          CallDataModule.dismissCallNotification().then(() => {
+            console.log('✅ [WebRTC] Native notification/UI dismissed due to cancel');
+          }).catch((error: any) => {
+            console.warn('⚠️ [WebRTC] Could not dismiss notification:', error);
+          });
+        }
+      } catch (error) {
+        console.warn('⚠️ [WebRTC] Could not dismiss notification:', error);
+      }
       
       // Clean up peer connection (only if not already cleaned up)
       if (peerConnection.current) {
@@ -1541,11 +1764,19 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       
       // Reset all call state (only if not already reset)
-      if (!callEnded || isCalling || callAccepted) {
+      // CRITICAL: Always clear isReceivingCall to prevent stuck "Incoming call..." UI
+      if (!callEnded || isCalling || callAccepted || call.isReceivingCall) {
         setCallEnded(true);
         setCallAccepted(false);
         setIsCalling(false);
-        setCall({});
+        setCall({
+          isReceivingCall: false,
+          from: undefined,
+          userToCall: undefined,
+          name: undefined,
+          signal: undefined,
+          callType: 'audio',
+        });
       }
       setPendingCancel(false); // Reset pendingCancel flag
       
@@ -1553,6 +1784,11 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (requestSignalTimeoutRef.current) {
         clearTimeout(requestSignalTimeoutRef.current);
         requestSignalTimeoutRef.current = null;
+      }
+      // Clear receiver timeout
+      if (receiverTimeoutRef.current) {
+        clearTimeout(receiverTimeoutRef.current);
+        receiverTimeoutRef.current = null;
       }
       pendingSignalRequestRef.current = null;
       hasRequestedSignalRef.current = null;
@@ -1592,6 +1828,32 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setCallEnded(true);
     });
 
+    // Handle resendCallSignal request from backend (when signal request fails)
+    socket.on('resendCallSignal', async ({ receiverId }: { receiverId: string }) => {
+      console.log('📞 [ResendCallSignal] Backend requested to re-send call signal');
+      console.log('📞 [ResendCallSignal] Receiver ID:', receiverId);
+      
+      // Only re-send if we're currently calling this user
+      if (isCalling && remoteUserIdRef.current === receiverId && call.signal) {
+        console.log('✅ [ResendCallSignal] Re-sending call signal to:', receiverId);
+        socket.emit('callUser', {
+          userToCall: receiverId,
+          from: user?._id || userIdRef.current,
+          name: user?.name || 'Unknown',
+          signal: call.signal,
+          callType: call.callType || 'video',
+        });
+        console.log('✅ [ResendCallSignal] Call signal re-sent');
+      } else {
+        console.warn('⚠️ [ResendCallSignal] Cannot re-send - not calling this user or no signal available', {
+          isCalling,
+          remoteUserIdRef: remoteUserIdRef.current,
+          receiverId,
+          hasSignal: !!call.signal,
+        });
+      }
+    });
+
     return () => {
       console.log('🧹 [WebRTC] Cleaning up socket listeners...');
       socket.off('callUser');
@@ -1599,6 +1861,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       socket.off('iceCandidate');
       socket.off('CallCanceled');
       socket.off('callBusyError');
+      socket.off('resendCallSignal');
     };
   }, [socket, user]); // Depend on socket and user object (like thredmobile)
 
@@ -1801,12 +2064,51 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           return; // No pending cancel - exit early to prevent unnecessary processing
         }
 
-        // Mark as processing to prevent duplicates
-        processingPendingCancelRef.current = true;
+        // CRITICAL: Check if callWasCanceledRef was reset (new call arrived)
+        // If it was reset to false, a new call from this caller arrived, so ignore this stale cancel
+        if (!callWasCanceledRef.current) {
+          console.log('⚠️ [WebRTC] Stale pending cancel detected - new call arrived, ignoring cancel', {
+            pendingCancelCaller: callerIdToCancel,
+            callWasCanceledRef: callWasCanceledRef.current,
+          });
+          clearCallData().then(() => {
+            console.log('✅ [WebRTC] Stale pending cancel cleared from SharedPreferences');
+          }).catch((error) => {
+            console.error('❌ [WebRTC] Error clearing stale pending cancel:', error);
+          });
+          return; // Don't process stale cancel - new call is in progress
+        }
+
+        // CRITICAL: Check if there's an active incoming call
+        // If there is, only process cancel if it matches the current caller
+        // Otherwise, it's a stale cancel from a previous call - ignore it
+        const currentIncomingCaller = call.from || persistentCallerIdRef.current;
+        if (currentIncomingCaller && currentIncomingCaller !== callerIdToCancel) {
+          // There's an active incoming call from a different caller
+          // This pending cancel is stale - clear it and ignore
+          console.log('⚠️ [WebRTC] Stale pending cancel detected - ignoring', {
+            pendingCancelCaller: callerIdToCancel,
+            currentIncomingCaller: currentIncomingCaller,
+            isReceivingCall: call.isReceivingCall,
+          });
+          clearCallData().then(() => {
+            console.log('✅ [WebRTC] Stale pending cancel cleared from SharedPreferences');
+          }).catch((error) => {
+            console.error('❌ [WebRTC] Error clearing stale pending cancel:', error);
+          });
+          return; // Don't process stale cancel
+        }
+
+        // If there's an active incoming call and it matches, process the cancel
+        // If there's no active call, process the cancel (might be from a previous session)
         console.log('📴 [WebRTC] ========== PENDING CANCEL DETECTED IN SHAREDPREFERENCES ==========');
         console.log('📴 [WebRTC] Caller ID to cancel:', callerIdToCancel);
+        console.log('📴 [WebRTC] Current incoming caller:', currentIncomingCaller);
         console.log('📴 [WebRTC] Socket connected:', socket.isSocketConnected());
         console.log('📴 [WebRTC] User ID:', user._id);
+        
+        // Mark as processing to prevent duplicates
+        processingPendingCancelRef.current = true;
         
         // Set pendingCancel flag to prevent navigation
         setPendingCancel(true);
