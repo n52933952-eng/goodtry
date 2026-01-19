@@ -45,6 +45,25 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     loadUserFromStorage();
   }, []);
 
+  // Also store user ID in SharedPreferences when user is loaded (in case login happened before this code was added)
+  useEffect(() => {
+    if (user?._id) {
+      const storeUserId = async () => {
+        try {
+          const { NativeModules } = require('react-native');
+          const { CallDataModule } = NativeModules;
+          if (CallDataModule && CallDataModule.setCurrentUserId) {
+            await CallDataModule.setCurrentUserId(user._id);
+            console.log('✅ [UserContext] User ID stored in SharedPreferences (from useEffect):', user._id);
+          }
+        } catch (e) {
+          console.warn('⚠️ [UserContext] Could not store user ID in SharedPreferences:', e);
+        }
+      };
+      storeUserId();
+    }
+  }, [user?._id]);
+
   // Connect socket and link push notification services when user is available
   useEffect(() => {
     if (user?._id) {
@@ -83,6 +102,20 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         [STORAGE_KEYS.TOKEN, token],
       ]);
       setUser(userData);
+      
+      // Store user ID in SharedPreferences for native code (IncomingCallActivity)
+      if (userData._id) {
+        try {
+          const { NativeModules } = require('react-native');
+          const { CallDataModule } = NativeModules;
+          if (CallDataModule && CallDataModule.setCurrentUserId) {
+            await CallDataModule.setCurrentUserId(userData._id);
+            console.log('✅ [UserContext] User ID stored in SharedPreferences for native code');
+          }
+        } catch (e) {
+          console.warn('⚠️ [UserContext] Could not store user ID in SharedPreferences:', e);
+        }
+      }
     } catch (error) {
       console.error('Error saving user:', error);
       throw error;

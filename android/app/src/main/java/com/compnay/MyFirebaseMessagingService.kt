@@ -53,9 +53,38 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 val callerId = data["callerId"] ?: ""
                 val callerName = data["callerName"] ?: "Unknown"
                 val callType = data["callType"] ?: "video"
-
-                Log.d(TAG, "📞 [FCM] Caller: $callerName ($callerId)")
-                Log.d(TAG, "📞 [FCM] Call Type: $callType")
+                
+                // CRITICAL: Check if this call is for the current user (not an echo)
+                // Get current user ID from SharedPreferences
+                val prefs = getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
+                val currentUserId = prefs.getString("currentUserId", null)
+                
+                Log.e(TAG, "📞 [FCM] Caller: $callerName ($callerId)")
+                Log.e(TAG, "📞 [FCM] Call Type: $callType")
+                Log.e(TAG, "📞 [FCM] Current User ID: $currentUserId")
+                
+                // CRITICAL: Only show incoming call UI if:
+                // 1. We have current user ID
+                // 2. Current user ID does NOT match caller ID (we're not calling ourselves)
+                // This prevents showing incoming call UI for echo signals or when we're the caller
+                if (currentUserId != null) {
+                    if (currentUserId == callerId) {
+                        Log.e(TAG, "⚠️ [FCM] IGNORING incoming call - caller ID matches current user (we are the caller, not the receiver)")
+                        Log.e(TAG, "⚠️ [FCM] This is an echo or wrong notification - caller should not see incoming call UI")
+                        // Dismiss any existing notification for this call
+                        try {
+                            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                            notificationManager.cancel(1001)
+                            Log.e(TAG, "✅ [FCM] Dismissed notification for echo/wrong call")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "⚠️ [FCM] Error dismissing notification: ${e.message}")
+                        }
+                        return // Don't show incoming call UI for our own calls
+                    }
+                    Log.e(TAG, "✅ [FCM] Valid incoming call - current user ($currentUserId) is the receiver, caller is ($callerId)")
+                } else {
+                    Log.w(TAG, "⚠️ [FCM] No current user ID found - showing incoming call UI anyway (might be first launch)")
+                }
 
                 // Launch IncomingCallActivity (full-screen UI + ringtone) - like thredmobile
                 launchIncomingCallActivity(callerId, callerName, callType)
@@ -112,9 +141,11 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             Log.d(TAG, "Caller: $callerName ($callerId)")
             Log.d(TAG, "Call Type: $callType")
             
-            // Note: Don't start RingtoneService here when app is killed - it requires foreground service
-            // The notification will handle sound/vibration via setDefaults() and notification channel
-            // IncomingCallActivity will start RingtoneService when it opens
+            // Start ringtone service immediately as foreground service (works even when app is killed)
+            // This plays continuous call ringtone, not just one notification sound
+            Log.d(TAG, "Starting RingtoneService as foreground...")
+            RingtoneService.startRingtoneForeground(this)
+            Log.d(TAG, "RingtoneService started (foreground)")
             
             // Create intent for IncomingCallActivity
             val activityIntent = Intent(this, IncomingCallActivity::class.java).apply {
@@ -148,17 +179,18 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             createNotificationChannel()
             
             // Build notification with full-screen intent and content intent
+            // Note: Answer/Decline buttons are in IncomingCallActivity UI (not notification)
             val notification = NotificationCompat.Builder(this, "call_notifications")
                 .setContentTitle("Incoming Call")
                 .setContentText("$callerName is calling...")
                 .setSmallIcon(android.R.drawable.ic_menu_call)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setContentIntent(contentIntent) // Handle tap on notification
-                .setFullScreenIntent(fullScreenIntent, true) // This shows activity over lock screen
+                .setContentIntent(contentIntent) // Handle tap on notification - opens IncomingCallActivity
+                .setFullScreenIntent(fullScreenIntent, true) // This shows IncomingCallActivity over lock screen
                 .setOngoing(true) // Keep notification persistent - activity will dismiss it
                 .setAutoCancel(false) // Don't auto-dismiss - let activity handle it
-                .setDefaults(NotificationCompat.DEFAULT_ALL) // Sound, vibration, lights
+                // Note: No setDefaults() - RingtoneService handles sound/vibration continuously
                 .build()
             
             // Show notification (this triggers the full-screen intent)

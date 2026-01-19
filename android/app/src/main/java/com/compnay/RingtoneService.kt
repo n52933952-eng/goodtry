@@ -1,5 +1,8 @@
 package com.compnay
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -24,15 +27,28 @@ class RingtoneService : Service() {
     companion object {
         const val ACTION_START_RINGTONE = "START_RINGTONE"
         const val ACTION_STOP_RINGTONE = "STOP_RINGTONE"
+        private const val NOTIFICATION_ID = 1002
+        private const val CHANNEL_ID = "ringtone_service"
         
         fun startRingtone(context: Context) {
             val intent = Intent(context, RingtoneService::class.java).apply {
                 action = ACTION_START_RINGTONE
             }
-            // Use startService() instead of startForegroundService()
-            // We only call this from IncomingCallActivity when app is running,
-            // so we don't need a foreground service (which requires startForeground())
+            // Use startService() when app is running (from IncomingCallActivity)
             context.startService(intent)
+        }
+        
+        fun startRingtoneForeground(context: Context) {
+            val intent = Intent(context, RingtoneService::class.java).apply {
+                action = ACTION_START_RINGTONE
+                putExtra("isForeground", true)
+            }
+            // Use startForegroundService() when app is killed (from MyFirebaseMessagingService)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
         
         fun stopRingtone(context: Context) {
@@ -45,13 +61,65 @@ class RingtoneService : Service() {
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_RINGTONE -> startRinging()
+            ACTION_START_RINGTONE -> {
+                val isForeground = intent.getBooleanExtra("isForeground", false)
+                if (isForeground) {
+                    // Start as foreground service (required when app is killed)
+                    startForegroundService()
+                }
+                startRinging()
+            }
             ACTION_STOP_RINGTONE -> stopRinging()
         }
         return START_NOT_STICKY
     }
     
+    private fun startForegroundService() {
+        // Create notification channel
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Incoming Call",
+                NotificationManager.IMPORTANCE_LOW // Low importance to hide from notification bar
+            ).apply {
+                setShowBadge(false)
+                setSound(null, null) // No sound - we play ringtone directly
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+        
+        // Create a silent notification for foreground service
+        // Use a low-importance channel to minimize notification visibility
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("Incoming Call")
+                .setContentText("Playing ringtone...")
+                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setPriority(Notification.PRIORITY_LOW)
+                .setOngoing(true)
+                .setSound(null) // Silent notification
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setContentTitle("Incoming Call")
+                .setContentText("Playing ringtone...")
+                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setPriority(Notification.PRIORITY_LOW)
+                .setSound(null) // Silent notification
+                .build()
+        }
+        
+        startForeground(NOTIFICATION_ID, notification)
+    }
+    
     private fun startRinging() {
+        // If already playing, don't restart
+        if (mediaPlayer?.isPlaying == true) {
+            return
+        }
+        
         // Start vibration
         vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         val pattern = longArrayOf(0, 1000, 1000) // Vibrate pattern: wait 0ms, vibrate 1000ms, wait 1000ms, repeat

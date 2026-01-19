@@ -43,18 +43,19 @@ const ChatScreen = ({ route, navigation }: any) => {
   
   // Reset call in progress flag when call ends or is canceled
   useEffect(() => {
-    // If call ended or canceled, reset immediately
+    // OPTIMIZATION: Reset immediately when call ends for smooth re-calling
+    // This ensures users can call again immediately after cancel/decline (critical for 1M+ users)
     if (callEnded) {
       isCallInProgressRef.current = false;
+      console.log('✅ [ChatScreen] Call ended - isCallInProgressRef reset immediately');
       return;
     }
     
-    // If not calling anymore and call not accepted, reset after short delay
+    // If not calling anymore and call not accepted, reset immediately (no delay)
+    // This allows immediate re-calling after cancel/decline
     if (!isCalling && !callAccepted) {
-      const timer = setTimeout(() => {
-        isCallInProgressRef.current = false;
-      }, 200); // Reduced from 500ms to 200ms for faster recovery
-      return () => clearTimeout(timer);
+      isCallInProgressRef.current = false;
+      console.log('✅ [ChatScreen] Not calling - isCallInProgressRef reset immediately');
     }
   }, [isCalling, callAccepted, callEnded]);
 
@@ -97,13 +98,28 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const handleCallPress = async (type: 'voice' | 'video') => {
     // CRITICAL: Prevent duplicate calls if already calling or a call is in progress
-    if (isCallInProgressRef.current || isCalling || callAccepted) {
+    // Allow new calls if callEnded is true (previous call finished) OR if callAccepted is false (no active call)
+    // Only block if: actively calling OR (call accepted AND call not ended)
+    const isCallActive = isCallInProgressRef.current || isCalling || (callAccepted && !callEnded);
+    
+    if (isCallActive) {
       console.warn('⚠️ [ChatScreen] Call already in progress - ignoring duplicate call request', {
         isCallInProgress: isCallInProgressRef.current,
         isCalling,
         callAccepted,
+        callEnded,
       });
       return;
+    }
+    
+    // CRITICAL: If callEnded is true OR callAccepted is false, allow new calls
+    // The check above already handles this, but we log for debugging
+    if (callEnded) {
+      console.log('✅ [ChatScreen] Previous call ended - allowing new call', {
+        callEnded,
+        callAccepted,
+        isCalling,
+      });
     }
     
     // Mark that we're initiating a call

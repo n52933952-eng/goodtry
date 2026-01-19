@@ -19,11 +19,15 @@ interface CallScreenProps {
 }
 
 const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
+  // Use ref to prevent duplicate navigation
+  const hasNavigatedRef = useRef(false);
+  
   const {
     localStream,
     remoteStream,
     callAccepted,
     callEnded,
+    isCalling,
     callType,
     call,
     answerCall,
@@ -194,8 +198,25 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
   }, [shouldAutoAnswer, call.isReceivingCall, call.signal, call.from, call.callType, callAccepted, userId]);
 
   useEffect(() => {
-    if (callEnded) {
+    // Navigate back immediately when call ends or is canceled
+    // OPTIMIZATION: Navigate immediately to avoid showing "Call ended" status
+    if (callEnded && !hasNavigatedRef.current) {
+      console.log('📴 [CallScreen] Call ended - navigating back immediately', { 
+        callEnded, 
+        isCalling, 
+        callAccepted, 
+        isReceivingCall: call.isReceivingCall,
+        connectionState,
+        iceConnectionState
+      });
+      hasNavigatedRef.current = true;
+      // Navigate immediately - no delay to avoid showing "Call ended"
       navigation.goBack();
+    }
+    
+    // Reset navigation flag when call starts again
+    if (!callEnded && hasNavigatedRef.current) {
+      hasNavigatedRef.current = false;
     }
   }, [callEnded, navigation]);
 
@@ -214,11 +235,51 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
 
   // Get connection status text
   const getConnectionStatus = (): string => {
+    // CRITICAL: Check callEnded first - if call ended, show "Call ended" briefly
+    // But if navigation already triggered, minimize status updates
+    if (callEnded) {
+      // If navigation already triggered, return minimal status (navigation will happen soon)
+      if (hasNavigatedRef.current) {
+        return 'Call ended';
+      }
+      console.log('📴 [CallScreen] getConnectionStatus: callEnded=true, returning "Call ended"');
+      return 'Call ended';
+    }
+    
+    // CRITICAL: If not calling, not receiving call, and not accepted, the call is inactive/ended
+    // Check this BEFORE checking if callAccepted is false (to avoid showing "Connecting..." for inactive calls)
+    const isCallInactive = !isCalling && !call.isReceivingCall && !callAccepted;
+    if (isCallInactive) {
+      console.log('📴 [CallScreen] getConnectionStatus: call inactive, returning "Call ended"', {
+        isCalling,
+        isReceivingCall: call.isReceivingCall,
+        callAccepted,
+        hasNavigated: hasNavigatedRef.current
+      });
+      return 'Call ended';
+    }
+    
+    // Only show "Connecting..." if we're actively in a call state (isCalling must be true)
     if (!callAccepted) {
       if (call.isReceivingCall) {
         return 'Incoming call...';
       }
-      return 'Connecting...';
+      // Only show "Connecting..." if we're actually calling (isCalling should be true)
+      if (isCalling) {
+        console.log('📴 [CallScreen] getConnectionStatus: not accepted but calling, returning "Connecting..."', {
+          isCalling,
+          isReceivingCall: call.isReceivingCall,
+          callAccepted
+        });
+        return 'Connecting...';
+      }
+      // If not calling and not accepted, call is inactive (fallback check)
+      console.log('📴 [CallScreen] getConnectionStatus: not accepted and not calling, returning "Call ended"', {
+        isCalling,
+        isReceivingCall: call.isReceivingCall,
+        callAccepted
+      });
+      return 'Call ended';
     }
     
     if (connectionState === 'connected' && iceConnectionState === 'connected') {

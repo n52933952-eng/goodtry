@@ -71,13 +71,15 @@
         android:taskAffinity=""
         android:allowEmbedded="false" />
 
-      <!-- Call Action Receiver -->
+      <!-- Call Action Receiver - Handles Answer/Decline from notification buttons -->
       <receiver
         android:name=".CallActionReceiver"
         android:exported="false">
         <intent-filter>
           <action android:name="com.compnay.CALL_ANSWERED" />
           <action android:name="com.compnay.CALL_DECLINED" />
+          <action android:name="com.compnay.NOTIFICATION_ANSWER" />
+          <action android:name="com.compnay.NOTIFICATION_DECLINE" />
         </intent-filter>
       </receiver>
 
@@ -85,7 +87,8 @@
       <service
         android:name=".RingtoneService"
         android:enabled="true"
-        android:exported="false" />
+        android:exported="false"
+        android:foregroundServiceType="phoneCall" />
 
       <!-- Firebase Messaging Service - Handles FCM when app is killed -->
       <service

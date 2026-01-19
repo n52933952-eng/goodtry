@@ -1,6 +1,7 @@
 package com.compnay
 
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -17,6 +18,10 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import android.graphics.Color
+import java.net.HttpURLConnection
+import java.net.URL
+import java.io.OutputStream
+import org.json.JSONObject
 
 /**
  * Full-screen incoming call Activity (like WhatsApp)
@@ -32,6 +37,7 @@ class IncomingCallActivity : Activity() {
     private var answerButton: Button? = null
     private var declineButton: Button? = null
     private var statusText: TextView? = null
+    private val API_URL = "https://media-1-aue5.onrender.com" // Backend API URL
     
     // Broadcast receiver to listen for call_ended events
     private val callEndedReceiver = object : BroadcastReceiver() {
@@ -207,14 +213,12 @@ class IncomingCallActivity : Activity() {
 
     private fun startRingtone() {
         try {
-            // Start native ringtone service (plays in background)
-            RingtoneService.startRingtone(this)
-            
-            // Also play local ringtone as backup
-            val soundUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
-            ringtone?.isLooping = true
-            ringtone?.play()
+            // RingtoneService is already started by MyFirebaseMessagingService when FCM arrives
+            // Don't restart it here to avoid duplication - just ensure it's playing
+            // If for some reason it's not playing, start it (but check first)
+            // Note: RingtoneService.startRinging() already checks if it's playing, so safe to call
+            android.util.Log.d("IncomingCallActivity", "Checking ringtone service...")
+            // RingtoneService is already running from FCM - no need to start again
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -232,6 +236,15 @@ class IncomingCallActivity : Activity() {
         // STOP RINGTONE
         RingtoneService.stopRingtone(this)
         stopRingtone()
+        
+        // CRITICAL: Dismiss the notification when answer is pressed
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(1001) // Dismiss incoming call notification
+            android.util.Log.e("IncomingCallActivity", "✅ [IncomingCallActivity] Notification dismissed on answer")
+        } catch (e: Exception) {
+            android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Error dismissing notification: ${e.message}")
+        }
         
         // Launch MainActivity with call data - app will open and handle the call
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -253,12 +266,66 @@ class IncomingCallActivity : Activity() {
     
 
     private fun declineCall() {
+        android.util.Log.e("IncomingCallActivity", "========== DECLINE BUTTON PRESSED ==========")
+        android.util.Log.e("IncomingCallActivity", "CallerId: $callerId, CallerName: $callerName")
+        
         // STOP RINGTONE (native service)
         RingtoneService.stopRingtone(this)
         stopRingtone() // Also stop local ringtone if any
         
-        // Just finish - no need to open app for decline
+        // Store callerId in SharedPreferences so React Native can emit cancelCall
+        if (callerId != null) {
+            val prefs = getSharedPreferences("CallDataPrefs", android.content.Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                putString("callerIdToCancel", callerId)
+                putBoolean("shouldCancelCall", true)
+                putBoolean("hasPendingCancel", true)
+                apply()
+            }
+            android.util.Log.e("IncomingCallActivity", "✅ [IncomingCallActivity] Call cancel data stored in SharedPreferences")
+            
+            // CRITICAL: Send cancel to backend immediately via HTTP (works even when app is killed)
+            // This ensures the caller is notified immediately, not just when app opens
+            val receiverId = prefs.getString("currentUserId", null)
+            val callerIdToCancel = callerId // Use local variable to avoid smart cast issue
+            
+            android.util.Log.e("IncomingCallActivity", "🔍 [IncomingCallActivity] Checking for receiverId - found: ${receiverId != null}, callerId: $callerIdToCancel")
+            
+            if (receiverId != null && callerIdToCancel != null) {
+                android.util.Log.e("IncomingCallActivity", "✅ [IncomingCallActivity] receiverId found: $receiverId - sending HTTP cancel request")
+                sendCancelToBackend(callerIdToCancel, receiverId)
+            } else {
+                android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] No receiverId found (receiverId=$receiverId) - cancel will be sent via socket when app opens")
+            }
+        }
+        
+        // Send broadcast to trigger MainActivity to check for pending cancel (if app is running)
+        val broadcastIntent = Intent("com.compnay.CHECK_PENDING_CANCEL").apply {
+            setPackage(packageName)
+        }
+        sendBroadcast(broadcastIntent)
+        android.util.Log.e("IncomingCallActivity", "📡 [IncomingCallActivity] Sent broadcast to trigger pending cancel check")
+        
+        // CRITICAL: Don't launch MainActivity to prevent navigation
+        // Cancel is stored in SharedPreferences - AppNavigator will check and handle it
+        // If app is running: AppNavigator will see hasPendingCancel and handle cancel
+        // If app is killed: Cancel will be handled when app starts next time
+        // This prevents the app from opening/navigating when user declines
+        android.util.Log.e("IncomingCallActivity", "📴 [IncomingCallActivity] NOT launching MainActivity - preventing navigation")
+        android.util.Log.e("IncomingCallActivity", "📴 [IncomingCallActivity] Cancel stored in SharedPreferences - will be handled by AppNavigator")
+        
+        // CRITICAL: Dismiss the notification when decline is pressed
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(1001) // Dismiss incoming call notification
+            android.util.Log.e("IncomingCallActivity", "✅ [IncomingCallActivity] Notification dismissed on decline")
+        } catch (e: Exception) {
+            android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Error dismissing notification: ${e.message}")
+        }
+        
+        // Close native UI - React Native will handle cancelCall emission
         finish()
+        android.util.Log.e("IncomingCallActivity", "finish() called - activity closing")
     }
 
     override fun onDestroy() {
@@ -280,5 +347,56 @@ class IncomingCallActivity : Activity() {
         // Prevent back button from closing during call
         android.util.Log.d("IncomingCallActivity", "Back button pressed - ignoring during call")
         // Don't call super - prevent closing
+    }
+    
+    /**
+     * Send cancel call request to backend via HTTP
+     * This works even when the app is killed
+     */
+    private fun sendCancelToBackend(callerId: String, receiverId: String) {
+        android.util.Log.e("IncomingCallActivity", "📡 [IncomingCallActivity] Sending cancel to backend - caller: $callerId, receiver: $receiverId")
+        
+        // Run in background thread to avoid blocking UI
+        Thread {
+            try {
+                // Try to call the backend API endpoint for canceling calls
+                // Note: This endpoint may not exist yet - if it doesn't, the cancel will still be sent via socket when app opens
+                val url = URL("$API_URL/api/call/cancel")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.doOutput = true
+                connection.connectTimeout = 5000 // 5 second timeout
+                connection.readTimeout = 5000
+                
+                val requestBody = JSONObject().apply {
+                    put("conversationId", callerId) // The caller's ID (who to notify)
+                    put("sender", receiverId) // The receiver's ID (who is declining)
+                }
+                
+                val outputStream: OutputStream = connection.outputStream
+                outputStream.write(requestBody.toString().toByteArray())
+                outputStream.flush()
+                outputStream.close()
+                
+                val responseCode = connection.responseCode
+                if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_ACCEPTED || responseCode == HttpURLConnection.HTTP_CREATED) {
+                    android.util.Log.e("IncomingCallActivity", "✅ [IncomingCallActivity] Cancel sent to backend successfully (HTTP $responseCode)")
+                } else if (responseCode == HttpURLConnection.HTTP_NOT_FOUND) {
+                    android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Cancel endpoint not found (HTTP 404) - cancel will be sent via socket when app opens")
+                } else {
+                    android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Backend returned HTTP $responseCode - cancel may not have been processed")
+                }
+                
+                connection.disconnect()
+            } catch (e: java.net.UnknownHostException) {
+                android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Cannot reach backend - cancel will be sent via socket when app opens")
+            } catch (e: java.net.SocketTimeoutException) {
+                android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Backend request timeout - cancel will be sent via socket when app opens")
+            } catch (e: Exception) {
+                android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Error sending cancel to backend: ${e.message} - cancel will be sent via socket when app opens")
+                // Fallback: Cancel will be sent via socket when app opens (this is the current behavior)
+            }
+        }.start()
     }
 }

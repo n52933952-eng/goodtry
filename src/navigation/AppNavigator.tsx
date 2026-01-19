@@ -1,5 +1,5 @@
-import React, { useRef, useEffect } from 'react';
-import { View, Text, DeviceEventEmitter, Platform } from 'react-native';
+import React, { useRef, useEffect, useState } from 'react';
+import { View, Text, DeviceEventEmitter, Platform, AppState } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -8,6 +8,7 @@ import { useWebRTC } from '../context/WebRTCContext';
 import { COLORS } from '../utils/constants';
 import fcmService from '../services/fcmService';
 import oneSignalService from '../services/onesignal';
+import { getPendingCallData, clearCallData } from '../services/callData';
 
 // Auth Screens
 import LoginScreen from '../screens/Auth/LoginScreen';
@@ -244,13 +245,56 @@ const MessagesIcon = ({ color }: { color: string }) => (
 // Main App Navigator
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
-  const { call } = useWebRTC();
+  const { call, pendingCancel } = useWebRTC();
   const navigationRef = useRef<any>(null);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
+
+  // State to track pending cancel from SharedPreferences (checked on mount)
+  const [hasPendingCancelFromPrefs, setHasPendingCancelFromPrefs] = useState(false);
+  const [isInitialMount, setIsInitialMount] = useState(true);
+
+  // Check SharedPreferences for pending cancel on mount and when call state changes
+  useEffect(() => {
+    const checkPendingCancel = async () => {
+      try {
+        const pendingData = await getPendingCallData();
+        const hasCancel = !!(pendingData?.hasPendingCancel || pendingData?.shouldCancelCall);
+        setHasPendingCancelFromPrefs(hasCancel);
+        if (hasCancel) {
+          console.log('⏸️ [AppNavigator] Pending cancel detected in SharedPreferences - will prevent navigation');
+        }
+      } catch (error) {
+        console.error('[AppNavigator] Error checking pending cancel:', error);
+        setHasPendingCancelFromPrefs(false);
+      }
+    };
+    
+    // Check immediately when component mounts (CRITICAL - before any navigation)
+    if (isInitialMount) {
+      console.log('🔍 [AppNavigator] Initial mount - checking for pending cancel...');
+      checkPendingCancel().then(() => {
+        setIsInitialMount(false);
+      });
+    } else {
+      // Re-check when call state changes
+      checkPendingCancel();
+    }
+  }, [call.isReceivingCall, isInitialMount]); // Re-check when call state changes
 
   // Navigate to CallScreen when receiving an incoming call from socket
   // BUT: Don't navigate if there's a pending NavigateToCallScreen event (from MainActivity with shouldAutoAnswer)
   useEffect(() => {
+    // CRITICAL: Check BOTH pendingCancel state AND SharedPreferences
+    // This prevents navigation when Decline button is pressed and MainActivity launches
+    if (pendingCancel || hasPendingCancelFromPrefs) {
+      console.log('⏸️ [AppNavigator] Skipping navigation - cancel is in progress', {
+        pendingCancel,
+        hasPendingCancelFromPrefs
+      });
+      return;
+    }
+    
+    // Only navigate if call.isReceivingCall is true (if it's false, CancelCallFromNotification cleared it)
     if (call.isReceivingCall && call.from && call.name && navigationRef.current) {
       // If there's a pending NavigateToCallScreen event (from MainActivity), don't navigate from socket
       // The MainActivity event will handle navigation with shouldAutoAnswer=true
@@ -280,7 +324,7 @@ const AppNavigator = () => {
       });
       console.log('✅ [AppNavigator] Navigated to CallScreen for incoming call (from socket)');
     }
-  }, [call.isReceivingCall, call.from, call.name, call.callType]);
+  }, [call.isReceivingCall, call.from, call.name, call.callType, pendingCancel, hasPendingCancelFromPrefs]);
 
   // Set up navigation refs for FCM and OneSignal when navigation is ready
   useEffect(() => {
@@ -304,6 +348,30 @@ const AppNavigator = () => {
         });
         console.log('✅ [AppNavigator] Processed pending navigation to CallScreen');
         pendingNavigationEvent.current = null;
+      }
+      
+      // Check SharedPreferences for pending call data (backup when intent doesn't reach MainActivity)
+      if (user) {
+        getPendingCallData().then((callData) => {
+          if (callData && callData.hasPendingCall && navigationRef.current) {
+            console.log('📞 [AppNavigator] Found pending call in SharedPreferences:', callData);
+            console.log('📞 [AppNavigator] Navigating to CallScreen from SharedPreferences...');
+            
+            navigationRef.current.navigate('CallScreen', {
+              userName: callData.callerName,
+              userId: callData.callerId,
+              callType: callData.callType || 'audio',
+              isFromNotification: true,
+              shouldAutoAnswer: callData.shouldAutoAnswer === true,
+            });
+            
+            // Clear SharedPreferences after reading
+            clearCallData();
+            console.log('✅ [AppNavigator] Navigated to CallScreen from SharedPreferences');
+          }
+        }).catch((error) => {
+          console.error('[AppNavigator] Error checking SharedPreferences:', error);
+        });
       }
       
       if (user) {
@@ -405,6 +473,75 @@ const AppNavigator = () => {
       };
     }
   }, []);
+
+  // Poll SharedPreferences for pending call data while app is active
+  // This catches cases where Answer button is pressed but MainActivity launch is blocked
+  useEffect(() => {
+    if (!user || Platform.OS !== 'android' || !navigationRef.current) return;
+
+    let pollInterval: NodeJS.Timeout | null = null;
+    let hasCheckedOnce = false;
+
+    const checkPendingCall = () => {
+      if (!navigationRef.current) return;
+      
+      getPendingCallData()
+        .then((callData) => {
+          if (callData && callData.hasPendingCall && navigationRef.current) {
+            console.log('📞 [AppNavigator] Found pending call in SharedPreferences (polling):', callData);
+            
+            // Check if already on CallScreen
+            const currentRoute = navigationRef.current.getCurrentRoute();
+            if (currentRoute?.name === 'CallScreen') {
+              console.log('⏸️ [AppNavigator] Already on CallScreen - clearing SharedPreferences');
+              clearCallData();
+              if (pollInterval) clearInterval(pollInterval);
+              return;
+            }
+
+            navigationRef.current.navigate('CallScreen', {
+              userName: callData.callerName,
+              userId: callData.callerId,
+              callType: callData.callType || 'audio',
+              isFromNotification: true,
+              shouldAutoAnswer: callData.shouldAutoAnswer === true,
+            });
+
+            clearCallData();
+            console.log('✅ [AppNavigator] Navigated to CallScreen from SharedPreferences (polling)');
+            
+            // Stop polling once we found and processed the call
+            if (pollInterval) clearInterval(pollInterval);
+          }
+        })
+        .catch((error) => {
+          console.error('[AppNavigator] Error checking SharedPreferences (polling):', error);
+        });
+    };
+
+    // Check immediately once
+    checkPendingCall();
+    hasCheckedOnce = true;
+
+    // Then poll every 2 seconds while app is active
+    pollInterval = setInterval(() => {
+      if (AppState.currentState === 'active' && navigationRef.current) {
+        checkPendingCall();
+      }
+    }, 2000);
+
+    // Also check on AppState change
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && navigationRef.current) {
+        checkPendingCall();
+      }
+    });
+
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+      subscription.remove();
+    };
+  }, [user, navigationRef.current]);
 
   if (isLoading) {
     return null; // You can add a splash screen here
