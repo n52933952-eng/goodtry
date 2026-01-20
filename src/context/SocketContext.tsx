@@ -7,6 +7,8 @@ import { SOCKET_EVENTS } from '../utils/constants';
 interface SocketContextType {
   socket: typeof socketService;
   onlineUsers: any[];
+  chessChallenge: any | null;
+  clearChessChallenge: () => void;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -15,6 +17,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
   const { addPost, updatePost, deletePost } = usePost();
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
+  const [chessChallenge, setChessChallenge] = useState<any | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -65,7 +68,11 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Listen for chess challenges
     socketService.on(SOCKET_EVENTS.CHESS_CHALLENGE, (data) => {
       console.log('♟️ Chess challenge received:', data);
-      // Handle chess challenges
+      // Store for global in-app notification UI (like web)
+      setChessChallenge({
+        ...data,
+        isReceivingChallenge: true,
+      });
     });
 
     // Listen for chess moves
@@ -86,8 +93,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [user, addPost, updatePost, deletePost]);
 
+  const clearChessChallenge = () => setChessChallenge(null);
+
   return (
-    <SocketContext.Provider value={{ socket: socketService, onlineUsers }}>
+    <SocketContext.Provider value={{ socket: socketService, onlineUsers, chessChallenge, clearChessChallenge }}>
       {children}
     </SocketContext.Provider>
   );

@@ -4,10 +4,23 @@
 
 import 'react-native-gesture-handler';
 import '@react-native-firebase/app'; // Import Firebase app first to ensure initialization
-import { AppRegistry } from 'react-native';
+import { AppRegistry, I18nManager } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import App from './src/App';
 import { name as appName } from './app.json';
+
+// Force LTR layout even when device language is Arabic (keep icons/text positions consistent)
+// NOTE: This requires a full reload/reinstall the first time it changes on device.
+try {
+  I18nManager.allowRTL(false);
+  I18nManager.forceRTL(false);
+  // Some RN versions support this; harmless if not present.
+  if (typeof I18nManager.swapLeftAndRightInRTL === 'function') {
+    I18nManager.swapLeftAndRightInRTL(false);
+  }
+} catch (e) {
+  console.warn('⚠️ [i18n] Failed to force LTR:', e);
+}
 
 // Register background message handler
 // Note: Native MyFirebaseMessagingService handles FCM when app is killed

@@ -28,6 +28,8 @@ import ChatScreen from '../screens/Messages/ChatScreen';
 import CallScreen from '../screens/Call/CallScreen';
 import ChessScreen from '../screens/Chess/ChessScreen';
 import ChessGameScreen from '../screens/Chess/ChessGameScreen';
+import ChessChallengeNotification from '../components/ChessChallengeNotification';
+import { useSocket } from '../context/SocketContext';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -246,6 +248,7 @@ const MessagesIcon = ({ color }: { color: string }) => (
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
   const { call, pendingCancel } = useWebRTC();
+  const { chessChallenge, clearChessChallenge, socket } = useSocket();
   const navigationRef = useRef<any>(null);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
 
@@ -551,6 +554,53 @@ const AppNavigator = () => {
     <NavigationContainer ref={navigationRef}>
       <View style={{ flex: 1 }}>
         {user ? <MainStack /> : <AuthStack />}
+        {user && (
+          <ChessChallengeNotification
+            visible={!!chessChallenge?.isReceivingChallenge}
+            challengerName={chessChallenge?.fromName}
+            challengerUsername={chessChallenge?.fromUsername}
+            challengerProfilePic={chessChallenge?.fromProfilePic}
+            onDecline={() => {
+              try {
+                if (socket && user?._id && chessChallenge?.from) {
+                  socket.emit('declineChessChallenge', {
+                    from: user._id,
+                    to: chessChallenge.from,
+                  });
+                }
+              } finally {
+                clearChessChallenge();
+              }
+            }}
+            onAccept={() => {
+              try {
+                if (!socket || !user?._id || !chessChallenge?.from) {
+                  clearChessChallenge();
+                  return;
+                }
+
+                const roomId = `chess_${chessChallenge.from}_${user._id}_${Date.now()}`;
+
+                // Navigate first (like web), then emit accept
+                navigationRef.current?.navigate('ChessGame', {
+                  roomId,
+                  color: 'black', // receiver/accepter is black (backend uses from=accepter)
+                  opponentId: chessChallenge.from,
+                });
+
+                setTimeout(() => {
+                  socket.emit('acceptChessChallenge', {
+                    from: user._id, // accepter
+                    to: chessChallenge.from, // challenger
+                    roomId,
+                  });
+                }, 100);
+              } finally {
+                clearChessChallenge();
+              }
+            }}
+          />
+        )}
       </View>
     </NavigationContainer>
   );

@@ -5,6 +5,8 @@ import socketService from '../services/socket';
 import fcmService from '../services/fcmService';
 import oneSignalService from '../services/onesignal';
 import { setLogoutCallback } from '../services/api';
+import { apiService } from '../services/api';
+import { ENDPOINTS } from '../utils/constants';
 
 interface User {
   _id: string;
@@ -20,7 +22,7 @@ interface User {
 interface UserContextType {
   user: User | null;
   setUser: (user: User | null) => void;
-  login: (userData: User, token: string) => Promise<void>;
+  login: (userData: User) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (updates: Partial<User>) => void;
   isLoading: boolean;
@@ -36,6 +38,9 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     setLogoutCallback(() => {
       console.log('🔐 Auto-logout triggered by API');
+      // Ensure we also clear persisted user so app doesn't boot back into MainTabs
+      // after restart due to stale AsyncStorage.
+      AsyncStorage.removeItem(STORAGE_KEYS.USER).catch(() => {});
       setUser(null);
     });
   }, []);
@@ -80,12 +85,11 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
   const loadUserFromStorage = async () => {
     try {
-      const [userData, token] = await AsyncStorage.multiGet([
+      const [userData] = await AsyncStorage.multiGet([
         STORAGE_KEYS.USER,
-        STORAGE_KEYS.TOKEN,
       ]);
 
-      if (userData[1] && token[1]) {
+      if (userData[1]) {
         setUser(JSON.parse(userData[1]));
       }
     } catch (error) {
@@ -95,12 +99,9 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const login = async (userData: User, token: string) => {
+  const login = async (userData: User) => {
     try {
-      await AsyncStorage.multiSet([
-        [STORAGE_KEYS.USER, JSON.stringify(userData)],
-        [STORAGE_KEYS.TOKEN, token],
-      ]);
+      await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
       setUser(userData);
       
       // Store user ID in SharedPreferences for native code (IncomingCallActivity)
@@ -124,7 +125,14 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = async () => {
     try {
-      await AsyncStorage.multiRemove([STORAGE_KEYS.USER, STORAGE_KEYS.TOKEN]);
+      // Tell backend to clear the httpOnly cookie session
+      try {
+        await apiService.post(ENDPOINTS.LOGOUT);
+      } catch (e) {
+        // Best-effort; still clear local state.
+        console.warn('⚠️ Logout API failed (continuing local logout):', e);
+      }
+      await AsyncStorage.removeItem(STORAGE_KEYS.USER);
       socketService.disconnect();
       // Unlink user from OneSignal
       oneSignalService.removeUserId();

@@ -26,7 +26,7 @@ interface AvailableUser {
 
 const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts } = usePost();
-  const { user, setUser } = useUser();
+  const { user, logout } = useUser();
   const { socket, onlineUsers } = useSocket();
   const showToast = useShowToast();
   
@@ -36,6 +36,7 @@ const FeedScreen = ({ navigation }: any) => {
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
+  const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
 
   useEffect(() => {
     fetchFeed();
@@ -64,14 +65,15 @@ const FeedScreen = ({ navigation }: any) => {
     };
 
     const handleAcceptChessChallenge = (data: any) => {
-      if (data.yourColor === 'white') {
-        showToast('Challenge Accepted', 'Game starting!', 'success');
-        navigation.navigate('ChessGame', { 
-          roomId: data.roomId, 
-          color: 'white',
-          opponentId: data.opponentId 
-        });
-      }
+      // Backend sends: { roomId, yourColor, opponentId }
+      if (!data?.roomId || !data?.yourColor) return;
+
+      showToast('Challenge Accepted', 'Game starting!', 'success');
+      navigation.navigate('ChessGame', { 
+        roomId: data.roomId, 
+        color: data.yourColor,
+        opponentId: data.opponentId 
+      });
     };
 
     socket.on('chessChallenge', handleChessChallenge);
@@ -108,11 +110,28 @@ const FeedScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
-      
+      // 1) Fetch busy chess users (from Redis) so we can filter them out (same as web)
+      try {
+        const busyRes = await apiService.get('/api/user/busyChessUsers');
+        const ids: string[] = busyRes?.busyUserIds || [];
+        setBusyChessUserIds(ids.map((x) => x?.toString()).filter(Boolean));
+      } catch (e) {
+        // Best-effort; if it fails we still show online users.
+        setBusyChessUserIds([]);
+      }
+
+      // 2) Fetch fresh current user profile to get latest following/followers (same as web)
+      let freshUserData: any = user;
+      try {
+        freshUserData = await apiService.get(`/api/user/getUserPro/${user._id}`);
+      } catch (e) {
+        freshUserData = user;
+      }
+
+      // 3) Build candidate list from following + followers (same as web)
       const allConnectionIds = [
-        ...(user.following || []),
-        ...(user.followers || []),
+        ...(freshUserData?.following || []),
+        ...(freshUserData?.followers || []),
       ].filter((id: any) => {
         const idStr = id?.toString().trim();
         if (!idStr || idStr.length !== 24) return false;
@@ -126,17 +145,11 @@ const FeedScreen = ({ navigation }: any) => {
         return;
       }
 
+      // 4) Fetch each user profile (parallel)
       const userPromises = uniqueIds.map(async (userId) => {
         try {
-          const res = await fetch(`${baseUrl}/api/user/getUserPro/${userId}`, {
-            credentials: 'include',
-          });
-          if (res.ok) {
-            const userData = await res.json();
-            if (userData && userData._id) {
-              return userData;
-            }
-          }
+          const userData = await apiService.get(`/api/user/getUserPro/${userId}`);
+          if (userData && userData._id) return userData;
         } catch (err) {
           console.warn(`⚠️ Error fetching user ${userId}:`, err);
         }
@@ -145,6 +158,7 @@ const FeedScreen = ({ navigation }: any) => {
 
       const allUsers = (await Promise.all(userPromises)).filter((u) => u !== null);
 
+      // 5) Filter to only online users who are NOT busy, and not self (same as web)
       const onlineAvailableUsers = allUsers.filter((u: any) => {
         if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
         const userIdStr = u._id?.toString();
@@ -161,7 +175,10 @@ const FeedScreen = ({ navigation }: any) => {
           return onlineUserId === userIdStr;
         });
 
-        return isOnline && userIdStr !== currentUserIdStr;
+        const isNotSelf = userIdStr !== currentUserIdStr;
+        const isNotBusy = !busyChessUserIds.some((busyId) => busyId?.toString() === userIdStr);
+
+        return isOnline && isNotSelf && isNotBusy;
       });
 
       setAvailableUsers(onlineAvailableUsers);
@@ -231,13 +248,8 @@ const FeedScreen = ({ navigation }: any) => {
 
   const handleLogout = async () => {
     try {
-      if (socket) {
-        socket.disconnect();
-      }
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.removeItem('USER');
-      await AsyncStorage.removeItem('TOKEN');
-      setUser(null);
+      // Use the single source of truth logout (clears @user and tells backend to clear cookie)
+      await logout();
       showToast('Logged Out', 'You have been logged out', 'success');
     } catch (error) {
       console.error('❌ Error logging out:', error);
@@ -246,14 +258,6 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const renderPost = ({ item }: { item: any }) => <Post post={item} />;
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-      </View>
-    );
-  }
 
   return (
     <View style={styles.container}>
@@ -272,7 +276,7 @@ const FeedScreen = ({ navigation }: any) => {
         </View>
       </View>
 
-      <View style={styles.quickAccessContainer}>
+      <View style={styles.quickAccessRightRail}>
         <TouchableOpacity
           style={styles.quickAccessButton}
           onPress={() => navigation.navigate('Notifications')}
@@ -280,7 +284,7 @@ const FeedScreen = ({ navigation }: any) => {
           <Text style={styles.quickAccessIcon}>🔔</Text>
           <Text style={styles.quickAccessLabel}>Alerts</Text>
         </TouchableOpacity>
-        
+
         <TouchableOpacity
           style={styles.quickAccessButton}
           onPress={handleOpenChessModal}
@@ -288,7 +292,7 @@ const FeedScreen = ({ navigation }: any) => {
           <Text style={styles.quickAccessIcon}>♟️</Text>
           <Text style={styles.quickAccessLabel}>Chess</Text>
         </TouchableOpacity>
-        
+
         <TouchableOpacity
           style={styles.quickAccessButton}
           onPress={() => navigation.navigate('Weather')}
@@ -296,7 +300,7 @@ const FeedScreen = ({ navigation }: any) => {
           <Text style={styles.quickAccessIcon}>🌤️</Text>
           <Text style={styles.quickAccessLabel}>Weather</Text>
         </TouchableOpacity>
-        
+
         <TouchableOpacity
           style={styles.quickAccessButton}
           onPress={() => navigation.navigate('Football')}
@@ -317,6 +321,13 @@ const FeedScreen = ({ navigation }: any) => {
             onRefresh={handleRefresh}
             tintColor={COLORS.primary}
           />
+        }
+        ListHeaderComponent={
+          loading ? (
+            <View style={styles.inlineLoading}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+            </View>
+          ) : null
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
@@ -446,6 +457,7 @@ const styles = StyleSheet.create({
   headerButtons: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: 12,
   },
   logoutButton: {
@@ -480,6 +492,7 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 20,
+    paddingRight: 96, // leave space for the right-side quick actions rail
   },
   emptyContainer: {
     alignItems: 'center',
@@ -496,20 +509,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textGray,
   },
-  quickAccessContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 15,
-    paddingHorizontal: 10,
-    backgroundColor: COLORS.backgroundLight,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+  inlineLoading: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickAccessRightRail: {
+    position: 'absolute',
+    right: 10,
+    top: 140, // below header
+    zIndex: 10,
+    alignItems: 'flex-end',
+    gap: 10,
   },
   quickAccessButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 8,
-    minWidth: 70,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    minWidth: 72,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundLight,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   quickAccessIcon: {
     fontSize: 28,

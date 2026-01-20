@@ -77,11 +77,20 @@ const ChessScreen = ({ navigation }: any) => {
   };
 
   const handleChallengeAccepted = (data: any) => {
-    if (data.to === user?._id) {
-      showToast('Challenge Accepted', 'Game started!', 'success');
-      navigation.navigate('ChessGame', { roomId: data.roomId, color: 'white' });
+    // Backend sends: { roomId, yourColor, opponentId } (no "to" field)
+    if (!data?.roomId || !data?.yourColor) return;
+
+    showToast('Challenge Accepted', 'Game started!', 'success');
+    navigation.navigate('ChessGame', {
+      roomId: data.roomId,
+      color: data.yourColor, // 'white' for challenger, 'black' for accepter
+      opponentId: data.opponentId,
+    });
+
+    // Remove any pending challenge card for that opponent (best-effort)
+    if (data.opponentId) {
+      setChallenges(prev => prev.filter(c => c.challenger?._id !== data.opponentId));
     }
-    setChallenges(prev => prev.filter(c => c.challenger._id !== data.from));
   };
 
   const fetchAvailableUsers = async () => {

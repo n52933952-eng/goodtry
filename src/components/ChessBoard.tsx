@@ -15,76 +15,36 @@ interface ChessBoardProps {
 }
 
 const PIECE_SYMBOLS: { [key: string]: string } = {
-  'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
+  // NOTE: Unicode "white" chess glyphs tend to look much bolder/heavier on Android.
+  // To better match the web (SVG) look, render WHITE pieces using the slimmer glyph shapes
+  // (same shapes as black pieces) but keep them styled as white via `styles.whitePiece`.
+  'P': '♟', 'N': '♞', 'B': '♝', 'R': '♜', 'Q': '♛', 'K': '♚',
   'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚',
 };
 
-const AnimatedPiece: React.FC<{
-  piece: string;
-  fromSquare: string | null;
-  toSquare: string;
-  orientation: 'white' | 'black';
-}> = ({ piece, fromSquare, toSquare, orientation }) => {
-  const getInitialPosition = () => {
-    if (!fromSquare || fromSquare === toSquare) {
-      return { x: 0, y: 0 };
-    }
-    
-    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-    const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
-    
-    const fromFile = files.indexOf(fromSquare[0]);
-    const fromRank = ranks.indexOf(fromSquare[1]);
-    const toFile = files.indexOf(toSquare[0]);
-    const toRank = ranks.indexOf(toSquare[1]);
-    
-    let deltaX = (toFile - fromFile) * SQUARE_SIZE;
-    let deltaY = (toRank - fromRank) * SQUARE_SIZE;
-    
-    if (orientation === 'black') {
-      deltaX = -deltaX;
-      deltaY = -deltaY;
-    }
-    
-    return { x: -deltaX, y: -deltaY };
-  };
-
-  const animatedPosition = useRef(new Animated.ValueXY(getInitialPosition())).current;
-  const isWhitePiece = piece === piece.toUpperCase();
-
-  useEffect(() => {
-    if (fromSquare && fromSquare !== toSquare) {
-      Animated.timing(animatedPosition, {
-        toValue: { x: 0, y: 0 },
-        duration: 180,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, []);
-
-  return (
-    <Animated.View
-      style={[
-        styles.animatedPieceContainer,
-        {
-          transform: [
-            { translateX: animatedPosition.x },
-            { translateY: animatedPosition.y },
-          ],
-        },
-      ]}
-    >
-      <Text
-        style={[
-          styles.piece,
-          isWhitePiece ? styles.whitePiece : styles.blackPiece,
-        ]}
-      >
-        {PIECE_SYMBOLS[piece] || piece}
-      </Text>
-    </Animated.View>
-  );
+// Helper function to convert square name to pixel coordinates on the board
+const getSquarePixelPosition = (
+  square: string,
+  orientation: 'white' | 'black'
+): { x: number; y: number } => {
+  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
+  
+  const file = files.indexOf(square[0]);
+  const rank = ranks.indexOf(square[1]);
+  
+  if (orientation === 'white') {
+    return {
+      x: file * SQUARE_SIZE,
+      y: rank * SQUARE_SIZE,
+    };
+  } else {
+    // For black orientation, flip both axes
+    return {
+      x: (7 - file) * SQUARE_SIZE,
+      y: (7 - rank) * SQUARE_SIZE,
+    };
+  }
 };
 
 const ChessBoard: React.FC<ChessBoardProps> = memo(({
@@ -95,8 +55,14 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   legalMoves,
 }) => {
   const prevFen = useRef(fen);
-  const [lastMove, setLastMove] = useState<{ from: string; to: string; piece: string } | null>(null);
-  const [animatingSquare, setAnimatingSquare] = useState<string | null>(null);
+  // Overlay animation state - single ghost piece that moves across the board
+  const [overlayMove, setOverlayMove] = useState<{
+    piece: string;
+    fromPos: { x: number; y: number };
+    toPos: { x: number; y: number };
+  } | null>(null);
+  const overlayPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const overlayOpacity = useRef(new Animated.Value(1)).current;
 
   const board = useMemo(() => {
     const parsedBoard: (string | null)[][] = [];
@@ -153,12 +119,50 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
       }
       
       if (moveFrom && moveTo && movedPiece) {
-        setLastMove({ from: moveFrom, to: moveTo, piece: movedPiece });
-        setAnimatingSquare(moveTo);
-        setTimeout(() => {
-          setLastMove(null);
-          setAnimatingSquare(null);
-        }, 180);
+        // Calculate pixel positions for overlay animation
+        const fromPos = getSquarePixelPosition(moveFrom, orientation);
+        const toPos = getSquarePixelPosition(moveTo, orientation);
+        
+        // Set overlay state and start animation
+        setOverlayMove({
+          piece: movedPiece,
+          fromPos,
+          toPos,
+        });
+        
+        // Reset position and opacity to start
+        overlayPosition.setValue({ x: fromPos.x, y: fromPos.y });
+        overlayOpacity.setValue(1);
+        
+        // Create parallel animations: move position and fade out much earlier
+        // Longer duration for smoother, more visible animation
+        const moveAnimation = Animated.timing(overlayPosition, {
+          toValue: { x: toPos.x, y: toPos.y },
+          duration: 300, // Slightly longer for smoother effect
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        });
+        
+        // Fade out starting at 25% of the animation to completely prevent overlap
+        // This ensures the ghost piece is completely gone well before reaching the target
+        const fadeAnimation = Animated.sequence([
+          Animated.delay(75), // Start fading at 25% (75ms of 300ms)
+          Animated.timing(overlayOpacity, {
+            toValue: 0,
+            duration: 100, // Fade out quickly over 100ms
+            easing: Easing.in(Easing.quad), // Accelerate fade for faster disappearance
+            useNativeDriver: true,
+          }),
+        ]);
+        
+        // Run both animations in parallel
+        Animated.parallel([moveAnimation, fadeAnimation]).start(({ finished }) => {
+          if (finished) {
+            // Clear overlay after animation completes
+            setOverlayMove(null);
+            overlayOpacity.setValue(1); // Reset for next animation
+          }
+        });
       }
       
       prevFen.current = fen;
@@ -206,9 +210,6 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     const squareName = getSquareName(row, col);
     const isSelected = squareName === selectedSquare;
     const isLegalMove = legalMoves.includes(squareName);
-    
-    const isAnimating = lastMove?.to === squareName;
-    const shouldHideStatic = animatingSquare === squareName;
     const isWhitePiece = piece && piece === piece.toUpperCase();
 
     return (
@@ -222,14 +223,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         ]}
         onPress={() => onSquarePress(squareName)}
       >
-        {piece && isAnimating && lastMove ? (
-          <AnimatedPiece
-            piece={piece}
-            fromSquare={lastMove.from}
-            toSquare={lastMove.to}
-            orientation={orientation}
-          />
-        ) : piece && !shouldHideStatic ? (
+        {piece && (
           <Text
             style={[
               styles.piece,
@@ -238,11 +232,13 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           >
             {PIECE_SYMBOLS[piece] || piece}
           </Text>
-        ) : null}
+        )}
         {isLegalMove && !piece && <View style={styles.legalMoveDot} />}
       </TouchableOpacity>
     );
   };
+
+  const isWhitePiece = overlayMove?.piece && overlayMove.piece === overlayMove.piece.toUpperCase();
 
   return (
     <View style={styles.container}>
@@ -251,6 +247,32 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           {[0, 1, 2, 3, 4, 5, 6, 7].map((col) => renderSquare(row, col))}
         </View>
       ))}
+      
+      {/* Overlay ghost piece that animates across the board */}
+      {overlayMove && (
+        <Animated.View
+          style={[
+            styles.overlayPiece,
+            {
+              transform: [
+                { translateX: overlayPosition.x },
+                { translateY: overlayPosition.y },
+              ],
+              opacity: overlayOpacity,
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <Text
+            style={[
+              styles.piece,
+              isWhitePiece ? styles.whitePiece : styles.blackPiece,
+            ]}
+          >
+            {PIECE_SYMBOLS[overlayMove.piece] || overlayMove.piece}
+          </Text>
+        </Animated.View>
+      )}
     </View>
   );
 }, (prevProps, nextProps) => {
@@ -269,6 +291,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.border,
     alignSelf: 'center',
+    overflow: 'visible',
   },
   row: {
     flexDirection: 'row',
@@ -289,7 +312,7 @@ const styles = StyleSheet.create({
   legalMoveSquare: {
     opacity: 0.9,
   },
-  animatedPieceContainer: {
+  overlayPiece: {
     position: 'absolute',
     width: SQUARE_SIZE,
     height: SQUARE_SIZE,
@@ -297,17 +320,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     top: 0,
     left: 0,
+    zIndex: 1000,
   },
   piece: {
     fontSize: SQUARE_SIZE * 0.85,
-    fontWeight: 'bold',
+    fontWeight: '400',
     lineHeight: SQUARE_SIZE,
   },
   whitePiece: {
     color: '#FFFFFF',
-    textShadowColor: 'rgba(0, 0, 0, 0.95)',
-    textShadowOffset: { width: -2, height: -2 },
-    textShadowRadius: 5,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 1,
   },
   blackPiece: {
     color: '#1a1a1a',

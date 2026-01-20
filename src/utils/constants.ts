@@ -14,10 +14,15 @@ export const ENDPOINTS = {
   
   // User
   GET_USER: '/api/user/profile',
+  // Web-compatible profile endpoint (accepts username OR userId): /api/user/getUserPro/:query
+  GET_USER_PROFILE: '/api/user/getUserPro',
   UPDATE_USER: '/api/user/update',
   FOLLOW_USER: '/api/user/follow',
   UNFOLLOW_USER: '/api/user/unfollow',
+  // NOTE: keep both names to avoid breaking older screens
   SEARCH_USER: '/api/user/search',
+  SEARCH_USERS: '/api/user/search',
+  GET_SUGGESTED_USERS: '/api/user/suggested',
   GET_FOLLOWING: '/api/user/following',
   
   // Posts
@@ -75,6 +80,8 @@ export const SOCKET_EVENTS = {
 // Storage Keys
 export const STORAGE_KEYS = {
   USER: '@user',
+  // Token is NOT stored on mobile because backend uses httpOnly cookie session (jwt cookie)
+  // Keep the key reserved to avoid breaking older installs, but we no longer use it.
   TOKEN: '@token',
   THEME: '@theme',
 };

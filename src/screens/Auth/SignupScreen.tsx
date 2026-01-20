@@ -9,24 +9,92 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 
+const COUNTRIES = [
+  'United States',
+  'United Kingdom',
+  'Canada',
+  'Australia',
+  'Germany',
+  'France',
+  'Italy',
+  'Spain',
+  'Netherlands',
+  'Belgium',
+  'Switzerland',
+  'Austria',
+  'Sweden',
+  'Norway',
+  'Denmark',
+  'Finland',
+  'Poland',
+  'Portugal',
+  'Greece',
+  'Turkey',
+  'Russia',
+  'Japan',
+  'China',
+  'India',
+  'South Korea',
+  'Singapore',
+  'Malaysia',
+  'Thailand',
+  'Indonesia',
+  'Philippines',
+  'Vietnam',
+  'Saudi Arabia',
+  'United Arab Emirates',
+  'Egypt',
+  'Morocco',
+  'Tunisia',
+  'Algeria',
+  'Lebanon',
+  'Jordan',
+  'Iraq',
+  'Kuwait',
+  'Qatar',
+  'Bahrain',
+  'Oman',
+  'Yemen',
+  'Syria',
+  'Palestine',
+  'Brazil',
+  'Argentina',
+  'Mexico',
+  'Chile',
+  'Colombia',
+  'Peru',
+  'Venezuela',
+  'South Africa',
+  'Nigeria',
+  'Kenya',
+  'Ghana',
+  'Ethiopia',
+  'Other',
+];
+
 const SignupScreen = ({ navigation }: any) => {
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [country, setCountry] = useState('');
   const [loading, setLoading] = useState(false);
+  const [countryModalVisible, setCountryModalVisible] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   
   const { login } = useUser();
   const showToast = useShowToast();
 
   const handleSignup = async () => {
-    if (!name || !username || !email || !password) {
+    if (!name || !username || !email || !country || !password) {
       showToast('Error', 'Please fill all fields', 'error');
       return;
     }
@@ -42,6 +110,7 @@ const SignupScreen = ({ navigation }: any) => {
         name,
         username: username.toLowerCase(),
         email: email.toLowerCase(),
+        country,
         password,
       });
 
@@ -50,8 +119,12 @@ const SignupScreen = ({ navigation }: any) => {
         return;
       }
 
-      // Save user and token
-      await login(response, response.token || response._id);
+      // Backend signup returns { id: "..."} (web), but mobile expects {_id:"..."}
+      const normalizedUser =
+        response && response._id ? response : { ...response, _id: response?.id };
+
+      // Save user (session is stored as httpOnly cookie, like web)
+      await login(normalizedUser);
       showToast('Success', 'Account created successfully!', 'success');
     } catch (error: any) {
       console.error('Signup error:', error);
@@ -106,14 +179,35 @@ const SignupScreen = ({ navigation }: any) => {
               autoCorrect={false}
             />
 
-            <TextInput
-              style={styles.input}
-              placeholder="Password (min 6 characters)"
-              placeholderTextColor={COLORS.textGray}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
+            <TouchableOpacity
+              style={styles.select}
+              onPress={() => setCountryModalVisible(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.selectText, !country && styles.selectPlaceholder]}>
+                {country || 'Select country'}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.passwordContainer}>
+              <TextInput
+                style={[styles.input, styles.passwordInput]}
+                placeholder="Password (min 6 characters)"
+                placeholderTextColor={COLORS.textGray}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+              />
+              <TouchableOpacity
+                style={styles.eyeButton}
+                onPress={() => setShowPassword((v) => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Text style={styles.eyeText}>{showPassword ? '👁️' : '🔒'}</Text>
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
@@ -138,6 +232,41 @@ const SignupScreen = ({ navigation }: any) => {
           </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={countryModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCountryModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Select country</Text>
+            <FlatList
+              data={COUNTRIES}
+              keyExtractor={(item) => item}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.modalItem}
+                  onPress={() => {
+                    setCountry(item);
+                    setCountryModalVisible(false);
+                  }}
+                >
+                  <Text style={styles.modalItemText}>{item}</Text>
+                </TouchableOpacity>
+              )}
+            />
+            <TouchableOpacity
+              style={styles.modalClose}
+              onPress={() => setCountryModalVisible(false)}
+            >
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 };
@@ -180,6 +309,41 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 16,
   },
+  passwordContainer: {
+    position: 'relative',
+    width: '100%',
+  },
+  passwordInput: {
+    paddingRight: 50,
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 14,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  eyeText: {
+    fontSize: 18,
+    color: COLORS.textGray,
+  },
+  select: {
+    backgroundColor: COLORS.backgroundLight,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 15,
+    justifyContent: 'center',
+  },
+  selectText: {
+    color: COLORS.text,
+    fontSize: 16,
+  },
+  selectPlaceholder: {
+    color: COLORS.textGray,
+  },
   button: {
     backgroundColor: COLORS.primary,
     borderRadius: 8,
@@ -206,6 +370,49 @@ const styles = StyleSheet.create({
   linkTextBold: {
     color: COLORS.primary,
     fontWeight: 'bold',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: COLORS.backgroundLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    maxHeight: '80%',
+    overflow: 'hidden',
+  },
+  modalTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modalItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modalItemText: {
+    color: COLORS.text,
+    fontSize: 16,
+  },
+  modalClose: {
+    padding: 16,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  modalCloseText: {
+    color: COLORS.primary,
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
 
