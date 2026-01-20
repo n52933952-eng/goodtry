@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -22,10 +22,36 @@ import { useShowToast } from '../hooks/useShowToast';
 interface PostProps {
   post: any;
   disableNavigation?: boolean; // If true, disable navigation to PostDetail (for PostDetailScreen)
+  fromScreen?: string; // Screen name where Post is rendered (e.g., 'UserProfile')
+  userProfileParams?: any; // Params to pass when navigating back to UserProfile
 }
 
-const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
+const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen, userProfileParams }) => {
   const navigation = useNavigation<any>();
+  
+  // Helper function to navigate to PostDetail (ensures tab bar is visible)
+  const navigateToPostDetail = (postId: string) => {
+    // When navigating from UserProfileScreen, navigate within ProfileStack
+    // When navigating from Feed, navigate within FeedStack
+    if (fromScreen === 'UserProfile') {
+      // Navigate to PostDetail within ProfileStack (tab bar will be visible)
+      navigation.navigate('PostDetail', {
+        postId,
+        fromScreen,
+        userProfileParams,
+      });
+    } else {
+      // Navigate through Feed tab (for Feed screen and other tab contexts)
+      navigation.navigate('Feed', { 
+        screen: 'PostDetail', 
+        params: { 
+          postId,
+          fromScreen, // Pass the source screen
+          userProfileParams, // Pass params for navigating back
+        } 
+      });
+    }
+  };
   const { user } = useUser();
   const { likePost, unlikePost, deletePost: deletePostContext } = usePost();
   const showToast = useShowToast();
@@ -33,8 +59,17 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
   const [isLiking, setIsLiking] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [youtubePlaying, setYoutubePlaying] = useState(true);
+  // Local state for optimistic like updates (like web)
+  const [localLiked, setLocalLiked] = useState(post.likes?.includes(user?._id));
+  const [localLikesCount, setLocalLikesCount] = useState(post.likes?.length || 0);
 
-  const isLiked = post.likes?.includes(user?._id);
+  // Update local state when post prop changes
+  useEffect(() => {
+    setLocalLiked(post.likes?.includes(user?._id));
+    setLocalLikesCount(post.likes?.length || 0);
+  }, [post.likes, user?._id]);
+
+  const isLiked = localLiked; // Use local state for immediate UI update
   const isOwner = post.postedBy?._id === user?._id;
   const isContributor = post.contributors?.some((c: any) => 
     (typeof c === 'string' ? c : c._id) === user?._id
@@ -43,17 +78,28 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
   const handleLike = async () => {
     if (isLiking || !user) return;
 
+    // Optimistic update: Update UI immediately (like web)
+    const previousLiked = isLiked;
+    const previousCount = localLikesCount;
+    
+    setLocalLiked(!previousLiked);
+    setLocalLikesCount(previousLiked ? previousCount - 1 : previousCount + 1);
     setIsLiking(true);
+
     try {
       await apiService.put(`${ENDPOINTS.LIKE_POST}/${post._id}`);
       
-      if (isLiked) {
+      // Update context after API call succeeds
+      if (previousLiked) {
         unlikePost(post._id, user._id);
       } else {
         likePost(post._id, user._id);
       }
     } catch (error: any) {
       console.error('Error liking post:', error);
+      // Revert optimistic update on error
+      setLocalLiked(previousLiked);
+      setLocalLikesCount(previousCount);
       showToast('Error', 'Failed to like post', 'error');
     } finally {
       setIsLiking(false);
@@ -150,38 +196,32 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => {
+          onPress={(e) => {
+            e.stopPropagation();
+            // If navigation is disabled (PostDetailScreen), don't navigate
+            if (disableNavigation) return;
+            
+            // If this is a channel post, navigate to post page
             const username = post.postedBy?.username;
             const hasChannelAddedBy = !!post?.channelAddedBy;
             const hasYouTubeEmbed = !!isYouTubeEmbed;
             const isInChannelList = channelUsernames.includes(username);
+            const isChannelPost = isYouTubeEmbed || hasChannelAddedBy || isInChannelList;
             
-            console.log('👤 [Post] Avatar clicked:', {
-              username,
-              isChannelPost,
-              hasChannelAddedBy,
-              hasYouTubeEmbed,
-              isInChannelList,
-              postId: post._id
-            });
-            
-            // If it's Football channel, navigate to Football page (if exists)
-            if (username === 'Football') {
-              console.log('⚽ [Post] Football channel - navigating to PostDetail');
-              navigation.navigate('PostDetail', { postId: post._id });
-            } 
-            // If it's another channel post, navigate to post page instead of profile
-            else if (isChannelPost && post?._id) {
+            if (isChannelPost && post?._id) {
               console.log('📺 [Post] Channel post - navigating to PostDetail:', post._id);
-              navigation.navigate('PostDetail', { postId: post._id });
-            } 
-            // Otherwise navigate to user profile
-            else {
+              navigateToPostDetail(post._id);
+            } else if (username) {
+              // For regular users, navigate to their profile page
               console.log('👤 [Post] User post - navigating to UserProfile:', username);
-              navigation.navigate('UserProfile', { username });
+              navigation.navigate('Profile', { 
+                screen: 'UserProfile', 
+                params: { username } 
+              });
             }
           }}
-          activeOpacity={0.7}
+          activeOpacity={disableNavigation ? 1 : 0.7}
+          disabled={disableNavigation}
         >
           {post.postedBy?.profilePic && !isChannelPost ? (
             <Image 
@@ -227,7 +267,10 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
         <Text style={styles.text}>{post.text}</Text>
       ) : (
         <TouchableOpacity 
-          onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
+          onPress={() => {
+            // Navigate to PostDetail
+            navigateToPostDetail(post._id);
+          }}
           activeOpacity={0.9}
         >
           <Text style={styles.text}>{post.text}</Text>
@@ -235,12 +278,13 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
       )}
 
       {post.img && isYouTubeEmbed && youtubeVideoId ? (
-        <View 
-          style={styles.videoContainer}
-          onStartShouldSetResponder={() => true}
-          onMoveShouldSetResponder={() => false}
-        >
-          <YoutubePlayer
+        disableNavigation ? (
+          <View 
+            style={styles.videoContainer}
+            onStartShouldSetResponder={() => true}
+            onMoveShouldSetResponder={() => false}
+          >
+            <YoutubePlayer
             height={styles.videoContainer.height}
             videoId={youtubeVideoId}
             play={youtubePlaying}
@@ -273,10 +317,60 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
               }
             }}
           />
-        </View>
+          </View>
+        ) : (
+          <TouchableOpacity 
+            onPress={() => {
+              // Navigate to PostDetail
+              navigateToPostDetail(post._id);
+            }}
+            activeOpacity={0.9}
+          >
+            <View 
+              style={styles.videoContainer}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => false}
+            >
+              <YoutubePlayer
+                height={styles.videoContainer.height}
+                videoId={youtubeVideoId}
+                play={youtubePlaying}
+                mute={false}
+                webViewProps={{
+                  allowsInlineMediaPlayback: true,
+                  androidLayerType: 'hardware',
+                }}
+                initialPlayerParams={{
+                  controls: true,
+                  modestbranding: true,
+                  rel: false,
+                  autoplay: 1,
+                  mute: 0,
+                }}
+                onError={(error) => {
+                  console.error('❌ [Post] YouTube player error:', error);
+                }}
+                onReady={() => {
+                  console.log('✅ [Post] YouTube player ready - auto-playing');
+                  setYoutubePlaying(true);
+                }}
+                onChangeState={(state) => {
+                  console.log('📺 [Post] YouTube state:', state);
+                  // Update state based on player state
+                  if (state === 'playing') {
+                    setYoutubePlaying(true);
+                  } else if (state === 'paused') {
+                    setYoutubePlaying(false);
+                  }
+                }}
+              />
+            </View>
+          </TouchableOpacity>
+        )
       ) : post.img && isVideoPost ? (
-        <View style={styles.videoContainer}>
-          <WebView
+        disableNavigation ? (
+          <View style={styles.videoContainer}>
+            <WebView
             source={{
               html: `
                 <!DOCTYPE html>
@@ -344,7 +438,87 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
               console.error('❌ [Post] WebView video HTTP error:', nativeEvent);
             }}
           />
-        </View>
+          </View>
+        ) : (
+          <TouchableOpacity 
+            onPress={() => {
+              // Navigate to PostDetail
+              navigateToPostDetail(post._id);
+            }}
+            activeOpacity={0.9}
+          >
+            <View style={styles.videoContainer}>
+              <WebView
+                source={{
+                  html: `
+                    <!DOCTYPE html>
+                    <html>
+                      <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <style>
+                          * {
+                            margin: 0;
+                            padding: 0;
+                            box-sizing: border-box;
+                          }
+                          body {
+                            margin: 0;
+                            padding: 0;
+                            background: #000;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            height: 100vh;
+                            overflow: hidden;
+                          }
+                          video {
+                            width: 100%;
+                            height: 100%;
+                            max-height: 400px;
+                            object-fit: contain;
+                          }
+                        </style>
+                      </head>
+                      <body>
+                        <video
+                          src="${post.img}"
+                          controls
+                          autoplay
+                          muted
+                          playsinline
+                          loop
+                          onloadeddata="this.play().catch(e => console.log('Autoplay prevented:', e))"
+                        ></video>
+                      </body>
+                    </html>
+                  `
+                }}
+                style={styles.videoWebView}
+                allowsFullscreenVideo={true}
+                mediaPlaybackRequiresUserAction={false}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                allowsInlineMediaPlayback={true}
+                mixedContentMode="always"
+                startInLoadingState={true}
+                originWhitelist={['*']}
+                renderLoading={() => (
+                  <View style={styles.videoLoading}>
+                    <ActivityIndicator size="large" color={COLORS.primary} />
+                  </View>
+                )}
+                onError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  console.error('❌ [Post] WebView video error:', nativeEvent);
+                }}
+                onHttpError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  console.error('❌ [Post] WebView video HTTP error:', nativeEvent);
+                }}
+              />
+            </View>
+          </TouchableOpacity>
+        )
       ) : post.img ? (
         disableNavigation ? (
           <Image 
@@ -354,7 +528,10 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
           />
         ) : (
           <TouchableOpacity 
-            onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
+            onPress={() => {
+              // Navigate to PostDetail
+              navigateToPostDetail(post._id);
+            }}
             activeOpacity={0.9}
           >
             <Image 
@@ -400,7 +577,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
           <Text style={styles.actionIcon}>
             {isLiked ? '❤️' : '🤍'}
           </Text>
-          <Text style={styles.actionText}>{post.likes?.length || 0}</Text>
+          <Text style={styles.actionText}>{localLikesCount}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity 
@@ -408,7 +585,8 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
           onPress={(e) => {
             e.stopPropagation();
             if (!disableNavigation) {
-              navigation.navigate('PostDetail', { postId: post._id });
+              // Navigate to PostDetail
+              navigateToPostDetail(post._id);
             }
           }}
         >

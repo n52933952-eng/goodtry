@@ -13,9 +13,22 @@ const ONESIGNAL_APP_ID = '63af553f-4dfb-449d-9f22-38d6e006094b';
 class OneSignalService {
   private navigationRef: any = null;
   private isInitialized = false;
+  private pendingNotification: any = null; // Store notification click if navigation ref not ready
 
   setNavigationRef(ref: any) {
     this.navigationRef = ref;
+    console.log('✅ [OneSignal] Navigation ref set');
+    
+    // Process pending notification if any
+    if (this.pendingNotification && this.navigationRef) {
+      console.log('📩 [OneSignal] Processing pending notification...');
+      const pendingData = this.pendingNotification;
+      this.pendingNotification = null; // Clear pending
+      // Small delay to ensure navigation is fully ready
+      setTimeout(() => {
+        this.handleNotificationAction(pendingData);
+      }, 300);
+    }
   }
 
   async initialize() {
@@ -89,6 +102,7 @@ class OneSignalService {
         console.log('👆 [OneSignal] Notification clicked');
         const notification = event.notification;
         const data = notification.additionalData;
+        const result = event.result; // Contains button click info if action button was clicked
 
         if (data) {
           // Skip call notifications (handled by FCM)
@@ -97,6 +111,21 @@ class OneSignalService {
             return;
           }
 
+          // Handle action button clicks (Reply, Mark as read, etc.)
+          if (result?.actionId) {
+            console.log('🔘 [OneSignal] Action button clicked:', result.actionId);
+            this.handleActionButton(result.actionId, data);
+            return;
+          }
+
+          // If navigation ref is not ready, store the notification for later
+          if (!this.navigationRef) {
+            console.log('⏳ [OneSignal] Navigation ref not ready - storing notification for later');
+            this.pendingNotification = data;
+            return;
+          }
+
+          // Navigation ref is ready, handle immediately
           this.handleNotificationAction(data);
         }
       });
@@ -171,49 +200,116 @@ class OneSignalService {
     }
   }
 
-  // Handle notification actions (navigation, etc.)
-  private handleNotificationAction(data: any) {
-    console.log('📩 [OneSignal] Handling notification action:', data);
-
+  // Handle action button clicks (Reply, Mark as read, etc.)
+  private handleActionButton(actionId: string, data: any) {
+    console.log('🔘 [OneSignal] Handling action button:', actionId);
+    
     if (!this.navigationRef) {
-      console.warn('⚠️ [OneSignal] Navigation ref not set');
+      console.warn('⚠️ [OneSignal] Navigation ref not set for action button');
       return;
     }
 
-    // Handle different notification types
-    if (data.type === 'message') {
+    switch (actionId) {
+      case 'view_post':
+        // Navigate to post
+        const postId = data.postId || data.post?._id || data.metadata?.postId;
+        if (postId) {
+          this.navigationRef.navigate('Feed', {
+            screen: 'PostDetail',
+            params: { postId: postId.toString() }
+          });
+        }
+        break;
+      
+      case 'view_profile':
+        // Navigate to user profile
+        if (data.userId) {
+          this.navigationRef.navigate('UserProfile', {
+            userId: data.userId,
+          });
+        }
+        break;
+      
+      case 'mark_read':
+        // Mark notification as read (you can call an API endpoint here)
+        console.log('✅ [OneSignal] Marking notification as read');
+        // TODO: Call API to mark notification as read if needed
+        break;
+      
+      default:
+        console.log('⚠️ [OneSignal] Unknown action button:', actionId);
+    }
+  }
+
+  // Handle notification actions (navigation, etc.)
+  // This matches the behavior of NotificationsScreen.handleNotificationPress
+  private handleNotificationAction(data: any) {
+    console.log('📩 [OneSignal] Handling notification action:', data);
+    console.log('📩 [OneSignal] Notification data:', JSON.stringify(data, null, 2));
+
+    if (!this.navigationRef) {
+      console.warn('⚠️ [OneSignal] Navigation ref not set - storing notification for later');
+      // Store for processing when navigation ref is ready
+      this.pendingNotification = data;
+      return;
+    }
+
+    // Handle different notification types (matching NotificationsScreen behavior)
+    if (data.type === 'follow') {
+      // Navigate to user profile
+      console.log('👥 [OneSignal] Navigating to user profile');
+      if (data.userId) {
+        // For follow notifications, userId is the follower's ID
+        // We need to navigate to their profile - but we don't have username
+        // Try to navigate using userId, or we could fetch username first
+        this.navigationRef.navigate('UserProfile', {
+          userId: data.userId,
+        });
+      }
+    } else if (
+      data.type === 'like' || 
+      data.type === 'comment' || 
+      data.type === 'mention' || 
+      data.type === 'collaboration' || 
+      data.type === 'post_edit'
+    ) {
+      // Navigate to post detail page (matching NotificationsScreen behavior)
+      console.log(`📱 [OneSignal] Navigating to post (type: ${data.type})`);
+      
+      // postId can be in data.postId (from backend push notification)
+      const postId = data.postId || data.post?._id || data.metadata?.postId;
+      
+      if (postId) {
+        console.log(`✅ [OneSignal] Navigating to PostDetail with postId: ${postId}`);
+        // Navigate to Feed tab first, then to PostDetail (nested navigation)
+        this.navigationRef.navigate('Feed', {
+          screen: 'PostDetail',
+          params: { postId: postId.toString() }
+        });
+      } else {
+        console.error('❌ [OneSignal] No postId found in notification data:', data);
+      }
+    } else if (data.type === 'chess_challenge' || data.type === 'chess_move') {
+      // Chess notification
+      console.log('♟️ [OneSignal] Navigating to chess game');
+      if (data.gameId || data.roomId) {
+        this.navigationRef.navigate('ChessGame', {
+          roomId: data.gameId || data.roomId,
+        });
+      }
+    } else if (data.type === 'message') {
       // New message notification
       console.log('💬 [OneSignal] Navigating to chat');
       if (data.conversationId) {
         this.navigationRef.navigate('ChatScreen', {
           conversationId: data.conversationId,
         });
+      } else {
+        // Fallback to Messages screen
+        this.navigationRef.navigate('Messages');
       }
-    } else if (data.type === 'like' || data.type === 'comment') {
-      // Post notifications
-      console.log('📱 [OneSignal] Navigating to post');
-      if (data.postId) {
-        this.navigationRef.navigate('PostDetail', {
-          postId: data.postId,
-        });
-      }
-    } else if (data.type === 'chess_challenge' || data.type === 'chess_move') {
-      // Chess notification
-      console.log('♟️ [OneSignal] Navigating to chess game');
-      if (data.gameId) {
-        this.navigationRef.navigate('ChessGame', {
-          gameId: data.gameId,
-        });
-      }
-    } else if (data.type === 'follow') {
-      // Follow notification - navigate to user profile
-      console.log('👥 [OneSignal] Navigating to user profile');
-      if (data.userId) {
-        // You'll need to get username from userId or pass it in data
-        this.navigationRef.navigate('UserProfile', {
-          userId: data.userId,
-        });
-      }
+    } else {
+      console.warn(`⚠️ [OneSignal] Unknown notification type: ${data.type}`);
     }
   }
 

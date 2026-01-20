@@ -19,19 +19,28 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
 const ChatScreen = ({ route, navigation }: any) => {
-  const { conversationId, otherUser } = route.params;
+  const { conversationId, userId, otherUser } = route.params;
   const { user } = useUser();
-  const { socket } = useSocket();
+  const { socket, onlineUsers } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [currentConversationId, setCurrentConversationId] = useState(conversationId);
   const messagesEndRef = useRef<FlatList>(null);
   const isCallInProgressRef = useRef(false); // Prevent duplicate calls
 
   useEffect(() => {
-    fetchMessages();
+    // If we have userId but no conversationId, we're starting a new conversation
+    // The conversation will be created when we send the first message
+    if (conversationId) {
+      setCurrentConversationId(conversationId);
+      fetchMessages();
+    } else if (userId && otherUser) {
+      // New conversation - no messages to fetch yet
+      setLoading(false);
+    }
     
     if (socket) {
       socket.on('newMessage', handleNewMessage);
@@ -39,7 +48,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         socket.off('newMessage', handleNewMessage);
       };
     }
-  }, [socket, conversationId]);
+  }, [socket, conversationId, userId]);
   
   // Reset call in progress flag when call ends or is canceled
   useEffect(() => {
@@ -60,10 +69,15 @@ const ChatScreen = ({ route, navigation }: any) => {
   }, [isCalling, callAccepted, callEnded]);
 
   const fetchMessages = async () => {
+    if (!currentConversationId) {
+      setLoading(false);
+      return;
+    }
+    
     try {
-      const data = await apiService.get(`${ENDPOINTS.GET_MESSAGES}/${conversationId}`);
+      const data = await apiService.get(`${ENDPOINTS.GET_MESSAGES}/${currentConversationId}`);
       setMessages(data || []);
-      await apiService.put(`${ENDPOINTS.MARK_MESSAGES_SEEN}/${conversationId}`);
+      await apiService.put(`${ENDPOINTS.MARK_MESSAGES_SEEN}/${currentConversationId}`);
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
@@ -72,7 +86,13 @@ const ChatScreen = ({ route, navigation }: any) => {
   };
 
   const handleNewMessage = (data: any) => {
-    if (data.conversationId === conversationId) {
+    // Handle messages for current conversation or new conversation being created
+    if (data.conversationId === currentConversationId || 
+        (data.conversationId && !currentConversationId && data.sender === userId)) {
+      // If this is the first message and we didn't have a conversationId, set it now
+      if (!currentConversationId && data.conversationId) {
+        setCurrentConversationId(data.conversationId);
+      }
       setMessages((prev) => [...prev, data]);
       messagesEndRef.current?.scrollToEnd({ animated: true });
     }
@@ -83,11 +103,20 @@ const ChatScreen = ({ route, navigation }: any) => {
 
     setSending(true);
     try {
-      socket.emit('sendMessage', {
-        conversationId,
+      // If we have userId but no conversationId, include userId to create new conversation
+      const messageData: any = {
         sender: user?._id,
         text: newMessage.trim(),
-      });
+      };
+      
+      if (currentConversationId) {
+        messageData.conversationId = currentConversationId;
+      } else if (userId) {
+        // Starting new conversation
+        messageData.receiver = userId;
+      }
+      
+      socket.emit('sendMessage', messageData);
       setNewMessage('');
     } catch (error) {
       console.error('Error sending message:', error);
@@ -184,6 +213,22 @@ const ChatScreen = ({ route, navigation }: any) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Check if the other user is online
+  const isOtherUserOnline = () => {
+    if (!otherUser?._id || !onlineUsers || !Array.isArray(onlineUsers)) return false;
+    
+    const otherUserIdStr = otherUser._id?.toString();
+    return onlineUsers.some((online: any) => {
+      let onlineUserId = null;
+      if (typeof online === 'object' && online !== null) {
+        onlineUserId = online.userId?.toString() || online._id?.toString() || online.toString();
+      } else {
+        onlineUserId = online?.toString();
+      }
+      return onlineUserId === otherUserIdStr;
+    });
+  };
+
   const renderMessage = ({ item }: { item: any }) => {
     const isOwn = item.sender === user?._id;
     return (
@@ -227,9 +272,14 @@ const ChatScreen = ({ route, navigation }: any) => {
         )}
 
         <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>
-            {otherUser?.name || 'User'}
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <Text style={styles.headerTitle}>
+              {otherUser?.name || 'User'}
+            </Text>
+            {isOtherUserOnline() && (
+              <View style={styles.headerOnlineDot} />
+            )}
+          </View>
         </View>
 
         {/* Call Buttons */}
@@ -316,10 +366,21 @@ const styles = StyleSheet.create({
   headerInfo: {
     flex: 1,
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   headerTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  headerOnlineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.success,
   },
   callButton: {
     marginLeft: 15,

@@ -23,9 +23,37 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
-  const { postId } = route.params;
+  const { postId, fromScreen, userProfileParams } = route.params || {};
   const { user } = useUser();
   const showToast = useShowToast();
+  
+  // Customize back button behavior based on where we came from
+  React.useEffect(() => {
+    if (fromScreen === 'UserProfile') {
+      navigation.setOptions({
+        headerLeft: () => (
+          <TouchableOpacity
+            onPress={() => {
+              // Navigate back to UserProfile with the same params
+              if (userProfileParams) {
+                navigation.navigate('UserProfile', userProfileParams);
+              } else {
+                navigation.goBack();
+              }
+            }}
+            style={{ marginLeft: 10 }}
+          >
+            <Text style={{ color: COLORS.text, fontSize: 24 }}>←</Text>
+          </TouchableOpacity>
+        ),
+      });
+    } else {
+      // Default back button - will go back to previous screen (FeedScreen or UserProfile)
+      navigation.setOptions({
+        headerLeft: undefined,
+      });
+    }
+  }, [fromScreen, navigation, userProfileParams]);
 
   const [post, setPost] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -318,14 +346,6 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Post</Text>
-        <View style={{ width: 60 }} />
-      </View>
-
       <ScrollView
         ref={scrollViewRef}
         style={styles.content}
@@ -464,23 +484,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: COLORS.background,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  backButton: {
-    fontSize: 16,
-    color: COLORS.primary,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.text,
   },
   content: {
     flex: 1,

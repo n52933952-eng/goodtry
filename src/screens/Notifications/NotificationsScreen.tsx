@@ -167,13 +167,19 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       if (notification.post && notification.post._id) {
         // Get post owner from populated post
         const postOwner = notification.post.postedBy?.username || notification.post.postedBy?.name || user?.username;
-        // Navigate directly to PostDetail (mobile equivalent of /${postOwner}/post/${postId})
-        navigation.navigate('PostDetail', { postId: notification.post._id });
+        // Navigate to Feed tab, then to PostDetail (nested navigation to show tab bar)
+        navigation.navigate('Feed', {
+          screen: 'PostDetail',
+          params: { postId: notification.post._id }
+        });
       } else if (notification.metadata?.postId || notification.post?._id) {
         // Fallback: try to get postId from metadata or post object
         const postId = notification.metadata?.postId || notification.post?._id;
         const postOwner = notification.post?.postedBy?.username || user?.username;
-        navigation.navigate('PostDetail', { postId });
+        navigation.navigate('Feed', {
+          screen: 'PostDetail',
+          params: { postId }
+        });
       }
     } else if (notification.type === 'chess_challenge') {
       navigation.navigate('Chess', { roomId: notification.roomId });

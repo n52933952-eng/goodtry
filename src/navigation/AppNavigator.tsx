@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { View, Text, DeviceEventEmitter, Platform, AppState } from 'react-native';
+import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -45,6 +45,32 @@ const AuthStack = () => (
   >
     <Stack.Screen name="Login" component={LoginScreen} />
     <Stack.Screen name="Signup" component={SignupScreen} />
+  </Stack.Navigator>
+);
+
+// Feed Stack (nested stack for Feed tab to include PostDetail)
+const FeedStack = () => (
+  <Stack.Navigator
+    screenOptions={{
+      headerShown: false,
+    }}
+  >
+    <Stack.Screen name="FeedScreen" component={FeedScreen} />
+    <Stack.Screen 
+      name="PostDetail" 
+      component={PostDetailScreen}
+      options={{
+        headerShown: true,
+        title: 'Post',
+        headerStyle: {
+          backgroundColor: COLORS.background,
+        },
+        headerTintColor: COLORS.text,
+        headerTitleStyle: {
+          fontWeight: 'bold',
+        },
+      }}
+    />
   </Stack.Navigator>
 );
 
@@ -144,7 +170,7 @@ const MainTabs = () => (
   >
     <Tab.Screen
       name="Feed"
-      component={FeedScreen}
+      component={FeedStack}
       options={{
         tabBarLabel: 'Home',
         tabBarIcon: ({ color }) => <HomeIcon color={color} />,
@@ -160,8 +186,8 @@ const MainTabs = () => (
     />
     <Tab.Screen
       name="Profile"
-      component={UserProfileScreen}
-      initialParams={{ username: 'self' }}
+      component={ProfileStack}
+      initialParams={{ screen: 'UserProfile', params: { username: 'self' } }}
       options={{
         tabBarLabel: 'Profile',
         tabBarIcon: ({ color }) => <ProfileIcon color={color} />,
@@ -199,6 +225,64 @@ const MainTabs = () => (
   </Tab.Navigator>
 );
 
+// Profile Stack (nested stack for Profile tab to include UserProfile and PostDetail)
+const ProfileStack = ({ navigation: stackNavigation }: any) => {
+  return (
+    <Stack.Navigator
+      screenOptions={{
+        headerShown: false,
+      }}
+    >
+      <Stack.Screen 
+        name="UserProfile" 
+        component={UserProfileScreen}
+        options={({ navigation }) => ({
+          headerShown: true,
+          title: 'Profile',
+          headerStyle: {
+            backgroundColor: COLORS.background,
+          },
+          headerTintColor: COLORS.text,
+          headerTitleStyle: {
+            fontWeight: 'bold',
+          },
+          headerLeft: () => (
+            <TouchableOpacity 
+              onPress={() => {
+                // Navigate to Feed (home) tab
+                const rootNavigation = navigation.getParent()?.getParent();
+                if (rootNavigation) {
+                  rootNavigation.navigate('MainTabs', { screen: 'Feed' });
+                } else {
+                  navigation.navigate('Feed');
+                }
+              }} 
+              style={{ marginLeft: 10 }}
+            >
+              <Text style={{ color: COLORS.text, fontSize: 24 }}>←</Text>
+            </TouchableOpacity>
+          ),
+        })}
+      />
+      <Stack.Screen 
+        name="PostDetail" 
+        component={PostDetailScreen}
+        options={{
+          headerShown: true,
+          title: 'Post',
+          headerStyle: {
+            backgroundColor: COLORS.background,
+          },
+          headerTintColor: COLORS.text,
+          headerTitleStyle: {
+            fontWeight: 'bold',
+          },
+        }}
+      />
+    </Stack.Navigator>
+  );
+};
+
 // Main Stack with Tabs and Modals
 const MainStack = () => (
   <Stack.Navigator
@@ -213,8 +297,6 @@ const MainStack = () => (
       component={CreatePostScreen}
       options={{ presentation: 'modal' }}
     />
-    <Stack.Screen name="PostDetail" component={PostDetailScreen} />
-    <Stack.Screen name="UserProfile" component={UserProfileScreen} />
     <Stack.Screen name="Activity" component={ActivityScreen} />
     <Stack.Screen name="ChatScreen" component={ChatScreen} />
     <Stack.Screen 
@@ -553,7 +635,16 @@ const AppNavigator = () => {
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer 
+      ref={(ref) => {
+        navigationRef.current = ref;
+        // Set OneSignal navigation ref immediately when NavigationContainer is ready
+        if (ref) {
+          console.log('✅ [AppNavigator] NavigationContainer ref ready - setting OneSignal ref');
+          oneSignalService.setNavigationRef(ref);
+        }
+      }}
+    >
       <View style={{ flex: 1 }}>
         {user ? <MainStack /> : <AuthStack />}
         {user && (

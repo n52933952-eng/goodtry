@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Image,
   RefreshControl,
+  FlatList,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { COLORS } from '../../utils/constants';
@@ -17,7 +18,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
-  const { username: usernameParam } = route.params;
+  const { username: usernameParam } = route.params || {};
   const { user: currentUser } = useUser();
   const username = usernameParam === 'self' ? currentUser?.username : usernameParam;
   const showToast = useShowToast();
@@ -28,10 +29,16 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [refreshing, setRefreshing] = useState(false);
   const [following, setFollowing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
+  
+  // Pagination state
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [skip, setSkip] = useState(0);
+  const POSTS_PER_PAGE = 9;
 
   useEffect(() => {
     fetchUserProfile();
-    fetchUserPosts();
+    fetchUserPosts(false); // Initial load
   }, [username]);
 
   const fetchUserProfile = async () => {
@@ -47,12 +54,61 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const fetchUserPosts = async () => {
+  const fetchUserPosts = async (isLoadMore = false) => {
+    if (isLoadMore) {
+      setLoadingMore(true);
+    } else {
+      setSkip(0);
+      setHasMore(true);
+    }
+    
     try {
-      const data = await apiService.get(`${ENDPOINTS.GET_USER_POSTS}/${username}`);
-      setPosts(data.posts || []);
+      const currentSkip = isLoadMore ? skip : 0;
+      const data = await apiService.get(
+        `${ENDPOINTS.GET_USER_POSTS}/${username}?limit=${POSTS_PER_PAGE}&skip=${currentSkip}`
+      );
+      
+      const newPosts = data.posts || data || [];
+      
+      if (isLoadMore) {
+        // Append new posts to existing ones, filtering out duplicates
+        setPosts(prev => {
+          const existingIds = new Set(prev.map(p => {
+            const id = p._id?.toString?.() ?? String(p._id);
+            return id;
+          }));
+          const uniqueNewPosts = newPosts.filter(p => {
+            const id = p._id?.toString?.() ?? String(p._id);
+            return !existingIds.has(id);
+          });
+          return [...prev, ...uniqueNewPosts];
+        });
+        setSkip(prev => prev + POSTS_PER_PAGE);
+      } else {
+        // Replace posts for initial load
+        setPosts(newPosts);
+        setSkip(POSTS_PER_PAGE);
+      }
+      
+      // Check if there are more posts (backend returns hasMore)
+      if (data.hasMore !== undefined) {
+        setHasMore(data.hasMore);
+      } else {
+        // Fallback: check if we got a full page
+        setHasMore(newPosts.length === POSTS_PER_PAGE);
+      }
     } catch (error) {
       console.error('Error fetching user posts:', error);
+      showToast('Error', 'Failed to load posts', 'error');
+    } finally {
+      setLoadingMore(false);
+      setRefreshing(false);
+    }
+  };
+  
+  const handleLoadMore = () => {
+    if (!loadingMore && hasMore) {
+      fetchUserPosts(true);
     }
   };
 
@@ -91,78 +147,93 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Profile</Text>
-        <View style={{ width: 60 }} />
-      </View>
-
-      <ScrollView
+      <FlatList
+        data={posts}
+        keyExtractor={(item, index) => {
+          // Ensure unique keys by using both _id and index as fallback
+          const id = item._id?.toString?.() ?? String(item._id);
+          return id || `post-${index}`;
+        }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
               fetchUserProfile();
-              fetchUserPosts();
+              fetchUserPosts(false);
             }}
           />
         }
-      >
-        <View style={styles.profileHeader}>
-          {profileUser.profilePic ? (
-            <Image source={{ uri: profileUser.profilePic }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
-              <Text style={styles.avatarText}>
-                {profileUser.name?.[0]?.toUpperCase() || '?'}
-              </Text>
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.5}
+        ListHeaderComponent={
+          <View>
+            <View style={styles.profileHeader}>
+              {profileUser.profilePic ? (
+                <Image source={{ uri: profileUser.profilePic }} style={styles.avatar} />
+              ) : (
+                <View style={[styles.avatar, styles.avatarPlaceholder]}>
+                  <Text style={styles.avatarText}>
+                    {profileUser.name?.[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.name}>{profileUser.name}</Text>
+              <Text style={styles.username}>@{profileUser.username}</Text>
+              {profileUser.bio && <Text style={styles.bio}>{profileUser.bio}</Text>}
+              
+              <View style={styles.stats}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.postsCount || posts.length}</Text>
+                  <Text style={styles.statLabel}>Posts</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.followers?.length || 0}</Text>
+                  <Text style={styles.statLabel}>Followers</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.following?.length || 0}</Text>
+                  <Text style={styles.statLabel}>Following</Text>
+                </View>
+              </View>
+
+              {!isOwnProfile && (
+                <TouchableOpacity
+                  style={[styles.followButton, following && styles.followingButton]}
+                  onPress={handleFollow}
+                  disabled={followLoading}
+                >
+                  <Text style={styles.followButtonText}>
+                    {followLoading ? '...' : following ? 'Following' : 'Follow'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
-          )}
-          <Text style={styles.name}>{profileUser.name}</Text>
-          <Text style={styles.username}>@{profileUser.username}</Text>
-          {profileUser.bio && <Text style={styles.bio}>{profileUser.bio}</Text>}
-          
-          <View style={styles.stats}>
-            <View style={styles.statItem}>
-              <Text style={styles.statNumber}>{posts.length}</Text>
-              <Text style={styles.statLabel}>Posts</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statNumber}>{profileUser.followers?.length || 0}</Text>
-              <Text style={styles.statLabel}>Followers</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statNumber}>{profileUser.following?.length || 0}</Text>
-              <Text style={styles.statLabel}>Following</Text>
+            <View style={styles.postsSection}>
+              <Text style={styles.postsTitle}>Posts</Text>
             </View>
           </View>
-
-          {!isOwnProfile && (
-            <TouchableOpacity
-              style={[styles.followButton, following && styles.followingButton]}
-              onPress={handleFollow}
-              disabled={followLoading}
-            >
-              <Text style={styles.followButtonText}>
-                {followLoading ? '...' : following ? 'Following' : 'Follow'}
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        <View style={styles.postsSection}>
-          <Text style={styles.postsTitle}>Posts</Text>
-          {posts.map((post) => (
-            <Post key={post._id} post={post} />
-          ))}
-          {posts.length === 0 && (
+        }
+        ListEmptyComponent={
+          !loading ? (
             <Text style={styles.emptyText}>No posts yet</Text>
-          )}
-        </View>
-      </ScrollView>
+          ) : null
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={styles.loadingMoreContainer}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            </View>
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <Post 
+            post={item} 
+            fromScreen="UserProfile"
+            userProfileParams={{ username }}
+          />
+        )}
+      />
     </View>
   );
 };
@@ -177,34 +248,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  backButton: {
-    fontSize: 16,
-    color: COLORS.primary,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
   profileHeader: {
     alignItems: 'center',
-    padding: 20,
+    paddingTop: 5,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    marginBottom: 15,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginBottom: 8,
   },
   avatarPlaceholder: {
     backgroundColor: COLORS.primary,
@@ -213,7 +269,7 @@ const styles = StyleSheet.create({
   },
   avatarText: {
     color: '#FFFFFF',
-    fontSize: 40,
+    fontSize: 24,
     fontWeight: 'bold',
   },
   name: {
@@ -279,6 +335,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: COLORS.textGray,
     marginTop: 30,
+    marginBottom: 30,
+  },
+  loadingMoreContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
   },
   errorText: {
     fontSize: 16,

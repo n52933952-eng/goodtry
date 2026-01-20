@@ -200,8 +200,18 @@ const FeedScreen = ({ navigation }: any) => {
       // Match web's feed fetching: limit=10&skip=0 for initial load
       const data = await apiService.get(`${ENDPOINTS.GET_FEED}?limit=10&skip=0`);
       const postsArray = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
-      setPosts(postsArray);
-      console.log(`📥 [FeedScreen] Fetched ${postsArray.length} posts from feed`);
+      
+      // Filter out duplicates by _id
+      const uniquePosts = postsArray.filter((post: any, index: number, self: any[]) => {
+        const postId = post._id?.toString?.() ?? String(post._id);
+        return postId && self.findIndex((p: any) => {
+          const pId = p._id?.toString?.() ?? String(p._id);
+          return pId === postId;
+        }) === index;
+      });
+      
+      setPosts(uniquePosts);
+      console.log(`📥 [FeedScreen] Fetched ${uniquePosts.length} unique posts from feed (${postsArray.length} total, ${postsArray.length - uniquePosts.length} duplicates filtered)`);
     } catch (error: any) {
       console.error('❌ Error fetching feed:', error);
       showToast('Error', error.message || 'Failed to load feed', 'error');
@@ -450,7 +460,11 @@ const FeedScreen = ({ navigation }: any) => {
       <FlatList
         data={posts}
         renderItem={renderPost}
-        keyExtractor={(item) => item._id}
+        keyExtractor={(item, index) => {
+          // Ensure unique keys by using both _id and index as fallback
+          const id = item._id?.toString?.() ?? String(item._id);
+          return id || `post-${index}`;
+        }}
         contentContainerStyle={styles.listContainer}
         refreshControl={
           <RefreshControl
@@ -490,6 +504,7 @@ const FeedScreen = ({ navigation }: any) => {
         onActivityClick={(activity) => {
           // Navigate to post or user profile based on activity
           if (activity.postId?._id) {
+            // PostDetail is in the same FeedStack, so direct navigation works
             navigation.navigate('PostDetail', { postId: activity.postId._id });
             setShowActivityModal(false);
           } else if (activity.targetUser?.username) {
@@ -533,7 +548,10 @@ const FeedScreen = ({ navigation }: any) => {
             ) : availableUsers.length > 0 ? (
               <FlatList
                 data={availableUsers}
-                keyExtractor={(item) => item._id}
+                keyExtractor={(item, index) => {
+                  const id = item._id?.toString?.() ?? String(item._id);
+                  return id || `user-${index}`;
+                }}
                 style={styles.userList}
                 renderItem={({ item }) => (
                   <TouchableOpacity
