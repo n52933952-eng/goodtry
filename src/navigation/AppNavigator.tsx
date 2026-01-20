@@ -29,6 +29,7 @@ import CallScreen from '../screens/Call/CallScreen';
 import ChessScreen from '../screens/Chess/ChessScreen';
 import ChessGameScreen from '../screens/Chess/ChessGameScreen';
 import ChessChallengeNotification from '../components/ChessChallengeNotification';
+import ActivityScreen from '../screens/Activity/ActivityScreen';
 import { useSocket } from '../context/SocketContext';
 
 const Stack = createStackNavigator();
@@ -214,6 +215,7 @@ const MainStack = () => (
     />
     <Stack.Screen name="PostDetail" component={PostDetailScreen} />
     <Stack.Screen name="UserProfile" component={UserProfileScreen} />
+    <Stack.Screen name="Activity" component={ActivityScreen} />
     <Stack.Screen name="ChatScreen" component={ChatScreen} />
     <Stack.Screen 
       name="CallScreen" 

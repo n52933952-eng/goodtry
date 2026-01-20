@@ -22,31 +22,6 @@ const PIECE_SYMBOLS: { [key: string]: string } = {
   'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚',
 };
 
-// Helper function to convert square name to pixel coordinates on the board
-const getSquarePixelPosition = (
-  square: string,
-  orientation: 'white' | 'black'
-): { x: number; y: number } => {
-  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
-  
-  const file = files.indexOf(square[0]);
-  const rank = ranks.indexOf(square[1]);
-  
-  if (orientation === 'white') {
-    return {
-      x: file * SQUARE_SIZE,
-      y: rank * SQUARE_SIZE,
-    };
-  } else {
-    // For black orientation, flip both axes
-    return {
-      x: (7 - file) * SQUARE_SIZE,
-      y: (7 - rank) * SQUARE_SIZE,
-    };
-  }
-};
-
 const ChessBoard: React.FC<ChessBoardProps> = memo(({
   fen,
   orientation,
@@ -55,7 +30,8 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   legalMoves,
 }) => {
   const prevFen = useRef(fen);
-  // Overlay animation state - single ghost piece that moves across the board
+  const prevSelectedSquare = useRef(selectedSquare);
+  // Overlay animation state - only for opponent moves
   const [overlayMove, setOverlayMove] = useState<{
     piece: string;
     fromPos: { x: number; y: number };
@@ -85,8 +61,55 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     return parsedBoard;
   }, [fen]);
 
+  // Helper function to convert square name to pixel coordinates
+  const getSquarePixelPosition = (square: string): { x: number; y: number } => {
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
+    
+    const file = files.indexOf(square[0]);
+    const rank = ranks.indexOf(square[1]);
+    
+    if (orientation === 'white') {
+      return {
+        x: file * SQUARE_SIZE,
+        y: rank * SQUARE_SIZE,
+      };
+    } else {
+      return {
+        x: (7 - file) * SQUARE_SIZE,
+        y: (7 - rank) * SQUARE_SIZE,
+      };
+    }
+  };
+
+  const parseFen = (fenString: string) => {
+    const parsedBoard: (string | null)[][] = [];
+    const rows = fenString.split(' ')[0].split('/');
+    
+    for (const row of rows) {
+      const boardRow: (string | null)[] = [];
+      for (const char of row) {
+        if (isNaN(parseInt(char))) {
+          boardRow.push(char);
+        } else {
+          for (let i = 0; i < parseInt(char); i++) {
+            boardRow.push(null);
+          }
+        }
+      }
+      parsedBoard.push(boardRow);
+    }
+    
+    return parsedBoard;
+  };
+
   useEffect(() => {
-    if (prevFen.current !== fen) {
+    // Check if this is a user move (selectedSquare was just cleared) or opponent move
+    const isUserMove = prevSelectedSquare.current !== null && selectedSquare === null;
+    prevSelectedSquare.current = selectedSquare;
+
+    if (prevFen.current !== fen && !isUserMove) {
+      // This is an opponent move - add subtle animation
       const prevBoard = parseFen(prevFen.current);
       const currBoard = parseFen(fen);
       
@@ -119,76 +142,49 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
       }
       
       if (moveFrom && moveTo && movedPiece) {
-        // Calculate pixel positions for overlay animation
-        const fromPos = getSquarePixelPosition(moveFrom, orientation);
-        const toPos = getSquarePixelPosition(moveTo, orientation);
+        // Subtle animation for opponent moves only
+        const fromPos = getSquarePixelPosition(moveFrom);
+        const toPos = getSquarePixelPosition(moveTo);
         
-        // Set overlay state and start animation
         setOverlayMove({
           piece: movedPiece,
           fromPos,
           toPos,
         });
         
-        // Reset position and opacity to start
         overlayPosition.setValue({ x: fromPos.x, y: fromPos.y });
         overlayOpacity.setValue(1);
         
-        // Create parallel animations: move position and fade out much earlier
-        // Longer duration for smoother, more visible animation
+        // Quick, subtle animation (200ms)
         const moveAnimation = Animated.timing(overlayPosition, {
           toValue: { x: toPos.x, y: toPos.y },
-          duration: 300, // Slightly longer for smoother effect
+          duration: 200,
           easing: Easing.out(Easing.quad),
           useNativeDriver: true,
         });
         
-        // Fade out starting at 25% of the animation to completely prevent overlap
-        // This ensures the ghost piece is completely gone well before reaching the target
+        // Fade out quickly to prevent overlap
         const fadeAnimation = Animated.sequence([
-          Animated.delay(75), // Start fading at 25% (75ms of 300ms)
+          Animated.delay(50), // Start fading early
           Animated.timing(overlayOpacity, {
             toValue: 0,
-            duration: 100, // Fade out quickly over 100ms
-            easing: Easing.in(Easing.quad), // Accelerate fade for faster disappearance
+            duration: 80,
+            easing: Easing.in(Easing.quad),
             useNativeDriver: true,
           }),
         ]);
         
-        // Run both animations in parallel
         Animated.parallel([moveAnimation, fadeAnimation]).start(({ finished }) => {
           if (finished) {
-            // Clear overlay after animation completes
             setOverlayMove(null);
-            overlayOpacity.setValue(1); // Reset for next animation
+            overlayOpacity.setValue(1);
           }
         });
       }
-      
-      prevFen.current = fen;
-    }
-  }, [fen]);
-
-  const parseFen = (fenString: string) => {
-    const parsedBoard: (string | null)[][] = [];
-    const rows = fenString.split(' ')[0].split('/');
-    
-    for (const row of rows) {
-      const boardRow: (string | null)[] = [];
-      for (const char of row) {
-        if (isNaN(parseInt(char))) {
-          boardRow.push(char);
-        } else {
-          for (let i = 0; i < parseInt(char); i++) {
-            boardRow.push(null);
-          }
-        }
-      }
-      parsedBoard.push(boardRow);
     }
     
-    return parsedBoard;
-  };
+    prevFen.current = fen;
+  }, [fen, selectedSquare, orientation]);
 
   const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
   const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
@@ -248,7 +244,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         </View>
       ))}
       
-      {/* Overlay ghost piece that animates across the board */}
+      {/* Subtle animation overlay - only for opponent moves */}
       {overlayMove && (
         <Animated.View
           style={[
@@ -328,10 +324,11 @@ const styles = StyleSheet.create({
     lineHeight: SQUARE_SIZE,
   },
   whitePiece: {
-    color: '#FFFFFF',
-    textShadowColor: 'rgba(0, 0, 0, 0.3)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 1,
+    color: '#F5F5F5',
+    fontWeight: '500',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0.5, height: 0.5 },
+    textShadowRadius: 2,
   },
   blackPiece: {
     color: '#1a1a1a',

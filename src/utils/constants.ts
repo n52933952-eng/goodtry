@@ -29,8 +29,9 @@ export const ENDPOINTS = {
   GET_FEED: '/api/post/feed/feedpost',
   CREATE_POST: '/api/post/create',
   DELETE_POST: '/api/post',
-  LIKE_POST: '/api/post/like',
-  GET_POST: '/api/post/getPost',
+  // Backend route is /api/post/likes/:id
+  LIKE_POST: '/api/post/likes',
+  GET_POST: '/api/post',
   GET_USER_POSTS: '/api/post/user',
   
   // Collaborative Posts
@@ -39,6 +40,11 @@ export const ENDPOINTS = {
   
   // Comments
   ADD_COMMENT: '/api/post/reply',
+  // Keep explicit names (web uses these routes)
+  REPLY_POST: '/api/post/reply',
+  REPLY_TO_COMMENT: '/api/post/reply-comment',
+  LIKE_COMMENT: '/api/post/likecoment',
+  DELETE_COMMENT: '/api/post/comment',
   
   // Weather
   GET_WEATHER_CITIES: '/api/weather/cities',
@@ -55,8 +61,12 @@ export const ENDPOINTS = {
   GET_CHESS_GAME: '/api/chess/game',
   
   // Notifications
-  GET_NOTIFICATIONS: '/api/notifications',
-  MARK_READ: '/api/notifications/read',
+  GET_NOTIFICATIONS: '/api/notification',
+  MARK_READ: '/api/notification/read',
+  
+  // Activity
+  GET_ACTIVITY: '/api/activity',
+  DELETE_ACTIVITY: '/api/activity',
   
   // Messages
   GET_CONVERSATIONS: '/api/message/conversations',

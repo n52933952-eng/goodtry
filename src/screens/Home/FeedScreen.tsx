@@ -16,6 +16,8 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
+import ChannelsModal from '../../components/ChannelsModal';
+import ActivityModal from '../../components/ActivityModal';
 
 interface AvailableUser {
   _id: string;
@@ -27,7 +29,7 @@ interface AvailableUser {
 const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts } = usePost();
   const { user, logout } = useUser();
-  const { socket, onlineUsers } = useSocket();
+  const { socket, onlineUsers, notificationCount } = useSocket();
   const showToast = useShowToast();
   
   const [loading, setLoading] = useState(true);
@@ -37,6 +39,8 @@ const FeedScreen = ({ navigation }: any) => {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
   const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
+  const [showChannelsModal, setShowChannelsModal] = useState(false);
+  const [showActivityModal, setShowActivityModal] = useState(false);
 
   useEffect(() => {
     fetchFeed();
@@ -53,10 +57,110 @@ const FeedScreen = ({ navigation }: any) => {
     return () => clearTimeout(timeout);
   }, []);
 
-  // Listen for chess challenges
+  // Listen for new posts (like web's handleNewPost - maintains 3 newest posts per user rule)
   useEffect(() => {
     if (!socket) return;
 
+    const handleNewPost = (newPost: any) => {
+      console.log('📨 [FeedScreen] New post received via socket:', newPost._id);
+      
+      setPosts(prev => {
+        // Check if post already exists (prevent duplicates)
+        const exists = prev.some(p => {
+          const prevId = p._id?.toString();
+          const newId = newPost._id?.toString();
+          return prevId === newId;
+        });
+        
+        if (exists) {
+          console.log('⚠️ [FeedScreen] Duplicate post detected, skipping:', newPost._id);
+          return prev;
+        }
+        
+        // Get the author ID of the new post
+        const newPostAuthorId = newPost.postedBy?._id?.toString() || newPost.postedBy?.toString();
+        
+        if (!newPostAuthorId) {
+          console.log('⚠️ [FeedScreen] New post has no author, skipping:', newPost._id);
+          return prev;
+        }
+        
+        // Filter out posts from the same author
+        const postsFromOtherAuthors = prev.filter(p => {
+          const postAuthorId = p.postedBy?._id?.toString() || p.postedBy?.toString();
+          return postAuthorId !== newPostAuthorId;
+        });
+        
+        // Get posts from the same author (excluding the new one)
+        const postsFromSameAuthor = prev.filter(p => {
+          const postAuthorId = p.postedBy?._id?.toString() || p.postedBy?.toString();
+          return postAuthorId === newPostAuthorId;
+        });
+        
+        // Sort same author posts by createdAt (newest first)
+        postsFromSameAuthor.sort((a, b) => {
+          const dateA = new Date(a.createdAt).getTime();
+          const dateB = new Date(b.createdAt).getTime();
+          return dateB - dateA;
+        });
+        
+        // Keep only the 2 newest posts from same author (new post will be the 3rd)
+        // This maintains the "3 newest posts per user" rule
+        const keptSameAuthorPosts = postsFromSameAuthor.slice(0, 2);
+        
+        // Combine: new post + kept same author posts + other authors' posts
+        const updatedFeed = [newPost, ...keptSameAuthorPosts, ...postsFromOtherAuthors];
+        
+        // Sort all by updatedAt (or createdAt if no updatedAt) - matches backend sorting logic
+        updatedFeed.sort((a, b) => {
+          const dateA = new Date(a.updatedAt || a.createdAt).getTime();
+          const dateB = new Date(b.updatedAt || b.createdAt).getTime();
+          return dateB - dateA; // Newest first
+        });
+        
+        console.log(`✅ [FeedScreen] Added new post to feed (maintained 3 newest per user rule):`, newPost._id);
+        return updatedFeed;
+      });
+    };
+
+    const handlePostDeleted = ({ postId }: { postId: string }) => {
+      console.log('🗑️ [FeedScreen] Post deleted via socket:', postId);
+      setPosts(prev => {
+        const updated = prev.filter(p => p._id?.toString() !== postId?.toString());
+        console.log(`🗑️ [FeedScreen] Removed post ${postId}, feed now has ${updated.length} posts`);
+        return updated;
+      });
+    };
+
+    const handlePostUpdated = (data: any) => {
+      const postId = data.postId || data._id;
+      const updatedPost = data.post || data;
+      
+      console.log('✏️ [FeedScreen] Post updated via socket:', postId);
+      
+      setPosts(prev => {
+        const postIndex = prev.findIndex(p => p._id?.toString() === postId?.toString());
+        
+        if (postIndex !== -1) {
+          // Update existing post
+          const updated = [...prev];
+          updated[postIndex] = { ...updated[postIndex], ...updatedPost };
+          
+          // Sort by updatedAt (or createdAt) - newest first
+          updated.sort((a, b) => {
+            const dateA = new Date(a.updatedAt || a.createdAt).getTime();
+            const dateB = new Date(b.updatedAt || b.createdAt).getTime();
+            return dateB - dateA;
+          });
+          
+          return updated;
+        }
+        
+        return prev;
+      });
+    };
+
+    // Listen for chess challenges
     const handleChessChallenge = (data: any) => {
       if (data.to === user?._id) {
         setIncomingChallenge(data);
@@ -76,20 +180,28 @@ const FeedScreen = ({ navigation }: any) => {
       });
     };
 
+    socket.on('newPost', handleNewPost);
+    socket.on('postDeleted', handlePostDeleted);
+    socket.on('postUpdated', handlePostUpdated);
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('acceptChessChallenge', handleAcceptChessChallenge);
 
     return () => {
+      socket.off('newPost', handleNewPost);
+      socket.off('postDeleted', handlePostDeleted);
+      socket.off('postUpdated', handlePostUpdated);
       socket.off('chessChallenge', handleChessChallenge);
       socket.off('acceptChessChallenge', handleAcceptChessChallenge);
     };
-  }, [socket, user, navigation]);
+  }, [socket, user, navigation, setPosts]);
 
   const fetchFeed = async () => {
     try {
-      const data = await apiService.get(ENDPOINTS.GET_FEED);
-      const postsArray = Array.isArray(data) ? data : [];
+      // Match web's feed fetching: limit=10&skip=0 for initial load
+      const data = await apiService.get(`${ENDPOINTS.GET_FEED}?limit=10&skip=0`);
+      const postsArray = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
       setPosts(postsArray);
+      console.log(`📥 [FeedScreen] Fetched ${postsArray.length} posts from feed`);
     } catch (error: any) {
       console.error('❌ Error fetching feed:', error);
       showToast('Error', error.message || 'Failed to load feed', 'error');
@@ -281,7 +393,16 @@ const FeedScreen = ({ navigation }: any) => {
           style={styles.quickAccessButton}
           onPress={() => navigation.navigate('Notifications')}
         >
-          <Text style={styles.quickAccessIcon}>🔔</Text>
+          <View style={styles.notificationIconContainer}>
+            <Text style={styles.quickAccessIcon}>🔔</Text>
+            {notificationCount > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>
+                  {notificationCount > 99 ? '99+' : notificationCount}
+                </Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.quickAccessLabel}>Alerts</Text>
         </TouchableOpacity>
 
@@ -307,6 +428,22 @@ const FeedScreen = ({ navigation }: any) => {
         >
           <Text style={styles.quickAccessIcon}>⚽</Text>
           <Text style={styles.quickAccessLabel}>Football</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.quickAccessButton}
+          onPress={() => setShowChannelsModal(true)}
+        >
+          <Text style={styles.quickAccessIcon}>📺</Text>
+          <Text style={styles.quickAccessLabel}>Channels</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.quickAccessButton}
+          onPress={() => setShowActivityModal(true)}
+        >
+          <Text style={styles.quickAccessIcon}>🔴</Text>
+          <Text style={styles.quickAccessLabel}>Activity</Text>
         </TouchableOpacity>
       </View>
 
@@ -335,6 +472,34 @@ const FeedScreen = ({ navigation }: any) => {
             <Text style={styles.emptySubtext}>Follow users to see their posts</Text>
           </View>
         }
+      />
+
+      {/* Channels Modal */}
+      <ChannelsModal
+        visible={showChannelsModal}
+        onClose={() => setShowChannelsModal(false)}
+        onChannelFollowed={() => {
+          fetchFeed(); // Refresh feed when channel is followed
+        }}
+      />
+
+      {/* Activity Modal */}
+      <ActivityModal
+        visible={showActivityModal}
+        onClose={() => setShowActivityModal(false)}
+        onActivityClick={(activity) => {
+          // Navigate to post or user profile based on activity
+          if (activity.postId?._id) {
+            navigation.navigate('PostDetail', { postId: activity.postId._id });
+            setShowActivityModal(false);
+          } else if (activity.targetUser?.username) {
+            navigation.navigate('UserProfile', { username: activity.targetUser.username });
+            setShowActivityModal(false);
+          } else if (activity.userId?.username) {
+            navigation.navigate('UserProfile', { username: activity.userId.username });
+            setShowActivityModal(false);
+          }
+        }}
       />
 
       {/* Chess Challenge Modal */}
@@ -517,30 +682,54 @@ const styles = StyleSheet.create({
   quickAccessRightRail: {
     position: 'absolute',
     right: 10,
-    top: 140, // below header
+    top: 100, // moved up from 140
     zIndex: 10,
     alignItems: 'flex-end',
-    gap: 10,
+    gap: 8, // reduced gap
   },
   quickAccessButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    minWidth: 72,
-    borderRadius: 12,
+    paddingVertical: 8, // reduced from 10
+    paddingHorizontal: 6, // reduced from 8
+    minWidth: 60, // reduced from 72
+    borderRadius: 10, // reduced from 12
     backgroundColor: COLORS.backgroundLight,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   quickAccessIcon: {
-    fontSize: 28,
-    marginBottom: 4,
+    fontSize: 22, // reduced from 28
+    marginBottom: 3, // reduced from 4
   },
   quickAccessLabel: {
-    fontSize: 11,
+    fontSize: 10, // reduced from 11
     color: COLORS.text,
     fontWeight: '600',
+  },
+  notificationIconContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    backgroundColor: '#FF3B30',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.backgroundLight,
+  },
+  notificationBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: 'bold',
   },
   modalOverlay: {
     flex: 1,

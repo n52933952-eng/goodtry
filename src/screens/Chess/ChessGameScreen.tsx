@@ -363,6 +363,14 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
   }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack]);
 
+  const handleBack = () => {
+    // Resign the game for both users when going back
+    if (socket && roomId && opponentId) {
+      socket.emit('resignChess', { roomId, to: opponentId });
+    }
+    navigation.goBack();
+  };
+
   const handleResign = () => {
     Alert.alert(
       'Resign',
@@ -383,27 +391,42 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     );
   };
 
-  const renderCapturedPieces = (pieces: string[], color: 'white' | 'black') => {
+  const renderCapturedPieces = (pieces: string[], pieceColor: 'white' | 'black', label: string) => {
     const pieceSymbols: { [key: string]: string } = {
       p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚',
     };
     
-    if (pieces.length === 0) {
-      return null;
-    }
-    
+    // Always render container with fixed height to prevent board jumping
     return (
       <View style={styles.capturedContainer}>
-        <Text style={styles.capturedTitle}>
-          Captured {color === 'white' ? 'White' : 'Black'} Pieces ({pieces.length})
-        </Text>
-        <View style={styles.capturedPieces}>
-          {pieces.map((piece, index) => (
-            <Text key={index} style={styles.capturedPiece}>
-              {pieceSymbols[piece.toLowerCase()] || piece}
-            </Text>
-          ))}
-        </View>
+        {pieces.length > 0 && (
+          <>
+            <Text style={styles.capturedTitle}>{label}</Text>
+            <View style={styles.capturedPieces}>
+              {pieces.map((piece, index) => {
+                const isWhitePiece = pieceColor === 'white';
+                return (
+                  <View
+                    key={index}
+                    style={[
+                      styles.capturedPieceContainer,
+                      isWhitePiece ? styles.capturedPieceWhiteBg : styles.capturedPieceBlackBg,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.capturedPiece,
+                        isWhitePiece ? styles.capturedPieceWhite : styles.capturedPieceBlack,
+                      ]}
+                    >
+                      {pieceSymbols[piece.toLowerCase()] || piece}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          </>
+        )}
       </View>
     );
   };
@@ -422,7 +445,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Chess Game</Text>
@@ -443,8 +466,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       </View>
 
       {renderCapturedPieces(
-        orientation === 'white' ? capturedBlack : capturedWhite,
-        orientation === 'white' ? 'black' : 'white'
+        orientation === 'white' ? capturedWhite : capturedBlack,
+        orientation === 'white' ? 'white' : 'black',
+        opponent?.name ? `${opponent.name} captured` : 'Opponent captured'
       )}
 
       <View style={styles.boardWrapper}>
@@ -460,8 +484,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       </View>
 
       {renderCapturedPieces(
-        orientation === 'white' ? capturedWhite : capturedBlack,
-        orientation === 'white' ? 'white' : 'black'
+        orientation === 'white' ? capturedBlack : capturedWhite,
+        orientation === 'white' ? 'black' : 'white',
+        'You captured'
       )}
 
       <View style={styles.playerInfo}>
@@ -563,7 +588,7 @@ const styles = StyleSheet.create({
   capturedContainer: {
     paddingHorizontal: 15,
     paddingVertical: 8,
-    minHeight: 50,
+    height: 50, // Fixed height to prevent board jumping
   },
   capturedTitle: {
     fontSize: 12,
@@ -574,9 +599,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
   },
+  capturedPieceContainer: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginRight: 4,
+    marginBottom: 2,
+  },
   capturedPiece: {
     fontSize: 20,
-    marginRight: 4,
+  },
+  capturedPieceWhite: {
+    color: '#FFFFFF',
+  },
+  capturedPieceBlack: {
+    color: '#1a1a1a',
+  },
+  capturedPieceWhiteBg: {
+    backgroundColor: '#1a1a1a',
+  },
+  capturedPieceBlackBg: {
+    backgroundColor: '#E8E8E8',
   },
   boardWrapper: {
     width: '100%',

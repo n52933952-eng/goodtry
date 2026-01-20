@@ -6,7 +6,12 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Dimensions,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
+import YoutubePlayer from 'react-native-youtube-iframe';
 import { useNavigation } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { usePost } from '../context/PostContext';
@@ -16,9 +21,10 @@ import { useShowToast } from '../hooks/useShowToast';
 
 interface PostProps {
   post: any;
+  disableNavigation?: boolean; // If true, disable navigation to PostDetail (for PostDetailScreen)
 }
 
-const Post: React.FC<PostProps> = ({ post }) => {
+const Post: React.FC<PostProps> = ({ post, disableNavigation = false }) => {
   const navigation = useNavigation<any>();
   const { user } = useUser();
   const { likePost, unlikePost, deletePost: deletePostContext } = usePost();
@@ -26,6 +32,7 @@ const Post: React.FC<PostProps> = ({ post }) => {
 
   const [isLiking, setIsLiking] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [youtubePlaying, setYoutubePlaying] = useState(true);
 
   const isLiked = post.likes?.includes(user?._id);
   const isOwner = post.postedBy?._id === user?._id;
@@ -95,17 +102,88 @@ const Post: React.FC<PostProps> = ({ post }) => {
     return date.toLocaleDateString();
   };
 
+  // Check if post has YouTube embed
+  const isYouTubeEmbed = post.img && (
+    post.img.includes('youtube.com/embed') || 
+    post.img.includes('youtu.be')
+  );
+  
+  // Check if this is a channel post (system account with YouTube embed or channel post)
+  const channelUsernames = ['Football', 'AlJazeera', 'NBCNews', 'BeinSportsNews', 'SkyNews', 'Cartoonito', 
+    'NatGeoKids', 'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 'MBCDrama', 'Fox11'];
+  const isChannelPost = isYouTubeEmbed || !!post?.channelAddedBy || 
+    channelUsernames.includes(post.postedBy?.username);
+  
+  // Debug log for channel detection
+  if (isYouTubeEmbed) {
+    console.log('📺 [Post] Detected as channel post (YouTube embed):', post.postedBy?.username);
+  }
+  
+  // Extract YouTube video ID from embed URL
+  const getYouTubeVideoId = (embedUrl: string) => {
+    if (!embedUrl) return '';
+    // Extract video ID from embed URL: https://www.youtube.com/embed/VIDEO_ID?autoplay=1&mute=0
+    const embedMatch = embedUrl.match(/youtube\.com\/embed\/([^?&]+)/);
+    if (embedMatch) {
+      return embedMatch[1];
+    }
+    // Extract from youtu.be: https://youtu.be/VIDEO_ID
+    const shortMatch = embedUrl.match(/youtu\.be\/([^?&]+)/);
+    if (shortMatch) {
+      return shortMatch[1];
+    }
+    return '';
+  };
+  
+  const youtubeVideoId = isYouTubeEmbed ? getYouTubeVideoId(post.img) : '';
+  
+  // Check if post has regular video (mp4, webm, etc.)
+  const isVideoPost = post.img && (
+    post.img.match(/\.(mp4|webm|ogg|mov)$/i) || 
+    post.img.includes('/video/upload/')
+  );
+
+  const { width } = Dimensions.get('window');
+  const videoHeight = (width - 30) * 0.5625; // 16:9 aspect ratio
+
   return (
-    <TouchableOpacity
-      style={styles.container}
-      onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
-      activeOpacity={0.9}
-    >
+    <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => navigation.navigate('UserProfile', { username: post.postedBy?.username })}
+          onPress={() => {
+            const username = post.postedBy?.username;
+            const hasChannelAddedBy = !!post?.channelAddedBy;
+            const hasYouTubeEmbed = !!isYouTubeEmbed;
+            const isInChannelList = channelUsernames.includes(username);
+            
+            console.log('👤 [Post] Avatar clicked:', {
+              username,
+              isChannelPost,
+              hasChannelAddedBy,
+              hasYouTubeEmbed,
+              isInChannelList,
+              postId: post._id
+            });
+            
+            // If it's Football channel, navigate to Football page (if exists)
+            if (username === 'Football') {
+              console.log('⚽ [Post] Football channel - navigating to PostDetail');
+              navigation.navigate('PostDetail', { postId: post._id });
+            } 
+            // If it's another channel post, navigate to post page instead of profile
+            else if (isChannelPost && post?._id) {
+              console.log('📺 [Post] Channel post - navigating to PostDetail:', post._id);
+              navigation.navigate('PostDetail', { postId: post._id });
+            } 
+            // Otherwise navigate to user profile
+            else {
+              console.log('👤 [Post] User post - navigating to UserProfile:', username);
+              navigation.navigate('UserProfile', { username });
+            }
+          }}
+          activeOpacity={0.7}
         >
-          {post.postedBy?.profilePic ? (
+          {post.postedBy?.profilePic && !isChannelPost ? (
             <Image 
               source={{ uri: post.postedBy.profilePic }} 
               style={styles.avatar}
@@ -113,7 +191,15 @@ const Post: React.FC<PostProps> = ({ post }) => {
           ) : (
             <View style={[styles.avatar, styles.avatarPlaceholder]}>
               <Text style={styles.avatarText}>
-                {post.postedBy?.name?.[0]?.toUpperCase() || '?'}
+                {(() => {
+                  // For channels, use first two letters of username or name
+                  const name = post.postedBy?.name || post.postedBy?.username || '';
+                  if (isChannelPost && name.length >= 2) {
+                    return name.substring(0, 2).toUpperCase();
+                  }
+                  // For regular users, use first letter
+                  return name[0]?.toUpperCase() || '?';
+                })()}
               </Text>
             </View>
           )}
@@ -137,15 +223,148 @@ const Post: React.FC<PostProps> = ({ post }) => {
         )}
       </View>
 
-      <Text style={styles.text}>{post.text}</Text>
-
-      {post.img && (
-        <Image 
-          source={{ uri: post.img }} 
-          style={styles.postImage}
-          resizeMode="cover"
-        />
+      {disableNavigation ? (
+        <Text style={styles.text}>{post.text}</Text>
+      ) : (
+        <TouchableOpacity 
+          onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
+          activeOpacity={0.9}
+        >
+          <Text style={styles.text}>{post.text}</Text>
+        </TouchableOpacity>
       )}
+
+      {post.img && isYouTubeEmbed && youtubeVideoId ? (
+        <View 
+          style={styles.videoContainer}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => false}
+        >
+          <YoutubePlayer
+            height={styles.videoContainer.height}
+            videoId={youtubeVideoId}
+            play={youtubePlaying}
+            mute={false}
+            webViewProps={{
+              allowsInlineMediaPlayback: true,
+              androidLayerType: 'hardware',
+            }}
+            initialPlayerParams={{
+              controls: true,
+              modestbranding: true,
+              rel: false,
+              autoplay: 1,
+              mute: 0,
+            }}
+            onError={(error) => {
+              console.error('❌ [Post] YouTube player error:', error);
+            }}
+            onReady={() => {
+              console.log('✅ [Post] YouTube player ready - auto-playing');
+              setYoutubePlaying(true);
+            }}
+            onChangeState={(state) => {
+              console.log('📺 [Post] YouTube state:', state);
+              // Update state based on player state
+              if (state === 'playing') {
+                setYoutubePlaying(true);
+              } else if (state === 'paused') {
+                setYoutubePlaying(false);
+              }
+            }}
+          />
+        </View>
+      ) : post.img && isVideoPost ? (
+        <View style={styles.videoContainer}>
+          <WebView
+            source={{
+              html: `
+                <!DOCTYPE html>
+                <html>
+                  <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                      * {
+                        margin: 0;
+                        padding: 0;
+                        box-sizing: border-box;
+                      }
+                      body {
+                        margin: 0;
+                        padding: 0;
+                        background: #000;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        overflow: hidden;
+                      }
+                      video {
+                        width: 100%;
+                        height: 100%;
+                        max-height: 400px;
+                        object-fit: contain;
+                      }
+                    </style>
+                  </head>
+                  <body>
+                    <video
+                      src="${post.img}"
+                      controls
+                      autoplay
+                      muted
+                      playsinline
+                      loop
+                      onloadeddata="this.play().catch(e => console.log('Autoplay prevented:', e))"
+                    ></video>
+                  </body>
+                </html>
+              `
+            }}
+            style={styles.videoWebView}
+            allowsFullscreenVideo={true}
+            mediaPlaybackRequiresUserAction={false}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            allowsInlineMediaPlayback={true}
+            mixedContentMode="always"
+            startInLoadingState={true}
+            originWhitelist={['*']}
+            renderLoading={() => (
+              <View style={styles.videoLoading}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+              </View>
+            )}
+            onError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.error('❌ [Post] WebView video error:', nativeEvent);
+            }}
+            onHttpError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.error('❌ [Post] WebView video HTTP error:', nativeEvent);
+            }}
+          />
+        </View>
+      ) : post.img ? (
+        disableNavigation ? (
+          <Image 
+            source={{ uri: post.img }} 
+            style={styles.postImage}
+            resizeMode="cover"
+          />
+        ) : (
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
+            activeOpacity={0.9}
+          >
+            <Image 
+              source={{ uri: post.img }} 
+              style={styles.postImage}
+              resizeMode="cover"
+            />
+          </TouchableOpacity>
+        )
+      ) : null}
 
       {post.isWeatherPost && post.weatherData && (
         <View style={styles.weatherCard}>
@@ -169,10 +388,13 @@ const Post: React.FC<PostProps> = ({ post }) => {
         </View>
       )}
 
-      <View style={styles.footer}>
+      <View style={styles.footer} pointerEvents="box-none">
         <TouchableOpacity 
           style={styles.actionButton} 
-          onPress={handleLike}
+          onPress={(e) => {
+            e.stopPropagation();
+            handleLike();
+          }}
           disabled={isLiking}
         >
           <Text style={styles.actionIcon}>
@@ -183,17 +405,28 @@ const Post: React.FC<PostProps> = ({ post }) => {
 
         <TouchableOpacity 
           style={styles.actionButton}
-          onPress={() => navigation.navigate('PostDetail', { postId: post._id })}
+          onPress={(e) => {
+            e.stopPropagation();
+            if (!disableNavigation) {
+              navigation.navigate('PostDetail', { postId: post._id });
+            }
+          }}
         >
           <Text style={styles.actionIcon}>💬</Text>
           <Text style={styles.actionText}>{post.replies?.length || 0}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.actionButton}>
+        <TouchableOpacity 
+          style={styles.actionButton}
+          onPress={(e) => {
+            e.stopPropagation();
+          }}
+        >
           <Text style={styles.actionIcon}>🔄</Text>
         </TouchableOpacity>
       </View>
-    </TouchableOpacity>
+      
+    </View>
   );
 };
 
@@ -264,6 +497,66 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 12,
     marginBottom: 10,
+  },
+  videoContainer: {
+    width: '100%',
+    height: (Dimensions.get('window').width - 30) * 0.5625, // 16:9 aspect ratio
+    borderRadius: 12,
+    marginBottom: 10,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  videoWebView: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+  },
+  youtubeThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  youtubeOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  youtubePlayButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  youtubePlayIcon: {
+    fontSize: 32,
+    color: '#FFFFFF',
+    marginLeft: 4, // Slight offset for play icon
+  },
+  youtubeWatchText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  videoLoading: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
   },
   weatherCard: {
     backgroundColor: COLORS.backgroundLight,

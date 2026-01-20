@@ -9,6 +9,8 @@ interface SocketContextType {
   onlineUsers: any[];
   chessChallenge: any | null;
   clearChessChallenge: () => void;
+  notificationCount: number;
+  setNotificationCount: (count: number | ((prev: number) => number)) => void;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -18,6 +20,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { addPost, updatePost, deletePost } = usePost();
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [chessChallenge, setChessChallenge] = useState<any | null>(null);
+  const [notificationCount, setNotificationCount] = useState<number>(0);
 
   useEffect(() => {
     if (!user) return;
@@ -31,6 +34,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.FOOTBALL_MATCH_UPDATE);
     socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CHESS_MOVE);
+    socketService.off('newNotification');
 
     // Set up listeners - will be queued if socket not ready yet
     console.log('🔧 Setting up socket listeners in SocketContext');
@@ -81,6 +85,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       // Handle chess moves
     });
 
+    // Listen for new notifications
+    socketService.on('newNotification', (notification) => {
+      console.log('🔔 New notification received:', notification);
+      setNotificationCount(prev => prev + 1);
+    });
+
     // Cleanup listeners on unmount
     return () => {
       socketService.off('getOnlineUser');
@@ -90,13 +100,21 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off(SOCKET_EVENTS.FOOTBALL_MATCH_UPDATE);
       socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
       socketService.off(SOCKET_EVENTS.CHESS_MOVE);
+      socketService.off('newNotification');
     };
   }, [user, addPost, updatePost, deletePost]);
 
   const clearChessChallenge = () => setChessChallenge(null);
 
   return (
-    <SocketContext.Provider value={{ socket: socketService, onlineUsers, chessChallenge, clearChessChallenge }}>
+    <SocketContext.Provider value={{ 
+      socket: socketService, 
+      onlineUsers, 
+      chessChallenge, 
+      clearChessChallenge,
+      notificationCount,
+      setNotificationCount,
+    }}>
       {children}
     </SocketContext.Provider>
   );
