@@ -10,7 +10,7 @@ import {
   Image,
   FlatList,
 } from 'react-native';
-import { COLORS } from '../utils/constants';
+import { API_URL, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useUser } from '../context/UserContext';
 import { useSocket } from '../context/SocketContext';
@@ -209,7 +209,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
     e.stopPropagation();
     
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const res = await fetch(`${baseUrl}/api/activity/${activityId}`, {
         method: 'DELETE',
         credentials: 'include',

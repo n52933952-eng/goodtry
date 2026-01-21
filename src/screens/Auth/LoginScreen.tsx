@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -22,11 +23,20 @@ const LoginScreen = ({ navigation }: any) => {
   const [showPassword, setShowPassword] = useState(false);
   
   const { login } = useUser();
+  const { language, setLanguage, t, isRTL } = useLanguage();
   const showToast = useShowToast();
+
+  // Note: I18nManager.forceRTL() requires app restart to take full effect
+  // For now, we'll apply RTL styles manually via isRTL flag
+
+  const handleToggleLanguage = () => {
+    const newLanguage = language === 'en' ? 'ar' : 'en';
+    setLanguage(newLanguage);
+  };
 
   const handleLogin = async () => {
     if (!username || !password) {
-      showToast('Error', 'Please fill all fields', 'error');
+      showToast(t('error'), t('pleaseFillAllFields'), 'error');
       return;
     }
 
@@ -44,12 +54,12 @@ const LoginScreen = ({ navigation }: any) => {
 
       // Save user (session is stored as httpOnly cookie, like web)
       await login(response);
-      showToast('Success', 'Logged in successfully!', 'success');
+      showToast(t('success'), t('loggedInSuccessfully'), 'success');
     } catch (error: any) {
       console.error('Login error:', error);
       showToast(
-        'Error',
-        error.message || 'Failed to login',
+        t('error'),
+        error.message || t('failedToLogin'),
         'error'
       );
     } finally {
@@ -64,28 +74,40 @@ const LoginScreen = ({ navigation }: any) => {
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.content}>
-          <Text style={styles.title}>Welcome Back</Text>
-          <Text style={styles.subtitle}>Login to your account</Text>
+          {/* Language Toggle Button */}
+          <TouchableOpacity 
+            style={styles.languageToggle}
+            onPress={handleToggleLanguage}
+          >
+            <Text style={styles.languageToggleText}>
+              {language === 'en' ? '🇬🇧 EN' : '🇸🇦 AR'}
+            </Text>
+          </TouchableOpacity>
+
+          <Text style={[styles.title, isRTL && styles.titleRTL]}>{t('welcomeBack')}</Text>
+          <Text style={[styles.subtitle, isRTL && styles.subtitleRTL]}>{t('loginToAccount')}</Text>
 
           <View style={styles.form}>
             <TextInput
-              style={styles.input}
-              placeholder="Username"
+              style={[styles.input, isRTL && styles.inputRTL]}
+              placeholder={t('username')}
               placeholderTextColor={COLORS.textGray}
               value={username}
               onChangeText={setUsername}
               autoCapitalize="none"
               autoCorrect={false}
+              textAlign={isRTL ? 'right' : 'left'}
             />
 
             <View style={styles.passwordContainer}>
               <TextInput
-                style={[styles.input, styles.passwordInput]}
-                placeholder="Password"
+                style={[styles.input, styles.passwordInput, isRTL && styles.inputRTL]}
+                placeholder={t('password')}
                 placeholderTextColor={COLORS.textGray}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
+                textAlign={isRTL ? 'right' : 'left'}
               />
               <TouchableOpacity
                 style={styles.eyeButton}
@@ -106,7 +128,7 @@ const LoginScreen = ({ navigation }: any) => {
               {loading ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
-                <Text style={styles.buttonText}>Login</Text>
+                <Text style={styles.buttonText}>{t('login')}</Text>
               )}
             </TouchableOpacity>
 
@@ -114,8 +136,8 @@ const LoginScreen = ({ navigation }: any) => {
               style={styles.linkButton}
               onPress={() => navigation.navigate('Signup')}
             >
-              <Text style={styles.linkText}>
-                Don't have an account? <Text style={styles.linkTextBold}>Sign Up</Text>
+              <Text style={[styles.linkText, isRTL && styles.linkTextRTL]}>
+                {t('dontHaveAccount')} <Text style={styles.linkTextBold}>{t('signUp')}</Text>
               </Text>
             </TouchableOpacity>
           </View>
@@ -208,6 +230,33 @@ const styles = StyleSheet.create({
   linkTextBold: {
     color: COLORS.primary,
     fontWeight: 'bold',
+  },
+  languageToggle: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: COLORS.backgroundLight,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  languageToggleText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  titleRTL: {
+    textAlign: 'right',
+  },
+  subtitleRTL: {
+    textAlign: 'right',
+  },
+  inputRTL: {
+    textAlign: 'right',
+  },
+  linkTextRTL: {
+    textAlign: 'center',
   },
 });
 

@@ -11,22 +11,45 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { COLORS } from '../../utils/constants';
+import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 
 const formatTimeAgo = (dateString: string) => {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
+  try {
+    const date = new Date(dateString);
+    const now = new Date();
+    
+    // Validate date
+    if (isNaN(date.getTime())) {
+      console.warn('⚠️ [formatTimeAgo] Invalid date:', dateString);
+      return 'unknown';
+    }
+    
+    const diffMs = now.getTime() - date.getTime();
+    
+    // Handle negative differences (future dates - shouldn't happen but handle gracefully)
+    if (diffMs < 0) {
+      console.warn('⚠️ [formatTimeAgo] Future date detected:', dateString);
+      return 'just now';
+    }
+    
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffWeeks = Math.floor(diffDays / 7);
+    const diffMonths = Math.floor(diffDays / 30);
 
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    if (diffWeeks < 4) return `${diffWeeks}w ago`;
+    if (diffMonths < 12) return `${diffMonths}mo ago`;
+    return date.toLocaleDateString();
+  } catch (error) {
+    console.error('❌ [formatTimeAgo] Error formatting date:', error, dateString);
+    return 'unknown';
+  }
 };
 
 interface ActivityScreenProps {
@@ -109,7 +132,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   const fetchActivities = async () => {
     try {
       setLoading(true);
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const response = await fetch(`${baseUrl}/api/activity`, {
         credentials: 'include',
       });
@@ -136,7 +159,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
     e.stopPropagation();
     
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const res = await fetch(`${baseUrl}/api/activity/${activityId}`, {
         method: 'DELETE',
         credentials: 'include',

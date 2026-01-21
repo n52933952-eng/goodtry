@@ -11,7 +11,7 @@ import {
 import { Chess } from 'chess.js';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { COLORS } from '../../utils/constants';
+import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import ChessBoard from '../../components/ChessBoard';
 
@@ -86,7 +86,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (!opponentId) return;
 
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const response = await fetch(`${baseUrl}/api/user/getUserPro/${opponentId}`, {
         credentials: 'include',
       });

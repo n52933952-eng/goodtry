@@ -43,7 +43,59 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
-      return [post, ...safeArray];
+
+      const newId = post?._id?.toString?.() ?? String(post?._id);
+      if (!newId) return safeArray;
+
+      // Prevent duplicates
+      const withoutDup = safeArray.filter((p) => {
+        const pId = p?._id?.toString?.() ?? String(p?._id);
+        return pId && pId !== newId;
+      });
+
+      // Maintain "3 newest posts per user" rule (like web/mobile FeedScreen used to do)
+      const newAuthorId =
+        (post as any)?.postedBy?._id?.toString?.() ??
+        (post as any)?.postedBy?.toString?.() ??
+        null;
+
+      if (!newAuthorId) {
+        // If we can't identify the author, just prepend safely
+        const updated = [post, ...withoutDup];
+        // Sort newest first by updatedAt/createdAt to match backend behavior
+        updated.sort((a: any, b: any) => {
+          const dateA = new Date((a as any).updatedAt || a.createdAt).getTime();
+          const dateB = new Date((b as any).updatedAt || b.createdAt).getTime();
+          return dateB - dateA;
+        });
+        return updated;
+      }
+
+      const fromSameAuthor: any[] = [];
+      const fromOtherAuthors: any[] = [];
+      withoutDup.forEach((p: any) => {
+        const authorId = p?.postedBy?._id?.toString?.() ?? p?.postedBy?.toString?.();
+        if (authorId === newAuthorId) fromSameAuthor.push(p);
+        else fromOtherAuthors.push(p);
+      });
+
+      fromSameAuthor.sort((a: any, b: any) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+
+      const keptSameAuthor = fromSameAuthor.slice(0, 2); // new post becomes #1, keep 2 older = 3 total
+      const updated = [post, ...keptSameAuthor, ...fromOtherAuthors];
+
+      // Sort newest first by updatedAt/createdAt to match backend behavior
+      updated.sort((a: any, b: any) => {
+        const dateA = new Date((a as any).updatedAt || a.createdAt).getTime();
+        const dateB = new Date((b as any).updatedAt || b.createdAt).getTime();
+        return dateB - dateA;
+      });
+
+      return updated;
     });
   };
 

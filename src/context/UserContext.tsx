@@ -31,8 +31,19 @@ interface UserContextType {
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
 export const UserProvider = ({ children }: { children: ReactNode }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUserState] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Persisted setter: keeps AsyncStorage in sync whenever someone calls setUser from context.
+  // This prevents "must logout/login to see changes" after profile updates.
+  const setUser = (nextUser: User | null) => {
+    setUserState(nextUser);
+    if (nextUser) {
+      AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(nextUser)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(STORAGE_KEYS.USER).catch(() => {});
+    }
+  };
 
   // Register automatic logout callback for API 401 errors
   useEffect(() => {
@@ -41,7 +52,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
       // Ensure we also clear persisted user so app doesn't boot back into MainTabs
       // after restart due to stale AsyncStorage.
       AsyncStorage.removeItem(STORAGE_KEYS.USER).catch(() => {});
-      setUser(null);
+      setUserState(null);
     });
   }, []);
 
@@ -90,7 +101,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
       ]);
 
       if (userData[1]) {
-        setUser(JSON.parse(userData[1]));
+        setUserState(JSON.parse(userData[1]));
       }
     } catch (error) {
       console.error('Error loading user:', error);
@@ -102,7 +113,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   const login = async (userData: User) => {
     try {
       await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
-      setUser(userData);
+      setUserState(userData);
       
       // Store user ID in SharedPreferences for native code (IncomingCallActivity)
       if (userData._id) {
@@ -136,7 +147,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
       socketService.disconnect();
       // Unlink user from OneSignal
       oneSignalService.removeUserId();
-      setUser(null);
+      setUserState(null);
     } catch (error) {
       console.error('Error logging out:', error);
       throw error;
@@ -147,7 +158,6 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     if (user) {
       const updatedUser = { ...user, ...updates };
       setUser(updatedUser);
-      AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(updatedUser));
     }
   };
 

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -11,6 +12,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { usePost } from '../../context/PostContext';
@@ -18,12 +20,14 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useImagePicker } from '../../hooks/useImagePicker';
+import { useLanguage } from '../../context/LanguageContext';
 
 const CreatePostScreen = ({ navigation }: any) => {
   const { user } = useUser();
   const { addPost } = usePost();
   const showToast = useShowToast();
   const { imageUri, imageData, pickImage, clearImage } = useImagePicker();
+  const { t } = useLanguage();
 
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -31,21 +35,24 @@ const CreatePostScreen = ({ navigation }: any) => {
 
   const handleImagePick = () => {
     Alert.alert(
-      'Select Image',
-      'Choose an option',
+      t('selectImage'),
+      t('chooseOption'),
       [
-        { text: 'Camera', onPress: () => pickImage(true) },
-        { text: 'Gallery', onPress: () => pickImage(false) },
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('camera'), onPress: () => pickImage(true) },
+        { text: t('gallery'), onPress: () => pickImage(false) },
+        { text: t('cancel'), style: 'cancel' },
       ]
     );
   };
 
   const handlePost = async () => {
     if (!text.trim() && !imageUri) {
-      showToast('Error', 'Please add some text or an image', 'error');
+      showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
       return;
     }
+
+    // Dismiss keyboard immediately when Post button is pressed
+    Keyboard.dismiss();
 
     setLoading(true);
     try {
@@ -64,13 +71,28 @@ const CreatePostScreen = ({ navigation }: any) => {
         formData.append('file', imageFile as any);
 
         const response = await apiService.upload(ENDPOINTS.CREATE_POST, formData);
-        if (response._id) {
-          addPost(response);
-          showToast('Success', 'Post created!', 'success');
+        console.log('📝 [CreatePost] Upload response:', response);
+        
+        // Backend returns { message: '...', post: { _id: '...', ... } }
+        const postData = response.post || response;
+        
+        if (postData && postData._id) {
+          // Don't add own posts to feed - feed only shows posts from users you follow
+          // The post will appear in feed after refresh when backend filters correctly
+          // addPost(postData); // Removed - feed shouldn't show own posts
+          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
+          
+          // Clear inputs immediately after successful post
+          console.log('🧹 [CreatePost] Clearing form - text, image, collaborative');
           setText('');
           clearImage();
           setIsCollaborative(false);
-          setTimeout(() => navigation.goBack(), 100);
+          
+          // Force a small delay to ensure UI updates
+          await new Promise(resolve => setTimeout(resolve, 50));
+        } else {
+          console.warn('⚠️ [CreatePost] Response missing _id:', response);
+          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
         }
       } else {
         const postData: any = {
@@ -79,17 +101,33 @@ const CreatePostScreen = ({ navigation }: any) => {
           isCollaborative,
         };
         const response = await apiService.post(ENDPOINTS.CREATE_POST, postData);
-        if (response._id) {
-          addPost(response);
-          showToast('Success', 'Post created!', 'success');
+        console.log('📝 [CreatePost] Post response:', response);
+        
+        // Backend returns { message: '...', post: { _id: '...', ... } }
+        const postDataFromResponse = response.post || response;
+        
+        if (postDataFromResponse && postDataFromResponse._id) {
+          // Don't add own posts to feed - feed only shows posts from users you follow
+          // The post will appear in feed after refresh when backend filters correctly
+          // addPost(postDataFromResponse); // Removed - feed shouldn't show own posts
+          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
+          
+          // Clear inputs immediately after successful post
+          console.log('🧹 [CreatePost] Clearing form - text, image, collaborative');
           setText('');
+          clearImage(); // Clear image even if not used (in case user removed it)
           setIsCollaborative(false);
-          setTimeout(() => navigation.goBack(), 100);
+          
+          // Force a small delay to ensure UI updates
+          await new Promise(resolve => setTimeout(resolve, 50));
+        } else {
+          console.warn('⚠️ [CreatePost] Response missing _id:', response);
+          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
         }
       }
     } catch (error: any) {
       console.error('Error creating post:', error);
-      showToast('Error', error.message || 'Failed to create post', 'error');
+      showToast(t('error'), error.message || t('failedToCreatePost'), 'error');
     } finally {
       setLoading(false);
     }
@@ -102,9 +140,9 @@ const CreatePostScreen = ({ navigation }: any) => {
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.cancelButton}>Cancel</Text>
+          <Text style={styles.cancelButton}>{t('cancel')}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Create Post</Text>
+        <Text style={styles.title}>{t('createPost')}</Text>
         <TouchableOpacity 
           onPress={handlePost}
           disabled={loading || (!text.trim() && !imageUri)}
@@ -118,7 +156,7 @@ const CreatePostScreen = ({ navigation }: any) => {
                 (!text.trim() && !imageUri) && styles.postButtonDisabled
               ]}
             >
-              Post
+              {t('post')}
             </Text>
           )}
         </TouchableOpacity>
@@ -143,7 +181,7 @@ const CreatePostScreen = ({ navigation }: any) => {
 
         <TextInput
           style={styles.textInput}
-          placeholder="What's on your mind?"
+          placeholder={t('whatsOnYourMind')}
           placeholderTextColor={COLORS.textGray}
           value={text}
           onChangeText={setText}
@@ -171,7 +209,7 @@ const CreatePostScreen = ({ navigation }: any) => {
             <Text style={styles.optionIcon}>
               {isCollaborative ? '✅' : '☑️'}
             </Text>
-            <Text style={styles.optionText}>Collaborative Post</Text>
+            <Text style={styles.optionText}>{t('collaborativePost')}</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

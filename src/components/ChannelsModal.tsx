@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { COLORS } from '../utils/constants';
+import { API_URL, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 
 interface Channel {
@@ -51,7 +51,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
   const fetchChannels = async () => {
     try {
       setLoading(true);
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
 
       // Fetch live stream channels
       const channelsRes = await fetch(`${baseUrl}/api/news/channels`, {
@@ -75,7 +75,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
     try {
       setStreamLoading(prev => ({ ...prev, [loadingKey]: true }));
 
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const res = await fetch(
         `${baseUrl}/api/news/post/livestream?channelId=${channelId}&streamIndex=${streamIndex}`,
         {

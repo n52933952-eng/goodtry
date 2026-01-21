@@ -84,4 +84,46 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
             promise.reject("ERROR", "Failed to dismiss notification: ${e.message}", e)
         }
     }
+
+    /**
+     * Generic SharedPreferences reader for small payloads (used for OneSignal action buttons).
+     * Returns a map of all keys/values in the given prefsName.
+     */
+    @ReactMethod
+    fun getSharedPreferences(prefsName: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+            val all = prefs.all
+            val map: WritableMap = Arguments.createMap()
+            for ((key, value) in all) {
+                when (value) {
+                    is String -> map.putString(key, value)
+                    is Boolean -> map.putBoolean(key, value)
+                    is Int -> map.putInt(key, value)
+                    is Double -> map.putDouble(key, value)
+                    is Float -> map.putDouble(key, value.toDouble())
+                    is Long -> map.putDouble(key, value.toDouble()) // JS number
+                    null -> map.putNull(key)
+                    else -> map.putString(key, value.toString())
+                }
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "Failed to read shared prefs $prefsName: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Clear all keys from the given SharedPreferences.
+     */
+    @ReactMethod
+    fun clearSharedPreferences(prefsName: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+            prefs.edit().clear().apply()
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "Failed to clear shared prefs $prefsName: ${e.message}", e)
+        }
+    }
 }

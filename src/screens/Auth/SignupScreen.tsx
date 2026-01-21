@@ -16,6 +16,7 @@ import { useUser } from '../../context/UserContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { useLanguage } from '../../context/LanguageContext';
 
 const COUNTRIES = [
   'United States',
@@ -92,15 +93,16 @@ const SignupScreen = ({ navigation }: any) => {
   
   const { login } = useUser();
   const showToast = useShowToast();
+  const { t, isRTL } = useLanguage();
 
   const handleSignup = async () => {
     if (!name || !username || !email || !country || !password) {
-      showToast('Error', 'Please fill all fields', 'error');
+      showToast(t('error'), t('pleaseFillAllFields'), 'error');
       return;
     }
 
     if (password.length < 6) {
-      showToast('Error', 'Password must be at least 6 characters', 'error');
+      showToast(t('error'), t('passwordMustBe6Chars'), 'error');
       return;
     }
 
@@ -115,7 +117,7 @@ const SignupScreen = ({ navigation }: any) => {
       });
 
       if (response.error) {
-        showToast('Error', response.error, 'error');
+        showToast(t('error'), response.error, 'error');
         return;
       }
 
@@ -125,12 +127,12 @@ const SignupScreen = ({ navigation }: any) => {
 
       // Save user (session is stored as httpOnly cookie, like web)
       await login(normalizedUser);
-      showToast('Success', 'Account created successfully!', 'success');
+      showToast(t('success'), t('accountCreatedSuccessfully'), 'success');
     } catch (error: any) {
       console.error('Signup error:', error);
       showToast(
-        'Error',
-        error.message || 'Failed to create account',
+        t('error'),
+        error.message || t('failedToCreateAccount'),
         'error'
       );
     } finally {
@@ -144,14 +146,14 @@ const SignupScreen = ({ navigation }: any) => {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
-        <View style={styles.content}>
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Sign up to get started</Text>
+        <View style={[styles.content, isRTL && styles.contentRTL]}>
+          <Text style={styles.title}>{t('createAccount')}</Text>
+          <Text style={styles.subtitle}>{t('signUpToGetStarted')}</Text>
 
           <View style={styles.form}>
             <TextInput
               style={styles.input}
-              placeholder="Full Name"
+              placeholder={t('fullName')}
               placeholderTextColor={COLORS.textGray}
               value={name}
               onChangeText={setName}
@@ -160,7 +162,7 @@ const SignupScreen = ({ navigation }: any) => {
 
             <TextInput
               style={styles.input}
-              placeholder="Username"
+              placeholder={t('username')}
               placeholderTextColor={COLORS.textGray}
               value={username}
               onChangeText={setUsername}
@@ -170,7 +172,7 @@ const SignupScreen = ({ navigation }: any) => {
 
             <TextInput
               style={styles.input}
-              placeholder="Email"
+              placeholder={t('email')}
               placeholderTextColor={COLORS.textGray}
               value={email}
               onChangeText={setEmail}
@@ -185,14 +187,14 @@ const SignupScreen = ({ navigation }: any) => {
               activeOpacity={0.85}
             >
               <Text style={[styles.selectText, !country && styles.selectPlaceholder]}>
-                {country || 'Select country'}
+                {country || t('selectCountry')}
               </Text>
             </TouchableOpacity>
 
             <View style={styles.passwordContainer}>
               <TextInput
                 style={[styles.input, styles.passwordInput]}
-                placeholder="Password (min 6 characters)"
+                placeholder={t('passwordMin6')}
                 placeholderTextColor={COLORS.textGray}
                 value={password}
                 onChangeText={setPassword}
@@ -202,7 +204,7 @@ const SignupScreen = ({ navigation }: any) => {
                 style={styles.eyeButton}
                 onPress={() => setShowPassword((v) => !v)}
                 accessibilityRole="button"
-                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+                accessibilityLabel={showPassword ? t('hidePassword') : t('showPassword')}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
                 <Text style={styles.eyeText}>{showPassword ? '👁️' : '🔒'}</Text>
@@ -217,7 +219,7 @@ const SignupScreen = ({ navigation }: any) => {
               {loading ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
-                <Text style={styles.buttonText}>Sign Up</Text>
+                <Text style={styles.buttonText}>{t('signUp')}</Text>
               )}
             </TouchableOpacity>
 
@@ -226,7 +228,7 @@ const SignupScreen = ({ navigation }: any) => {
               onPress={() => navigation.navigate('Login')}
             >
               <Text style={styles.linkText}>
-                Already have an account? <Text style={styles.linkTextBold}>Login</Text>
+                {t('alreadyHaveAccount')} <Text style={styles.linkTextBold}>{t('login')}</Text>
               </Text>
             </TouchableOpacity>
           </View>
@@ -241,7 +243,7 @@ const SignupScreen = ({ navigation }: any) => {
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Select country</Text>
+            <Text style={styles.modalTitle}>{t('selectCountry')}</Text>
             <FlatList
               data={COUNTRIES}
               keyExtractor={(item) => item}
@@ -262,7 +264,7 @@ const SignupScreen = ({ navigation }: any) => {
               style={styles.modalClose}
               onPress={() => setCountryModalVisible(false)}
             >
-              <Text style={styles.modalCloseText}>Close</Text>
+              <Text style={styles.modalCloseText}>{t('close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -284,6 +286,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 30,
+  },
+  contentRTL: {
+    // RTL-specific styles if needed
   },
   title: {
     fontSize: 32,

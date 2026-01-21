@@ -300,9 +300,19 @@ class OneSignalService {
     } else if (data.type === 'message') {
       // New message notification
       console.log('💬 [OneSignal] Navigating to chat');
-      if (data.conversationId) {
+      // Mobile ChatScreen fetches messages by otherUserId (userId param), so include senderId
+      const senderId = data.senderId || data.userId || data.fromUserId;
+      if (senderId) {
         this.navigationRef.navigate('ChatScreen', {
+          // conversationId is optional, but helps mark seen
           conversationId: data.conversationId,
+          userId: senderId,
+          otherUser: {
+            _id: senderId,
+            name: data.senderName,
+            username: data.senderUsername,
+            profilePic: data.senderProfilePic,
+          },
         });
       } else {
         // Fallback to Messages screen

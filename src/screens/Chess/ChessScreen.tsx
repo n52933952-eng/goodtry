@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { COLORS } from '../../utils/constants';
+import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 
 interface ChessChallenge {
@@ -98,7 +98,7 @@ const ChessScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       
       const allConnectionIds = [
         ...(user.following || []),

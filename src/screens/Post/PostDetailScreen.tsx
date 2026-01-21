@@ -377,6 +377,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                 postId={postId}
                 postOwnerId={post?.postedBy?._id?.toString?.() ?? String(post?.postedBy)}
                 currentUserId={user?._id?.toString?.() ?? String(user?._id)}
+                currentUserProfilePic={user?.profilePic}
                 onReplyPress={handleReplyPress}
                 onLikePress={handleLikeComment}
                 onDeletePress={handleDeleteComment}

@@ -1,6 +1,6 @@
 // API Configuration
 export const API_URL = __DEV__ 
-  ? 'https://media-1-aue5.onrender.com' // Production backend (you can test locally by changing this to 'http://10.0.2.2:5000')
+  ? 'https://media-1-aue5.onrender.com' // Production backend (same as web uses in production)
   : 'https://media-1-aue5.onrender.com'; // Production URL
 
 export const SOCKET_URL = API_URL;
@@ -23,6 +23,9 @@ export const ENDPOINTS = {
   SEARCH_USER: '/api/user/search',
   SEARCH_USERS: '/api/user/search',
   GET_SUGGESTED_USERS: '/api/user/suggested',
+  // Returns list of user objects (server-side limited), used by Messages search
+  GET_FOLLOWING_USERS: '/api/user/following',
+  // Backward compat name (some older screens may reference this)
   GET_FOLLOWING: '/api/user/following',
   
   // Posts
@@ -49,6 +52,7 @@ export const ENDPOINTS = {
   // Weather
   GET_WEATHER_CITIES: '/api/weather/cities',
   SAVE_WEATHER_PREFERENCES: '/api/weather/preferences',
+  GET_WEATHER_PREFERENCES: '/api/weather/preferences',
   GET_USER_WEATHER: '/api/user/getUserPro/Weather',
   
   // Football
@@ -73,6 +77,10 @@ export const ENDPOINTS = {
   GET_MESSAGES: '/api/message',
   SEND_MESSAGE: '/api/message',
   MARK_MESSAGES_SEEN: '/api/message/seen',
+  DELETE_CONVERSATION: '/api/message/conversation',
+  
+  // User Profile
+  UPDATE_USER_PROFILE: '/api/user/update',
 };
 
 // Socket Events

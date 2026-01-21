@@ -80,11 +80,15 @@ export const apiService = {
     }
   },
 
-  upload: async (url: string, formData: FormData) => {
+  upload: async (url: string, formData: FormData, method: 'POST' | 'PUT' = 'POST') => {
     try {
-      const res = await client.post(url, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      const res = method === 'PUT' 
+        ? await client.put(url, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          })
+        : await client.post(url, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
       return res.data;
     } catch (e) {
       throw new Error(getErrorMessage(e));

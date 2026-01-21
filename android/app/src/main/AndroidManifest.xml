@@ -84,6 +84,17 @@
         </intent-filter>
       </receiver>
 
+      <!-- OneSignal Action Receiver - Handles action buttons from OneSignal notifications -->
+      <receiver
+        android:name=".OneSignalActionReceiver"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.compnay.ONESIGNAL_VIEW_POST" />
+          <action android:name="com.compnay.ONESIGNAL_VIEW_PROFILE" />
+          <action android:name="com.compnay.ONESIGNAL_MARK_READ" />
+        </intent-filter>
+      </receiver>
+
       <!-- Ringtone Service - Plays ringtone and vibrates for incoming calls -->
       <service
         android:name=".RingtoneService"

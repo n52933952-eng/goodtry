@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useUser } from '../context/UserContext';
@@ -9,6 +9,7 @@ import { COLORS } from '../utils/constants';
 import fcmService from '../services/fcmService';
 import oneSignalService from '../services/onesignal';
 import { getPendingCallData, clearCallData } from '../services/callData';
+import { getPendingOneSignalAction, clearOneSignalAction } from '../services/onesignalActionData';
 
 // Auth Screens
 import LoginScreen from '../screens/Auth/LoginScreen';
@@ -19,6 +20,7 @@ import FeedScreen from '../screens/Home/FeedScreen';
 import CreatePostScreen from '../screens/Post/CreatePostScreen';
 import PostDetailScreen from '../screens/Post/PostDetailScreen';
 import UserProfileScreen from '../screens/Profile/UserProfileScreen';
+import UpdateProfileScreen from '../screens/Profile/UpdateProfileScreen';
 import SearchScreen from '../screens/Search/SearchScreen';
 import NotificationsScreen from '../screens/Notifications/NotificationsScreen';
 import WeatherScreen from '../screens/Weather/WeatherScreen';
@@ -279,6 +281,13 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
           },
         }}
       />
+      <Stack.Screen 
+        name="UpdateProfile" 
+        component={UpdateProfileScreen}
+        options={{
+          headerShown: false,
+        }}
+      />
     </Stack.Navigator>
   );
 };
@@ -459,6 +468,37 @@ const AppNavigator = () => {
         }).catch((error) => {
           console.error('[AppNavigator] Error checking SharedPreferences:', error);
         });
+
+        // Check SharedPreferences for pending OneSignal action button clicks
+        getPendingOneSignalAction().then((actionData) => {
+          if (actionData && navigationRef.current) {
+            console.log('🔘 [AppNavigator] Found pending OneSignal action in SharedPreferences:', actionData);
+            
+            // Handle action based on type
+            if (actionData.action === 'com.compnay.ONESIGNAL_VIEW_POST' && actionData.postId) {
+              console.log('🔘 [AppNavigator] Navigating to PostDetail from OneSignal action');
+              navigationRef.current.navigate('Feed', {
+                screen: 'PostDetail',
+                params: { postId: actionData.postId }
+              });
+            } else if (actionData.action === 'com.compnay.ONESIGNAL_VIEW_PROFILE' && actionData.userId) {
+              console.log('🔘 [AppNavigator] Navigating to UserProfile from OneSignal action');
+              navigationRef.current.navigate('Profile', {
+                screen: 'UserProfile',
+                params: { userId: actionData.userId }
+              });
+            } else if (actionData.action === 'com.compnay.ONESIGNAL_MARK_READ') {
+              console.log('🔘 [AppNavigator] Mark as read action - handled by OneSignal service');
+              // OneSignal service will handle mark as read via API
+            }
+            
+            // Clear SharedPreferences after reading
+            clearOneSignalAction();
+            console.log('✅ [AppNavigator] Processed OneSignal action from SharedPreferences');
+          }
+        }).catch((error) => {
+          console.error('[AppNavigator] Error checking OneSignal action SharedPreferences:', error);
+        });
       }
       
       if (user) {
@@ -567,7 +607,7 @@ const AppNavigator = () => {
     if (!user || Platform.OS !== 'android' || !navigationRef.current) return;
 
     let pollInterval: NodeJS.Timeout | null = null;
-    let hasCheckedOnce = false;
+    let stopTimeout: NodeJS.Timeout | null = null;
 
     const checkPendingCall = () => {
       if (!navigationRef.current) return;
@@ -608,14 +648,20 @@ const AppNavigator = () => {
 
     // Check immediately once
     checkPendingCall();
-    hasCheckedOnce = true;
 
-    // Then poll every 2 seconds while app is active
+    // Then poll while app is active, but stop after a short window to reduce overhead.
+    // Rationale: this is a reliability fallback; normal flow is via native event + SharedPrefs read on mount.
     pollInterval = setInterval(() => {
       if (AppState.currentState === 'active' && navigationRef.current) {
         checkPendingCall();
       }
-    }, 2000);
+    }, 5000);
+
+    // Stop polling after 60 seconds (battery/CPU friendly)
+    stopTimeout = setTimeout(() => {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = null;
+    }, 60000);
 
     // Also check on AppState change
     const subscription = AppState.addEventListener('change', (nextAppState) => {
@@ -626,6 +672,7 @@ const AppNavigator = () => {
 
     return () => {
       if (pollInterval) clearInterval(pollInterval);
+      if (stopTimeout) clearTimeout(stopTimeout);
       subscription.remove();
     };
   }, [user, navigationRef.current]);
@@ -634,8 +681,20 @@ const AppNavigator = () => {
     return null; // You can add a splash screen here
   }
 
+  const navTheme = {
+    ...DarkTheme,
+    colors: {
+      ...DarkTheme.colors,
+      background: COLORS.background,
+      card: COLORS.background,
+      border: COLORS.border,
+      text: COLORS.text,
+    },
+  };
+
   return (
     <NavigationContainer 
+      theme={navTheme}
       ref={(ref) => {
         navigationRef.current = ref;
         // Set OneSignal navigation ref immediately when NavigationContainer is ready

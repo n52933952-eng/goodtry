@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { COLORS } from '../../utils/constants';
+import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 
 interface NotificationsScreenProps {
@@ -73,7 +73,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const fetchNotifications = async () => {
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const response = await fetch(`${baseUrl}/api/notification`, {
         credentials: 'include',
       });
@@ -96,7 +96,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const markAsRead = async (notificationId: string) => {
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       await fetch(`${baseUrl}/api/notification/${notificationId}/read`, {
         method: 'PUT',
         credentials: 'include',
@@ -119,7 +119,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     e.stopPropagation(); // Prevent triggering the click handler
     
     try {
-      const baseUrl = 'https://media-1-aue5.onrender.com';
+      const baseUrl = API_URL;
       const res = await fetch(`${baseUrl}/api/notification/${notificationId}`, {
         method: 'DELETE',
         credentials: 'include',

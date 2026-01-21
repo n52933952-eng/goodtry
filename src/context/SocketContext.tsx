@@ -11,6 +11,8 @@ interface SocketContextType {
   clearChessChallenge: () => void;
   notificationCount: number;
   setNotificationCount: (count: number | ((prev: number) => number)) => void;
+  selectedConversationId: string | null;
+  setSelectedConversationId: (id: string | null) => void;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -21,6 +23,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [chessChallenge, setChessChallenge] = useState<any | null>(null);
   const [notificationCount, setNotificationCount] = useState<number>(0);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+
+  // Presence optimization:
+  // - Prefer `presenceSnapshot` + `presenceUpdate` for a targeted list of users (followers/following)
+  // - Keep legacy `getOnlineUser` as fallback for old server/client behavior
+  const [presenceMap, setPresenceMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!user) return;
@@ -39,7 +47,47 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Set up listeners - will be queued if socket not ready yet
     console.log('🔧 Setting up socket listeners in SocketContext');
 
-    // Listen for online users updates
+    // New: targeted presence snapshot (preferred)
+    socketService.on('presenceSnapshot', (payload: any) => {
+      const users = payload?.onlineUsers;
+      if (!users || !Array.isArray(users)) return;
+
+      setPresenceMap(() => {
+        const next: Record<string, boolean> = {};
+        users.forEach((u: any) => {
+          const id = (typeof u === 'object' && u !== null)
+            ? (u.userId?.toString?.() ?? u._id?.toString?.() ?? u.toString?.())
+            : u?.toString?.();
+          if (id) next[id] = true;
+        });
+        return next;
+      });
+
+      // Keep `onlineUsers` array populated so existing UI helpers keep working
+      setOnlineUsers(users);
+    });
+
+    // New: targeted presence delta updates (preferred)
+    socketService.on('presenceUpdate', (payload: any) => {
+      const id = payload?.userId?.toString?.() ?? payload?.userId;
+      const online = payload?.online === true;
+      if (!id) return;
+
+      setPresenceMap((prev) => ({ ...prev, [id]: online }));
+      setOnlineUsers((prev) => {
+        // Normalize to objects like { userId } so existing checks work
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const filtered = safePrev.filter((x: any) => {
+          const xId = (typeof x === 'object' && x !== null)
+            ? (x.userId?.toString?.() ?? x._id?.toString?.() ?? x.toString?.())
+            : x?.toString?.();
+          return xId && xId !== id;
+        });
+        return online ? [{ userId: id }, ...filtered] : filtered;
+      });
+    });
+
+    // Legacy: Listen for online users updates (global list)
     socketService.on('getOnlineUser', (users) => {
       console.log('👥 Online users event received!', users?.length || 0, 'users');
       setOnlineUsers(users || []);
@@ -52,9 +100,19 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // Listen for post updates
-    socketService.on(SOCKET_EVENTS.POST_UPDATED, (updatedPost) => {
-      console.log('✏️ Post updated:', updatedPost);
-      updatePost(updatedPost._id, updatedPost);
+    // Backend commonly emits: { postId, post } (web + system posts like Weather/Football)
+    // Some codepaths may emit the post object directly. Support both shapes.
+    socketService.on(SOCKET_EVENTS.POST_UPDATED, (payload: any) => {
+      console.log('✏️ Post updated:', payload);
+
+      const post = payload?.post ?? payload;
+      const postId =
+        post?._id?.toString?.() ??
+        payload?.postId?.toString?.() ??
+        (payload?.postId ? String(payload.postId) : null);
+
+      if (!postId) return;
+      updatePost(postId, post);
     });
 
     // Listen for post deletions
@@ -91,9 +149,22 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setNotificationCount(prev => prev + 1);
     });
 
+    // Subscribe to targeted presence updates (followers + following)
+    // Backwards-compatible: if server doesn't support it, nothing breaks (legacy getOnlineUser still works)
+    try {
+      const ids = Array.from(
+        new Set([...(user.following || []), ...(user.followers || [])].map((x: any) => x?.toString?.() ?? String(x)))
+      ).filter(Boolean);
+      socketService.emit('presenceSubscribe', { userIds: ids });
+    } catch (e) {
+      // Best-effort
+    }
+
     // Cleanup listeners on unmount
     return () => {
       socketService.off('getOnlineUser');
+      socketService.off('presenceSnapshot');
+      socketService.off('presenceUpdate');
       socketService.off(SOCKET_EVENTS.NEW_POST);
       socketService.off(SOCKET_EVENTS.POST_UPDATED);
       socketService.off(SOCKET_EVENTS.POST_DELETED);
@@ -114,6 +185,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       clearChessChallenge,
       notificationCount,
       setNotificationCount,
+      selectedConversationId,
+      setSelectedConversationId,
     }}>
       {children}
     </SocketContext.Provider>

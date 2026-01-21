@@ -52,6 +52,7 @@ type Props = {
   postId: string;
   postOwnerId?: string;
   currentUserId?: string;
+  currentUserProfilePic?: string; // Current user's profilePic for immediate updates
   depth?: number;
   onReplyPress: (reply: AnyReply) => void;
   onLikePress: (reply: AnyReply) => void;
@@ -65,6 +66,7 @@ export const ThreadedComment: React.FC<Props> = ({
   postId,
   postOwnerId,
   currentUserId,
+  currentUserProfilePic,
   depth = 0,
   onReplyPress,
   onLikePress,
@@ -75,6 +77,12 @@ export const ThreadedComment: React.FC<Props> = ({
   const replyUserId = reply?.userId?.toString?.() ?? String(reply?.userId);
 
   const canDelete = !!currentUserId && (postOwnerId?.toString() === currentUserId?.toString() || replyUserId === currentUserId?.toString());
+  
+  // Use current user's profilePic if it's own comment (for immediate updates)
+  const isOwnComment = replyUserId === currentUserId?.toString();
+  const avatarPic = isOwnComment && currentUserProfilePic 
+    ? currentUserProfilePic 
+    : reply?.userProfilePic;
 
   const liked = useMemo(() => {
     const likes = Array.isArray(reply?.likes) ? reply.likes : [];
@@ -94,8 +102,8 @@ export const ThreadedComment: React.FC<Props> = ({
   return (
     <View style={[styles.container, depth > 0 && styles.nestedContainer]}>
       <View style={styles.row}>
-        {reply?.userProfilePic ? (
-          <Image source={{ uri: reply.userProfilePic }} style={styles.avatar} />
+        {avatarPic ? (
+          <Image source={{ uri: avatarPic }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarPlaceholder]}>
             <Text style={styles.avatarText}>{(reply?.username || '?')[0]?.toUpperCase?.() || '?'}</Text>
@@ -140,6 +148,7 @@ export const ThreadedComment: React.FC<Props> = ({
               postId={postId}
               postOwnerId={postOwnerId}
               currentUserId={currentUserId}
+              currentUserProfilePic={currentUserProfilePic}
               depth={depth + 1}
               onReplyPress={onReplyPress}
               onLikePress={onLikePress}

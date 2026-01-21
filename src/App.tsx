@@ -6,6 +6,7 @@ import { UserProvider } from './context/UserContext';
 import { PostProvider } from './context/PostContext';
 import { SocketProvider } from './context/SocketContext';
 import { WebRTCProvider } from './context/WebRTCContext';
+import { LanguageProvider } from './context/LanguageContext';
 import AppNavigator from './navigation/AppNavigator';
 import fcmService from './services/fcmService';
 import oneSignalService from './services/onesignal';
@@ -38,15 +39,17 @@ const App = () => {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar barStyle="light-content" backgroundColor="#000000" />
-        <UserProvider>
-          <PostProvider>
-            <SocketProvider>
-              <WebRTCProvider>
-                <AppNavigator />
-              </WebRTCProvider>
-            </SocketProvider>
-          </PostProvider>
-        </UserProvider>
+        <LanguageProvider>
+          <UserProvider>
+            <PostProvider>
+              <SocketProvider>
+                <WebRTCProvider>
+                  <AppNavigator />
+                </WebRTCProvider>
+              </SocketProvider>
+            </PostProvider>
+          </UserProvider>
+        </LanguageProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

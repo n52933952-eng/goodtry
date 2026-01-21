@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -41,11 +42,48 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     fetchUserPosts(false); // Initial load
   }, [username]);
 
+  // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile)
+  useFocusEffect(
+    React.useCallback(() => {
+      // Only refresh if we're viewing own profile (username matches current user)
+      if (username === currentUser?.username || username === 'self') {
+        fetchUserProfile();
+      }
+    }, [username, currentUser?.username])
+  );
+
+  // Update profile display immediately when user context changes (e.g., after profile update)
+  useEffect(() => {
+    // If viewing own profile and user context updated, sync profileUser with currentUser
+    if (currentUser && (username === currentUser?.username || username === 'self')) {
+      setProfileUser((prev: any) => {
+        if (prev && prev._id === currentUser._id) {
+          // Update profileUser with latest user data (especially profilePic, name, bio, etc.)
+          return {
+            ...prev,
+            profilePic: currentUser.profilePic,
+            name: currentUser.name,
+            username: currentUser.username,
+            bio: currentUser.bio,
+            country: currentUser.country,
+            email: currentUser.email,
+          };
+        }
+        return prev;
+      });
+    }
+  }, [currentUser?.profilePic, currentUser?.name, currentUser?.username, currentUser?.bio, currentUser?.country, username]);
+
   const fetchUserProfile = async () => {
     try {
       const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/${username}`);
       setProfileUser(data);
-      setFollowing(data.followers?.includes(currentUser?._id));
+      // Prefer backend-calculated follow state (works even if follower list is capped for scalability)
+      if (typeof data?.isFollowedByMe === 'boolean') {
+        setFollowing(data.isFollowedByMe);
+      } else {
+        setFollowing(data.followers?.includes(currentUser?._id));
+      }
     } catch (error: any) {
       showToast('Error', 'Failed to load profile', 'error');
     } finally {
@@ -117,7 +155,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     
     setFollowLoading(true);
     try {
-      await apiService.put(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
+      // Backend expects POST, not PUT (same as web)
+      await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
       setFollowing(!following);
       showToast('Success', following ? 'Unfollowed' : 'Following', 'success');
     } catch (error: any) {
@@ -182,32 +221,45 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               <Text style={styles.username}>@{profileUser.username}</Text>
               {profileUser.bio && <Text style={styles.bio}>{profileUser.bio}</Text>}
               
-              <View style={styles.stats}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.postsCount || posts.length}</Text>
-                  <Text style={styles.statLabel}>Posts</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.followers?.length || 0}</Text>
-                  <Text style={styles.statLabel}>Followers</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.following?.length || 0}</Text>
-                  <Text style={styles.statLabel}>Following</Text>
-                </View>
-              </View>
-
+              {isOwnProfile && (
+                <TouchableOpacity
+                  style={styles.updateButton}
+                  onPress={() => navigation.navigate('UpdateProfile')}
+                >
+                  <Text style={styles.updateButtonText}>Update Profile</Text>
+                </TouchableOpacity>
+              )}
+              
               {!isOwnProfile && (
                 <TouchableOpacity
                   style={[styles.followButton, following && styles.followingButton]}
                   onPress={handleFollow}
                   disabled={followLoading}
                 >
-                  <Text style={styles.followButtonText}>
-                    {followLoading ? '...' : following ? 'Following' : 'Follow'}
-                  </Text>
+                  {followLoading ? (
+                    <ActivityIndicator color={following ? COLORS.text : '#FFFFFF'} />
+                  ) : (
+                    <Text style={[styles.followButtonText, following && styles.followingButtonText]}>
+                      {following ? 'Following' : 'Follow'}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               )}
+              
+              <View style={styles.stats}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.postsCount || posts.length}</Text>
+                  <Text style={styles.statLabel}>Posts</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.followersCount ?? (profileUser.followers?.length || 0)}</Text>
+                  <Text style={styles.statLabel}>Followers</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statNumber}>{profileUser.followingCount ?? (profileUser.following?.length || 0)}</Text>
+                  <Text style={styles.statLabel}>Following</Text>
+                </View>
+              </View>
             </View>
             <View style={styles.postsSection}>
               <Text style={styles.postsTitle}>Posts</Text>
@@ -321,6 +373,22 @@ const styles = StyleSheet.create({
   followButtonText: {
     color: '#FFFFFF',
     fontWeight: 'bold',
+  },
+  followingButtonText: {
+    color: COLORS.text,
+    fontWeight: 'bold',
+  },
+  updateButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 30,
+    paddingVertical: 10,
+    borderRadius: 20,
+    marginBottom: 15,
+  },
+  updateButtonText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
   postsSection: {
     padding: 15,

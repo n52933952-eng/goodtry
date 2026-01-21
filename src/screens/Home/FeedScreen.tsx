@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,9 +9,11 @@ import {
   TouchableOpacity,
   Modal,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { usePost } from '../../context/PostContext';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -30,10 +32,13 @@ const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts } = usePost();
   const { user, logout } = useUser();
   const { socket, onlineUsers, notificationCount } = useSocket();
+  const { t, isRTL } = useLanguage();
   const showToast = useShowToast();
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [showChessModal, setShowChessModal] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -41,126 +46,30 @@ const FeedScreen = ({ navigation }: any) => {
   const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
+  const isFetchingRef = useRef(false);
+
+  // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
+  useFocusEffect(
+    useCallback(() => {
+      // Only refetch if posts are empty (initial load scenario)
+      // This ensures feed loads when navigating back to an empty feed
+      // The useEffect below handles the initial mount load
+      if (posts.length === 0 && !loading && !isFetchingRef.current) {
+        console.log('🔄 [FeedScreen] useFocusEffect: Refetching empty feed');
+        fetchFeed();
+      }
+    }, [])
+  );
 
   useEffect(() => {
     fetchFeed();
-    
-    const timeout = setTimeout(() => {
-      if (loading) {
-        console.warn('⚠️ Feed fetch timeout - stopping loading spinner');
-        setLoading(false);
-        setPosts([]);
-        showToast('Warning', 'Feed took too long to load', 'warning');
-      }
-    }, 10000);
-    
-    return () => clearTimeout(timeout);
   }, []);
 
-  // Listen for new posts (like web's handleNewPost - maintains 3 newest posts per user rule)
+  // Socket listeners specific to FeedScreen UI
+  // NOTE: post create/update/delete events are handled globally in SocketContext/PostContext
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewPost = (newPost: any) => {
-      console.log('📨 [FeedScreen] New post received via socket:', newPost._id);
-      
-      setPosts(prev => {
-        // Check if post already exists (prevent duplicates)
-        const exists = prev.some(p => {
-          const prevId = p._id?.toString();
-          const newId = newPost._id?.toString();
-          return prevId === newId;
-        });
-        
-        if (exists) {
-          console.log('⚠️ [FeedScreen] Duplicate post detected, skipping:', newPost._id);
-          return prev;
-        }
-        
-        // Get the author ID of the new post
-        const newPostAuthorId = newPost.postedBy?._id?.toString() || newPost.postedBy?.toString();
-        
-        if (!newPostAuthorId) {
-          console.log('⚠️ [FeedScreen] New post has no author, skipping:', newPost._id);
-          return prev;
-        }
-        
-        // Filter out posts from the same author
-        const postsFromOtherAuthors = prev.filter(p => {
-          const postAuthorId = p.postedBy?._id?.toString() || p.postedBy?.toString();
-          return postAuthorId !== newPostAuthorId;
-        });
-        
-        // Get posts from the same author (excluding the new one)
-        const postsFromSameAuthor = prev.filter(p => {
-          const postAuthorId = p.postedBy?._id?.toString() || p.postedBy?.toString();
-          return postAuthorId === newPostAuthorId;
-        });
-        
-        // Sort same author posts by createdAt (newest first)
-        postsFromSameAuthor.sort((a, b) => {
-          const dateA = new Date(a.createdAt).getTime();
-          const dateB = new Date(b.createdAt).getTime();
-          return dateB - dateA;
-        });
-        
-        // Keep only the 2 newest posts from same author (new post will be the 3rd)
-        // This maintains the "3 newest posts per user" rule
-        const keptSameAuthorPosts = postsFromSameAuthor.slice(0, 2);
-        
-        // Combine: new post + kept same author posts + other authors' posts
-        const updatedFeed = [newPost, ...keptSameAuthorPosts, ...postsFromOtherAuthors];
-        
-        // Sort all by updatedAt (or createdAt if no updatedAt) - matches backend sorting logic
-        updatedFeed.sort((a, b) => {
-          const dateA = new Date(a.updatedAt || a.createdAt).getTime();
-          const dateB = new Date(b.updatedAt || b.createdAt).getTime();
-          return dateB - dateA; // Newest first
-        });
-        
-        console.log(`✅ [FeedScreen] Added new post to feed (maintained 3 newest per user rule):`, newPost._id);
-        return updatedFeed;
-      });
-    };
-
-    const handlePostDeleted = ({ postId }: { postId: string }) => {
-      console.log('🗑️ [FeedScreen] Post deleted via socket:', postId);
-      setPosts(prev => {
-        const updated = prev.filter(p => p._id?.toString() !== postId?.toString());
-        console.log(`🗑️ [FeedScreen] Removed post ${postId}, feed now has ${updated.length} posts`);
-        return updated;
-      });
-    };
-
-    const handlePostUpdated = (data: any) => {
-      const postId = data.postId || data._id;
-      const updatedPost = data.post || data;
-      
-      console.log('✏️ [FeedScreen] Post updated via socket:', postId);
-      
-      setPosts(prev => {
-        const postIndex = prev.findIndex(p => p._id?.toString() === postId?.toString());
-        
-        if (postIndex !== -1) {
-          // Update existing post
-          const updated = [...prev];
-          updated[postIndex] = { ...updated[postIndex], ...updatedPost };
-          
-          // Sort by updatedAt (or createdAt) - newest first
-          updated.sort((a, b) => {
-            const dateA = new Date(a.updatedAt || a.createdAt).getTime();
-            const dateB = new Date(b.updatedAt || b.createdAt).getTime();
-            return dateB - dateA;
-          });
-          
-          return updated;
-        }
-        
-        return prev;
-      });
-    };
-
-    // Listen for chess challenges
     const handleChessChallenge = (data: any) => {
       if (data.to === user?._id) {
         setIncomingChallenge(data);
@@ -169,7 +78,6 @@ const FeedScreen = ({ navigation }: any) => {
     };
 
     const handleAcceptChessChallenge = (data: any) => {
-      // Backend sends: { roomId, yourColor, opponentId }
       if (!data?.roomId || !data?.yourColor) return;
 
       showToast('Challenge Accepted', 'Game starting!', 'success');
@@ -180,26 +88,38 @@ const FeedScreen = ({ navigation }: any) => {
       });
     };
 
-    socket.on('newPost', handleNewPost);
-    socket.on('postDeleted', handlePostDeleted);
-    socket.on('postUpdated', handlePostUpdated);
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('acceptChessChallenge', handleAcceptChessChallenge);
 
     return () => {
-      socket.off('newPost', handleNewPost);
-      socket.off('postDeleted', handlePostDeleted);
-      socket.off('postUpdated', handlePostUpdated);
       socket.off('chessChallenge', handleChessChallenge);
       socket.off('acceptChessChallenge', handleAcceptChessChallenge);
     };
-  }, [socket, user, navigation, setPosts]);
+  }, [socket, user, navigation]);
 
-  const fetchFeed = async () => {
+  const fetchFeed = async (loadMore = false) => {
+    // Prevent duplicate requests
+    if (isFetchingRef.current) {
+      console.log('⏭️ [FeedScreen] fetchFeed: Skipping (already fetching)');
+      return;
+    }
+
+    if (loadMore && (!hasMore || loadingMore)) {
+      console.log('⏭️ [FeedScreen] fetchFeed: Skipping loadMore (no more posts or already loading)');
+      return;
+    }
+
+    isFetchingRef.current = true;
+
     try {
-      // Match web's feed fetching: limit=10&skip=0 for initial load
-      const data = await apiService.get(`${ENDPOINTS.GET_FEED}?limit=10&skip=0`);
+      const skip = loadMore ? posts.length : 0;
+      const limit = 9; // Load 9 posts at a time
+      
+      console.log(`📥 [FeedScreen] Fetching feed: skip=${skip}, limit=${limit}, loadMore=${loadMore}`);
+      
+      const data = await apiService.get(`${ENDPOINTS.GET_FEED}?limit=${limit}&skip=${skip}`);
       const postsArray = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
+      const responseHasMore = data.hasMore !== undefined ? data.hasMore : postsArray.length === limit;
       
       // Filter out duplicates by _id
       const uniquePosts = postsArray.filter((post: any, index: number, self: any[]) => {
@@ -210,21 +130,52 @@ const FeedScreen = ({ navigation }: any) => {
         }) === index;
       });
       
-      setPosts(uniquePosts);
-      console.log(`📥 [FeedScreen] Fetched ${uniquePosts.length} unique posts from feed (${postsArray.length} total, ${postsArray.length - uniquePosts.length} duplicates filtered)`);
+      if (loadMore) {
+        // Append new posts, filtering out duplicates with existing posts
+        setPosts((prevPosts) => {
+          const existingIds = new Set(prevPosts.map((p: any) => p._id?.toString?.() ?? String(p._id)));
+          const newUniquePosts = uniquePosts.filter((post: any) => {
+            const postId = post._id?.toString?.() ?? String(post._id);
+            return postId && !existingIds.has(postId);
+          });
+          return [...prevPosts, ...newUniquePosts];
+        });
+        setLoadingMore(false);
+      } else {
+        // Replace all posts (initial load or refresh)
+        setPosts(uniquePosts);
+        setLoading(false);
+        setRefreshing(false);
+      }
+      
+      setHasMore(responseHasMore);
+      console.log(`✅ [FeedScreen] Fetched ${uniquePosts.length} unique posts (skip=${skip}, hasMore=${responseHasMore})`);
     } catch (error: any) {
       console.error('❌ Error fetching feed:', error);
-      showToast('Error', error.message || 'Failed to load feed', 'error');
-      setPosts([]);
+      if (!loadMore) {
+        showToast('Error', error.message || 'Failed to load feed', 'error');
+        setPosts([]);
+        setLoading(false);
+        setRefreshing(false);
+      } else {
+        setLoadingMore(false);
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      isFetchingRef.current = false;
     }
   };
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchFeed();
+    setHasMore(true);
+    fetchFeed(false); // Reset and fetch from beginning
+  };
+
+  const handleLoadMore = () => {
+    if (!loadingMore && hasMore && !isFetchingRef.current) {
+      setLoadingMore(true);
+      fetchFeed(true);
+    }
   };
 
   const fetchAvailableUsers = async () => {
@@ -372,10 +323,10 @@ const FeedScreen = ({ navigation }: any) => {
     try {
       // Use the single source of truth logout (clears @user and tells backend to clear cookie)
       await logout();
-      showToast('Logged Out', 'You have been logged out', 'success');
+      showToast(t('loggedOut'), t('youHaveBeenLoggedOut'), 'success');
     } catch (error) {
       console.error('❌ Error logging out:', error);
-      showToast('Error', 'Failed to logout', 'error');
+      showToast(t('error'), t('failedToLogout'), 'error');
     }
   };
 
@@ -384,10 +335,10 @@ const FeedScreen = ({ navigation }: any) => {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Feed</Text>
+        <Text style={[styles.headerTitle, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
         <View style={styles.headerButtons}>
           <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Text style={styles.logoutButtonText}>🚪</Text>
+            <Text style={styles.logoutButtonText}>⬅️</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.createButton}
@@ -473,6 +424,8 @@ const FeedScreen = ({ navigation }: any) => {
             tintColor={COLORS.primary}
           />
         }
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.5}
         ListHeaderComponent={
           loading ? (
             <View style={styles.inlineLoading}>
@@ -480,11 +433,20 @@ const FeedScreen = ({ navigation }: any) => {
             </View>
           ) : null
         }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={styles.inlineLoading}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No posts yet</Text>
-            <Text style={styles.emptySubtext}>Follow users to see their posts</Text>
-          </View>
+          !loading ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>No posts yet</Text>
+              <Text style={styles.emptySubtext}>Follow users to see their posts</Text>
+            </View>
+          ) : null
         }
       />
 
