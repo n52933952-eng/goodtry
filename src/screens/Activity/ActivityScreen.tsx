@@ -13,6 +13,7 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { useLanguage } from '../../context/LanguageContext';
 
 const formatTimeAgo = (dateString: string) => {
   try {
@@ -39,12 +40,12 @@ const formatTimeAgo = (dateString: string) => {
     const diffWeeks = Math.floor(diffDays / 7);
     const diffMonths = Math.floor(diffDays / 30);
 
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    if (diffWeeks < 4) return `${diffWeeks}w ago`;
-    if (diffMonths < 12) return `${diffMonths}mo ago`;
+    if (diffMins < 1)       return t('justNow');
+    if (diffMins < 60) return `${diffMins}m ${t('ago')}`;
+    if (diffHours < 24) return `${diffHours}h ${t('ago')}`;
+    if (diffDays < 7) return `${diffDays}d ${t('ago')}`;
+    if (diffWeeks < 4) return `${diffWeeks}w ${t('ago')}`;
+    if (diffMonths < 12) return `${diffMonths}mo ${t('ago')}`;
     return date.toLocaleDateString();
   } catch (error) {
     console.error('❌ [formatTimeAgo] Error formatting date:', error, dateString);
@@ -83,6 +84,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   const { user } = useUser();
   const { socket } = useSocket();
   const showToast = useShowToast();
+  const { t } = useLanguage();
   
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -211,22 +213,22 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   };
 
   const getActivityText = (activity: Activity) => {
-    const userName = activity.userId?.name || activity.userId?.username || 'Someone';
+    const userName = activity.userId?.name || activity.userId?.username || t('someone');
     
     switch (activity.type) {
       case 'like':
-        return `${userName} liked a post`;
+        return `${userName} ${t('likedAPost')}`;
       case 'comment':
-        return `${userName} commented on a post`;
+        return `${userName} ${t('commentedOnAPost')}`;
       case 'follow':
-        const targetName = activity.targetUser?.name || activity.targetUser?.username || 'someone';
-        return `${userName} followed ${targetName}`;
+        const targetName = activity.targetUser?.name || activity.targetUser?.username || t('someone');
+        return `${userName} ${t('followed')} ${targetName}`;
       case 'post':
-        return `${userName} created a post`;
+        return `${userName} ${t('createdAPost')}`;
       case 'reply':
-        return `${userName} replied to a comment`;
+        return `${userName} ${t('repliedToAComment')}`;
       default:
-        return `${userName} did something`;
+        return `${userName} ${t('didSomething')}`;
     }
   };
 
@@ -279,7 +281,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>🔴 Live Activity</Text>
+        <Text style={styles.headerTitle}>{t('liveActivity')}</Text>
       </View>
 
       <FlatList
@@ -300,9 +302,9 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>🔔</Text>
-            <Text style={styles.emptyText}>No activity</Text>
+            <Text style={styles.emptyText}>{t('noActivity')}</Text>
             <Text style={styles.emptySubtext}>
-              Activities from users you follow will appear here
+              {t('activitiesFromUsersYouFollow')}
             </Text>
           </View>
         }

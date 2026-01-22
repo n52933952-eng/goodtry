@@ -16,6 +16,7 @@ import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
+import { useLanguage } from '../../context/LanguageContext';
 
 interface Match {
   _id: string;
@@ -58,6 +59,7 @@ const FootballScreen = () => {
   const { user } = useUser();
   const { socket } = useSocket();
   const showToast = useShowToast();
+  const { t } = useLanguage();
 
   const [liveMatches, setLiveMatches] = useState<Match[]>([]);
   const [upcomingMatches, setUpcomingMatches] = useState<Match[]>([]);
@@ -201,7 +203,7 @@ const FootballScreen = () => {
   // Follow/Unfollow Football account
   const handleFollowToggle = async () => {
     if (!footballAccountId) {
-      showToast('Error', 'Football account not found', 'error');
+      showToast(t('error'), t('footballAccountNotFound'), 'error');
       return;
     }
 
@@ -219,16 +221,16 @@ const FootballScreen = () => {
         
         // Use the opposite of what it was before (since we just toggled)
         showToast(
-          'Success',
+          t('success'),
           wasFollowing
-            ? 'Unfollowed Football channel'
-            : 'Following Football channel! You\'ll now see updates in your feed',
+            ? t('unfollowedFootballChannel')
+            : t('followingFootballChannel'),
           'success'
         );
       }
     } catch (error: any) {
       console.error('⚽ [FootballScreen] Error toggling follow:', error);
-      showToast('Error', 'Failed to update follow status', 'error');
+      showToast(t('error'), t('failedToUpdateFollowStatus'), 'error');
     } finally {
       setFollowLoading(false);
     }
@@ -291,7 +293,7 @@ const FootballScreen = () => {
         {match.league?.logo && (
           <Image source={{ uri: match.league.logo }} style={styles.leagueLogo} />
         )}
-        <Text style={styles.leagueName}>{match.league?.name || 'Unknown League'}</Text>
+        <Text style={styles.leagueName}>{match.league?.name || t('unknownLeague')}</Text>
         {showStatus && match.fixture?.status?.short === '1H' && (
           <View style={styles.liveBadge}>
             <Text style={styles.liveBadgeText}>
@@ -308,7 +310,7 @@ const FootballScreen = () => {
         )}
         {showStatus && match.fixture?.status?.short === 'HT' && (
           <View style={styles.halfTimeBadge}>
-            <Text style={styles.halfTimeBadgeText}>HALF TIME</Text>
+            <Text style={styles.halfTimeBadgeText}>{t('halfTime')}</Text>
           </View>
         )}
       </View>
@@ -318,7 +320,7 @@ const FootballScreen = () => {
         {/* Home team */}
         <View style={styles.teamContainer}>
           <Text style={styles.teamName} numberOfLines={2}>
-            {match.teams?.home?.name || 'TBD'}
+            {match.teams?.home?.name || t('tbd')}
           </Text>
           {match.teams?.home?.logo && (
             <Image source={{ uri: match.teams.home.logo }} style={styles.teamLogo} />
@@ -344,7 +346,7 @@ const FootballScreen = () => {
             <Image source={{ uri: match.teams.away.logo }} style={styles.teamLogo} />
           )}
           <Text style={styles.teamName} numberOfLines={2}>
-            {match.teams?.away?.name || 'TBD'}
+            {match.teams?.away?.name || t('tbd')}
           </Text>
         </View>
       </View>
@@ -425,7 +427,7 @@ const FootballScreen = () => {
               <ActivityIndicator color="#FFFFFF" size="small" />
             ) : (
               <Text style={styles.followButtonText}>
-                {isFollowing ? 'Following' : 'Follow'}
+                {isFollowing ? t('following') : t('follow')}
               </Text>
             )}
           </TouchableOpacity>
@@ -542,10 +544,10 @@ const FootballScreen = () => {
             </Text>
             <Text style={styles.emptyText}>
               {activeTab === 'live'
-                ? 'No live matches at the moment'
+                ? t('noLiveMatches')
                 : activeTab === 'upcoming'
-                ? 'No upcoming matches on this day'
-                : 'No finished matches today'}
+                ? t('noUpcomingMatches')
+                : t('noFinishedMatches')}
             </Text>
           </View>
         }

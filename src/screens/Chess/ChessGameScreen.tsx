@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { Chess } from 'chess.js';
+import Sound from 'react-native-sound';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
@@ -41,6 +42,106 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [capturedBlack, setCapturedBlack] = useState<string[]>([]);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [legalMoves, setLegalMoves] = useState<string[]>([]);
+  
+  // Sound effects
+  const sounds = useRef<{
+    move?: Sound;
+    capture?: Sound;
+    check?: Sound;
+    gameStart?: Sound;
+  }>({});
+
+  // Initialize sounds
+  useEffect(() => {
+    // Enable playback in silence mode (iOS)
+    Sound.setCategory('Playback', true);
+    
+    // Load sound files
+    // For Android: files should be in android/app/src/main/res/raw/
+    // For iOS: files are bundled via require()
+    sounds.current.move = new Sound('p.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [ChessGameScreen] Failed to load move sound:', error);
+        // Fallback: try require() for iOS/bundled assets
+        try {
+          sounds.current.move = new Sound(require('../../assets/sounds/p.mp3'), (error2) => {
+            if (error2) {
+              console.error('❌ [ChessGameScreen] Failed to load move sound (fallback):', error2);
+            }
+          });
+        } catch (e) {
+          console.error('❌ [ChessGameScreen] Could not load move sound:', e);
+        }
+      }
+    });
+    
+    sounds.current.capture = new Sound('k.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [ChessGameScreen] Failed to load capture sound:', error);
+        try {
+          sounds.current.capture = new Sound(require('../../assets/sounds/k.mp3'), (error2) => {
+            if (error2) {
+              console.error('❌ [ChessGameScreen] Failed to load capture sound (fallback):', error2);
+            }
+          });
+        } catch (e) {
+          console.error('❌ [ChessGameScreen] Could not load capture sound:', e);
+        }
+      }
+    });
+    
+    sounds.current.check = new Sound('c.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [ChessGameScreen] Failed to load check sound:', error);
+        try {
+          sounds.current.check = new Sound(require('../../assets/sounds/c.mp3'), (error2) => {
+            if (error2) {
+              console.error('❌ [ChessGameScreen] Failed to load check sound (fallback):', error2);
+            }
+          });
+        } catch (e) {
+          console.error('❌ [ChessGameScreen] Could not load check sound:', e);
+        }
+      }
+    });
+    
+    sounds.current.gameStart = new Sound('start.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [ChessGameScreen] Failed to load game start sound:', error);
+        try {
+          sounds.current.gameStart = new Sound(require('../../assets/sounds/start.mp3'), (error2) => {
+            if (error2) {
+              console.error('❌ [ChessGameScreen] Failed to load game start sound (fallback):', error2);
+            }
+          });
+        } catch (e) {
+          console.error('❌ [ChessGameScreen] Could not load game start sound:', e);
+        }
+      }
+    });
+    
+    return () => {
+      // Cleanup sounds on unmount
+      Object.values(sounds.current).forEach(sound => {
+        if (sound) {
+          sound.release();
+        }
+      });
+    };
+  }, []);
+
+  const playSound = useCallback((type: 'move' | 'capture' | 'check' | 'gameStart') => {
+    const sound = sounds.current[type];
+    if (sound) {
+      sound.stop(() => {
+        sound.play((success) => {
+          if (!success) {
+            console.warn(`⚠️ [ChessGameScreen] Failed to play ${type} sound`);
+          }
+        });
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (!socket || !roomId) {
@@ -124,9 +225,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
     
     setGameLive(true);
+    
+    // Play game start sound when game state is first loaded (game is starting)
+    if (data.fen && chess.fen() === 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1') {
+      // Only play if it's the starting position (new game)
+      playSound('gameStart');
+    }
   };
 
-  const handleOpponentMove = (data: any) => {
+  const handleOpponentMove = useCallback((data: any) => {
     console.log('📥 ========== RECEIVED MOVE ==========');
     
     if (data.move && data.move.after) {
@@ -140,8 +247,18 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (data.move) {
       if (data.move.after) {
         try {
+          const beforeFen = chess.fen();
           chess.load(data.move.after);
           setFen(data.move.after);
+          
+          // Play appropriate sound for opponent's move
+          if (chess.inCheck()) {
+            playSound('check');
+          } else if (data.move.captured) {
+            playSound('capture');
+          } else {
+            playSound('move');
+          }
           
           if (data.move.captured) {
             if (data.move.color === 'w') {
@@ -182,6 +299,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             const newFen = chess.fen();
             setFen(newFen);
             
+            // Play appropriate sound for opponent's move
+            if (chess.inCheck()) {
+              playSound('check');
+            } else if (moveResult.captured) {
+              playSound('capture');
+            } else {
+              playSound('move');
+            }
+            
             if (moveResult.captured) {
               if (moveResult.color === 'w') {
                 setCapturedBlack(prev => [...prev, moveResult.captured]);
@@ -217,7 +343,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (chess.isGameOver()) {
       handleLocalGameOver();
     }
-  };
+  }, [chess, playSound]);
 
   const handleGameOver = (data: any) => {
     setGameOver(true);
@@ -312,6 +438,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             setSelectedSquare(null);
             setLegalMoves([]);
             
+            // Play appropriate sound
+            if (chess.inCheck()) {
+              playSound('check');
+            } else if (move.captured) {
+              playSound('capture');
+            } else {
+              playSound('move');
+            }
+            
             if (move.captured) {
               if (move.color === 'w') {
                 setCapturedBlack(prev => [...prev, move.captured]);
@@ -361,7 +496,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         }
       }
     }
-  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack]);
+  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound]);
 
   const handleBack = () => {
     // Resign the game for both users when going back

@@ -283,6 +283,17 @@ class MainActivity : ReactActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Only show splash screen on very first app launch (not on navigation or background resume)
+    val prefs = getSharedPreferences("AppPrefs", android.content.Context.MODE_PRIVATE)
+    val hasLaunchedBefore = prefs.getBoolean("hasLaunched", false)
+    val isFirstLaunch = savedInstanceState == null && !hasLaunchedBefore
+    
+    if (isFirstLaunch) {
+      setTheme(R.style.SplashTheme)
+      // Mark that app has launched
+      prefs.edit().putBoolean("hasLaunched", true).apply()
+    }
+    
     super.onCreate(savedInstanceState)
     val isKilledState = savedInstanceState == null
     android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] onCreate CALLED - App starting from ${if (isKilledState) "KILLED STATE" else "BACKGROUND"}")

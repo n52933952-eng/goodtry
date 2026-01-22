@@ -88,12 +88,24 @@ const FeedScreen = ({ navigation }: any) => {
       });
     };
 
+    const handleChessDeclined = (data: any) => {
+      // Backend sends: { from } where 'from' is the user who declined (the opponent)
+      console.log('♟️ [FeedScreen] Challenge declined by:', data.from);
+      showToast('Challenge Declined', 'Your challenge was declined', 'info');
+      // Remove the declined user from busy list so they appear available again
+      if (data.from) {
+        setBusyChessUserIds(prev => prev.filter(id => id?.toString() !== data.from?.toString()));
+      }
+    };
+
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('acceptChessChallenge', handleAcceptChessChallenge);
+    socket.on('chessDeclined', handleChessDeclined);
 
     return () => {
       socket.off('chessChallenge', handleChessChallenge);
       socket.off('acceptChessChallenge', handleAcceptChessChallenge);
+      socket.off('chessDeclined', handleChessDeclined);
     };
   }, [socket, user, navigation]);
 

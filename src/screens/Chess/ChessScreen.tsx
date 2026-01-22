@@ -50,10 +50,12 @@ const ChessScreen = ({ navigation }: any) => {
 
     socket.on('chessChallenge', handleNewChallenge);
     socket.on('acceptChessChallenge', handleChallengeAccepted);
+    socket.on('chessDeclined', handleChallengeDeclined);
 
     return () => {
       socket.off('chessChallenge', handleNewChallenge);
       socket.off('acceptChessChallenge', handleChallengeAccepted);
+      socket.off('chessDeclined', handleChallengeDeclined);
     };
   }, [socket]);
 
@@ -90,6 +92,21 @@ const ChessScreen = ({ navigation }: any) => {
     // Remove any pending challenge card for that opponent (best-effort)
     if (data.opponentId) {
       setChallenges(prev => prev.filter(c => c.challenger?._id !== data.opponentId));
+    }
+  };
+
+  const handleChallengeDeclined = (data: any) => {
+    // Backend sends: { from } where 'from' is the user who declined (the opponent)
+    console.log('♟️ [ChessScreen] Challenge declined by:', data.from);
+    
+    // Remove any pending challenge we sent to this user
+    if (data.from) {
+      setChallenges(prev => prev.filter(c => {
+        // Remove challenges where we are the challenger and the opponent declined
+        const isOurChallenge = c.challenger?._id === user?._id && c.opponent?._id === data.from;
+        return !isOurChallenge;
+      }));
+      showToast('Challenge Declined', 'Your challenge was declined', 'info');
     }
   };
 

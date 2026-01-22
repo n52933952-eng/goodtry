@@ -17,12 +17,14 @@ import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import { useLanguage } from '../../context/LanguageContext';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
   const { user: currentUser } = useUser();
   const username = usernameParam === 'self' ? currentUser?.username : usernameParam;
   const showToast = useShowToast();
+  const { t } = useLanguage();
 
   const [profileUser, setProfileUser] = useState<any>(null);
   const [posts, setPosts] = useState<any[]>([]);
@@ -158,9 +160,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       // Backend expects POST, not PUT (same as web)
       await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
       setFollowing(!following);
-      showToast('Success', following ? 'Unfollowed' : 'Following', 'success');
+      showToast(t('success'), following ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {
-      showToast('Error', error.message || 'Failed to follow/unfollow', 'error');
+      showToast(t('error'), error.message || t('failedToFollowUnfollow'), 'error');
     } finally {
       setFollowLoading(false);
     }
@@ -177,7 +179,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   if (!profileUser) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorText}>User not found</Text>
+        <Text style={styles.errorText}>{t('userNotFound')}</Text>
       </View>
     );
   }
@@ -226,7 +228,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   style={styles.updateButton}
                   onPress={() => navigation.navigate('UpdateProfile')}
                 >
-                  <Text style={styles.updateButtonText}>Update Profile</Text>
+                  <Text style={styles.updateButtonText}>{t('updateProfile')}</Text>
                 </TouchableOpacity>
               )}
               
@@ -240,7 +242,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                     <ActivityIndicator color={following ? COLORS.text : '#FFFFFF'} />
                   ) : (
                     <Text style={[styles.followButtonText, following && styles.followingButtonText]}>
-                      {following ? 'Following' : 'Follow'}
+                      {following ? t('following') : t('follow')}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -249,26 +251,26 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               <View style={styles.stats}>
                 <View style={styles.statItem}>
                   <Text style={styles.statNumber}>{profileUser.postsCount || posts.length}</Text>
-                  <Text style={styles.statLabel}>Posts</Text>
+                  <Text style={styles.statLabel}>{t('posts')}</Text>
                 </View>
                 <View style={styles.statItem}>
                   <Text style={styles.statNumber}>{profileUser.followersCount ?? (profileUser.followers?.length || 0)}</Text>
-                  <Text style={styles.statLabel}>Followers</Text>
+                  <Text style={styles.statLabel}>{t('followers')}</Text>
                 </View>
                 <View style={styles.statItem}>
                   <Text style={styles.statNumber}>{profileUser.followingCount ?? (profileUser.following?.length || 0)}</Text>
-                  <Text style={styles.statLabel}>Following</Text>
+                  <Text style={styles.statLabel}>{t('following')}</Text>
                 </View>
               </View>
             </View>
             <View style={styles.postsSection}>
-              <Text style={styles.postsTitle}>Posts</Text>
+              <Text style={styles.postsTitle}>{t('posts')}</Text>
             </View>
           </View>
         }
         ListEmptyComponent={
           !loading ? (
-            <Text style={styles.emptyText}>No posts yet</Text>
+            <Text style={styles.emptyText}>{t('noPostsYet')}</Text>
           ) : null
         }
         ListFooterComponent={

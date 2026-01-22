@@ -341,7 +341,7 @@ const MessagesIcon = ({ color }: { color: string }) => (
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
   const { call, pendingCancel } = useWebRTC();
-  const { chessChallenge, clearChessChallenge, socket } = useSocket();
+  const { chessChallenges, clearChessChallenge, socket } = useSocket();
   const navigationRef = useRef<any>(null);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
 
@@ -708,47 +708,44 @@ const AppNavigator = () => {
         {user ? <MainStack /> : <AuthStack />}
         {user && (
           <ChessChallengeNotification
-            visible={!!chessChallenge?.isReceivingChallenge}
-            challengerName={chessChallenge?.fromName}
-            challengerUsername={chessChallenge?.fromUsername}
-            challengerProfilePic={chessChallenge?.fromProfilePic}
-            onDecline={() => {
+            challenges={chessChallenges}
+            onDecline={(challenge) => {
               try {
-                if (socket && user?._id && chessChallenge?.from) {
+                if (socket && user?._id && challenge?.from) {
                   socket.emit('declineChessChallenge', {
                     from: user._id,
-                    to: chessChallenge.from,
+                    to: challenge.from,
                   });
                 }
               } finally {
-                clearChessChallenge();
+                clearChessChallenge(challenge?.from);
               }
             }}
-            onAccept={() => {
+            onAccept={(challenge) => {
               try {
-                if (!socket || !user?._id || !chessChallenge?.from) {
-                  clearChessChallenge();
+                if (!socket || !user?._id || !challenge?.from) {
+                  clearChessChallenge(challenge?.from);
                   return;
                 }
 
-                const roomId = `chess_${chessChallenge.from}_${user._id}_${Date.now()}`;
+                const roomId = `chess_${challenge.from}_${user._id}_${Date.now()}`;
 
                 // Navigate first (like web), then emit accept
                 navigationRef.current?.navigate('ChessGame', {
                   roomId,
                   color: 'black', // receiver/accepter is black (backend uses from=accepter)
-                  opponentId: chessChallenge.from,
+                  opponentId: challenge.from,
                 });
 
                 setTimeout(() => {
                   socket.emit('acceptChessChallenge', {
                     from: user._id, // accepter
-                    to: chessChallenge.from, // challenger
+                    to: challenge.from, // challenger
                     roomId,
                   });
                 }, 100);
               } finally {
-                clearChessChallenge();
+                clearChessChallenge(challenge?.from);
               }
             }}
           />

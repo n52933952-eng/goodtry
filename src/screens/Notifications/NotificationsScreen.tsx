@@ -14,6 +14,7 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { useLanguage } from '../../context/LanguageContext';
 
 interface NotificationsScreenProps {
   navigation: any;
@@ -23,6 +24,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   const { user } = useUser();
   const { socket, notificationCount, setNotificationCount } = useSocket();
   const showToast = useShowToast();
+  const { t } = useLanguage();
   
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -208,34 +210,34 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   };
 
   const getNotificationText = (notification: any) => {
-    const fromName = notification.from?.name || notification.from?.username || 'Someone';
+    const fromName = notification.from?.name || notification.from?.username || t('someone');
     
     switch (notification.type) {
       case 'like':
         // Check if it's a comment/reply like (has comment text) or post like
         if (notification.comment) {
-          return `${fromName} liked your comment`;
+          return `${fromName} ${t('likedYourComment')}`;
         } else {
-          return `${fromName} liked your post`;
+          return `${fromName} ${t('likedYourPost')}`;
         }
       case 'comment':
-        return `${fromName} commented on your post`;
+        return `${fromName} ${t('commentedOnYourPost')}`;
       case 'mention':
-        return `${fromName} mentioned you in a comment`;
+        return `${fromName} ${t('mentionedYouInAComment')}`;
       case 'follow':
-        return `${fromName} started following you`;
+        return `${fromName} ${t('startedFollowingYou')}`;
       case 'chess_challenge':
-        return `${fromName} challenged you to a chess game`;
+        return `${fromName} ${t('challengedYouToAChessGame')}`;
       case 'message':
-        return `${fromName} sent you a message`;
+        return `${fromName} ${t('sentYouAMessage')}`;
       case 'collaboration':
         const postText = notification.metadata?.postText || 'a collaborative post';
-        return `${fromName} added you as a contributor to "${postText}"`;
+        return `${fromName} ${t('addedYouAsAContributor')} "${postText}"`;
       case 'post_edit':
         const editedPostText = notification.metadata?.postText || 'your collaborative post';
-        return `${fromName} edited "${editedPostText}"`;
+        return `${fromName} ${t('edited')} "${editedPostText}"`;
       default:
-        return notification.message || 'New notification';
+        return notification.message || t('newNotification');
     }
   };
 
@@ -247,10 +249,10 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     const diffHours = Math.floor(diffMins / 60);
     const diffDays = Math.floor(diffHours / 24);
 
-    if (diffMins < 1) return 'now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
+    if (diffMins < 1) return t('now');
+    if (diffMins < 60) return `${diffMins}m ${t('ago')}`;
+    if (diffHours < 24) return `${diffHours}h ${t('ago')}`;
+    if (diffDays < 7) return `${diffDays}d ${t('ago')}`;
     return date.toLocaleDateString();
   };
 
@@ -325,7 +327,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Notifications</Text>
+        <Text style={styles.headerTitle}>{t('notifications')}</Text>
       </View>
 
       <FlatList
@@ -343,9 +345,9 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>🔔</Text>
-            <Text style={styles.emptyText}>No notifications yet</Text>
+            <Text style={styles.emptyText}>{t('noNotifications')}</Text>
             <Text style={styles.emptySubtext}>
-              You'll see notifications when someone likes, comments, or follows you
+              {t('youWillSeeNotifications')}
             </Text>
           </View>
         }

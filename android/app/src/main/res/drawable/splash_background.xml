@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Background color (cyan to mint green gradient) -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#00D4FF"
+                android:centerColor="#40E0D0"
+                android:endColor="#98FB98"
+                android:type="linear" />
+        </shape>
+    </item>
+    <!-- App icon centered - scaled 2.5x larger -->
+    <item android:drawable="@drawable/splash_icon_scaled" />
+</layer-list>

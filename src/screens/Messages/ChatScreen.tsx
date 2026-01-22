@@ -20,6 +20,7 @@ import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
+import { useLanguage } from '../../context/LanguageContext';
 
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser } = route.params || {};
@@ -33,6 +34,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { user } = useUser();
   const { socket, onlineUsers, setSelectedConversationId } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
+  const { t } = useLanguage();
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -680,14 +682,14 @@ const ChatScreen = ({ route, navigation }: any) => {
             }}
             style={styles.actionBtn}
           >
-            <Text style={styles.actionBtnText}>Reply</Text>
+            <Text style={styles.actionBtnText}>{t('reply')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => handleDeleteMessage(actionTarget._id)}
             style={styles.actionBtn}
           >
-            <Text style={[styles.actionBtnText, { color: '#ff4d4d' }]}>Delete</Text>
+            <Text style={[styles.actionBtnText, { color: '#ff4d4d' }]}>{t('delete')}</Text>
           </TouchableOpacity>
 
           <View style={styles.actionDivider} />
@@ -707,10 +709,10 @@ const ChatScreen = ({ route, navigation }: any) => {
         <View style={styles.replyBanner}>
           <View style={{ flex: 1 }}>
             <Text style={styles.replyBannerTitle}>
-              Replying to {replyingTo?.sender?.name || replyingTo?.sender?.username || 'message'}
+              {t('replyingTo')} {replyingTo?.sender?.name || replyingTo?.sender?.username || t('message')}
             </Text>
             <Text numberOfLines={1} style={styles.replyBannerText}>
-              {replyingTo?.text || (replyingTo?.img ? '📎 Attachment' : '')}
+              {replyingTo?.text || (replyingTo?.img ? t('attachment') : '')}
             </Text>
           </View>
           <TouchableOpacity onPress={() => setReplyingTo(null)}>
@@ -723,10 +725,10 @@ const ChatScreen = ({ route, navigation }: any) => {
       {pendingMedia?.uri ? (
         <View style={styles.mediaPreview}>
           <Text style={styles.mediaPreviewText}>
-            {pendingMedia.type?.startsWith('video') ? 'Video selected' : 'Image selected'}
+            {pendingMedia.type?.startsWith('video') ? t('videoSelected') : t('imageSelected')}
           </Text>
           <TouchableOpacity onPress={() => setPendingMedia(null)}>
-            <Text style={styles.mediaRemove}>Remove</Text>
+            <Text style={styles.mediaRemove}>{t('remove')}</Text>
           </TouchableOpacity>
         </View>
       ) : null}
@@ -737,7 +739,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
         <TextInput
           style={styles.input}
-          placeholder="Type a message..."
+          placeholder={t('typeMessage')}
           placeholderTextColor={COLORS.textGray}
           value={newMessage}
           onChangeText={setNewMessage}
@@ -756,7 +758,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           {sending ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.sendButtonText}>Send</Text>
+            <Text style={styles.sendButtonText}>{t('send')}</Text>
           )}
         </TouchableOpacity>
       </View>

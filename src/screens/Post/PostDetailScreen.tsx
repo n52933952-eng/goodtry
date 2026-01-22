@@ -21,11 +21,13 @@ import Post from '../../components/Post';
 import ThreadedComment from '../../components/ThreadedComment';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import { useLanguage } from '../../context/LanguageContext';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
   const { postId, fromScreen, userProfileParams } = route.params || {};
   const { user } = useUser();
   const showToast = useShowToast();
+  const { t } = useLanguage();
   
   // Customize back button behavior based on where we came from
   React.useEffect(() => {
@@ -198,7 +200,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
   const handleReply = async () => {
     if (!replyText.trim()) {
-      showToast('Error', 'Please enter a reply', 'error');
+      showToast(t('error'), t('pleaseEnterReply'), 'error');
       return;
     }
 
@@ -242,7 +244,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         }
       }, 500);
     } catch (error: any) {
-      showToast('Error', error.message || 'Failed to post reply', 'error');
+      showToast(t('error'), error.message || t('failedToPostReply'), 'error');
     } finally {
       setReplying(false);
     }
@@ -273,7 +275,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
   const handleLikeComment = async (reply: any) => {
     if (!user?._id) {
-      showToast('Error', 'You must be logged in to like', 'error');
+      showToast(t('error'), t('mustBeLoggedInToLike'), 'error');
       return;
     }
 
@@ -298,13 +300,13 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         return { ...prev, replies: updatedReplies };
       });
     } catch (error: any) {
-      showToast('Error', error.message || 'Failed to like comment', 'error');
+      showToast(t('error'), error.message || t('failedToLikeComment'), 'error');
     }
   };
 
   const handleDeleteComment = async (reply: any) => {
     if (!user?._id) {
-      showToast('Error', 'You must be logged in to delete comments', 'error');
+      showToast(t('error'), t('mustBeLoggedInToDelete'), 'error');
       return;
     }
 
@@ -315,9 +317,9 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         const prevReplies = Array.isArray(prev?.replies) ? prev.replies : [];
         return { ...prev, replies: removeReplyAndDescendants(prevReplies, replyId) };
       });
-      showToast('Success', 'Comment deleted successfully', 'success');
+      showToast(t('success'), t('commentDeletedSuccessfully'), 'success');
     } catch (error: any) {
-      showToast('Error', error.message || 'Failed to delete comment', 'error');
+      showToast(t('error'), error.message || t('failedToDeleteComment'), 'error');
     }
   };
 
@@ -339,7 +341,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   if (!post) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorText}>Post not found</Text>
+        <Text style={styles.errorText}>{t('postNotFound')}</Text>
       </View>
     );
   }
@@ -364,7 +366,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         <Post post={post} disableNavigation={true} />
 
         <View style={styles.repliesSection}>
-          <Text style={styles.repliesTitle}>Comments ({post.replies?.length || 0})</Text>
+          <Text style={styles.repliesTitle}>{t('comments')} ({post.replies?.length || 0})</Text>
 
           {(post.replies || [])
             .filter((r: any) => !r?.parentReplyId)
@@ -399,7 +401,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
               }}
             >
               <Text style={styles.loadMoreText}>
-                Load More Comments ({post.replies.filter((r: any) => !r?.parentReplyId).length - visibleCommentsCount} remaining)
+                {t('loadMoreComments')} ({post.replies.filter((r: any) => !r?.parentReplyId).length - visibleCommentsCount} {t('remaining')})
               </Text>
             </TouchableOpacity>
           )}
@@ -415,7 +417,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           <TextInput
             ref={replyInputRef}
             style={styles.input}
-            placeholder={replyParentId ? 'Write a reply to comment...' : 'Write a comment...'}
+            placeholder={replyParentId ? t('writeReplyToComment') : t('writeComment')}
             placeholderTextColor={COLORS.textGray}
             value={replyText}
             onChangeText={handleReplyTextChange}

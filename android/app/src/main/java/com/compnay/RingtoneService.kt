@@ -95,7 +95,7 @@ class RingtoneService : Service() {
             Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Incoming Call")
                 .setContentText("Playing ringtone...")
-                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setSmallIcon(R.drawable.ic_stat_ic_launcher)
                 .setPriority(Notification.PRIORITY_LOW)
                 .setOngoing(true)
                 .setSound(null) // Silent notification
@@ -105,7 +105,7 @@ class RingtoneService : Service() {
             Notification.Builder(this)
                 .setContentTitle("Incoming Call")
                 .setContentText("Playing ringtone...")
-                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setSmallIcon(R.drawable.ic_stat_ic_launcher)
                 .setPriority(Notification.PRIORITY_LOW)
                 .setSound(null) // Silent notification
                 .build()

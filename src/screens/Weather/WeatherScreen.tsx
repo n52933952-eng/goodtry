@@ -15,6 +15,7 @@ import { useUser } from '../../context/UserContext';
 import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
+import { useLanguage } from '../../context/LanguageContext';
 
 interface WeatherData {
   _id: string;
@@ -30,6 +31,7 @@ interface WeatherData {
 const WeatherScreen = () => {
   const { user } = useUser();
   const showToast = useShowToast();
+  const { t } = useLanguage();
 
   const [weatherData, setWeatherData] = useState<WeatherData[]>([]);
   const [selectedCities, setSelectedCities] = useState<Array<string | { name: string; country?: string; lat?: number; lon?: number }>>([]);
@@ -94,7 +96,7 @@ const WeatherScreen = () => {
       }
     } catch (error) {
       console.error('❌ [WeatherScreen] Error fetching weather:', error);
-      showToast('Error', 'Failed to load weather data', 'error');
+      showToast(t('error'), t('failedToLoadWeatherData'), 'error');
       setWeatherData([]);
     } finally {
       setLoading(false);
@@ -203,7 +205,7 @@ const WeatherScreen = () => {
     } else {
       // Add city
       if (selectedCities.length >= 10) {
-        Alert.alert('Limit Reached', 'You can select up to 10 cities only.');
+        Alert.alert(t('limitReached'), t('youCanSelectUpTo10Cities'));
         return;
       }
       setSelectedCities(prev => [...prev, cityName]);
@@ -212,7 +214,7 @@ const WeatherScreen = () => {
 
   const handleSavePreferences = async () => {
     if (selectedCities.length === 0) {
-      Alert.alert('No Cities Selected', 'Please select at least one city.');
+      Alert.alert(t('noCitiesSelected'), t('pleaseSelectAtLeastOneCity'));
       return;
     }
 
@@ -238,7 +240,7 @@ const WeatherScreen = () => {
       });
 
       if (response.ok) {
-        showToast('Success', '✅ Weather preferences saved!', 'success');
+        showToast(t('success'), t('weatherPreferencesSaved'), 'success');
         
         // Trigger weather post update so feed shows your selected cities
         try {
@@ -254,11 +256,11 @@ const WeatherScreen = () => {
         // Refresh weather data to show updated cities
         fetchWeatherData();
       } else {
-        showToast('Error', 'Failed to save preferences', 'error');
+        showToast(t('error'), t('failedToSavePreferences'), 'error');
       }
     } catch (error) {
       console.error('Error saving preferences:', error);
-      showToast('Error', 'Failed to save preferences', 'error');
+      showToast(t('error'), t('failedToSavePreferences'), 'error');
     } finally {
       setSaving(false);
     }
@@ -365,9 +367,9 @@ const WeatherScreen = () => {
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <View style={styles.headerTextContainer}>
-            <Text style={styles.headerTitle}>Weather</Text>
+            <Text style={styles.headerTitle}>{t('weather')}</Text>
             <Text style={styles.headerSubtitle}>
-              Selected: {selectedCities.length}/10 cities
+              {t('selected')}: {selectedCities.length}/10 {t('cities')}
             </Text>
           </View>
           {user && weatherAccountId && (
@@ -380,7 +382,7 @@ const WeatherScreen = () => {
                 <ActivityIndicator size="small" color={isFollowing ? COLORS.text : '#FFFFFF'} />
               ) : (
                 <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
-                  {isFollowing ? 'Following' : 'Follow Weather'}
+                  {isFollowing ? t('following') : t('followWeather')}
                 </Text>
               )}
             </TouchableOpacity>
@@ -391,7 +393,7 @@ const WeatherScreen = () => {
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search cities (e.g., Doha, Baghdad)..."
+          placeholder={t('searchCities')}
           placeholderTextColor={COLORS.textGray}
           value={searchQuery}
           onChangeText={handleSearch}
@@ -408,7 +410,7 @@ const WeatherScreen = () => {
       {/* Search Results */}
       {searchQuery.trim().length >= 2 && searchResults.length > 0 && (
         <View style={styles.searchResultsContainer}>
-          <Text style={styles.searchResultsTitle}>Search Results</Text>
+          <Text style={styles.searchResultsTitle}>{t('searchResults')}</Text>
           <FlatList
             data={searchResults}
             keyExtractor={(item, index) => `${item.name}-${item.country}-${index}`}
@@ -427,7 +429,7 @@ const WeatherScreen = () => {
                   onPress={() => {
                     if (!isAlreadySelected) {
                       if (selectedCities.length >= 10) {
-                        Alert.alert('Limit Reached', 'You can select up to 10 cities only.');
+                        Alert.alert(t('limitReached'), t('youCanSelectUpTo10Cities'));
                         return;
                       }
                       // Save full city object with coordinates (better for backend)
@@ -437,9 +439,9 @@ const WeatherScreen = () => {
                         lat: item.lat,
                         lon: item.lon
                       }]);
-                      showToast('Success', `Added ${item.name}`, 'success');
+                      showToast(t('success'), `${t('added')} ${item.name}`, 'success');
                     } else {
-                      showToast('Info', `${item.name} is already selected`, 'info');
+                      showToast(t('info'), `${item.name} ${t('isAlreadySelected')}`, 'info');
                     }
                   }}
                   disabled={isAlreadySelected}
@@ -453,9 +455,9 @@ const WeatherScreen = () => {
                     )}
                   </View>
                   {isAlreadySelected ? (
-                    <Text style={styles.searchResultAdded}>✓ Added</Text>
+                    <Text style={styles.searchResultAdded}>✓ {t('added')}</Text>
                   ) : (
-                    <Text style={styles.searchResultAdd}>+ Add</Text>
+                    <Text style={styles.searchResultAdd}>+ {t('add')}</Text>
                   )}
                 </TouchableOpacity>
               );
@@ -467,8 +469,8 @@ const WeatherScreen = () => {
       {/* Show message when searching but no results */}
       {searchQuery.trim().length >= 2 && !searchLoading && searchResults.length === 0 && (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>No cities found for "{searchQuery}"</Text>
-          <Text style={styles.emptySubtext}>Try a different search term</Text>
+          <Text style={styles.emptyText}>{t('noCitiesFound')} "{searchQuery}"</Text>
+          <Text style={styles.emptySubtext}>{t('tryDifferentSearch')}</Text>
         </View>
       )}
 
@@ -488,8 +490,8 @@ const WeatherScreen = () => {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No weather data available</Text>
-              <Text style={styles.emptySubtext}>Pull down to refresh</Text>
+              <Text style={styles.emptyText}>{t('noWeatherData')}</Text>
+              <Text style={styles.emptySubtext}>{t('pullToRefresh')}</Text>
             </View>
           }
         />
@@ -504,7 +506,7 @@ const WeatherScreen = () => {
           {saving ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.saveButtonText}>Save & Update Feed</Text>
+            <Text style={styles.saveButtonText}>{t('saveAndUpdateFeed')}</Text>
           )}
         </TouchableOpacity>
       </View>

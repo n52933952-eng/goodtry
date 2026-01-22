@@ -183,7 +183,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             val notification = NotificationCompat.Builder(this, "call_notifications")
                 .setContentTitle("Incoming Call")
                 .setContentText("$callerName is calling...")
-                .setSmallIcon(android.R.drawable.ic_menu_call)
+                .setSmallIcon(R.drawable.ic_stat_ic_launcher)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setContentIntent(contentIntent) // Handle tap on notification - opens IncomingCallActivity
