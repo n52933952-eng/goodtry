@@ -263,14 +263,49 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             clearTimeout(connectionTimeoutRef.current);
             connectionTimeoutRef.current = null;
           }
-          // Start call duration timer
-          if (!callStartTimeRef.current) {
-            callStartTimeRef.current = Date.now();
-            callDurationIntervalRef.current = setInterval(() => {
+          // Start call duration timer (only if not already started)
+          // CRITICAL: Check if timer is already running before creating a new one
+          // This prevents duplicate timer starts even if event fires multiple times
+          if (!callDurationIntervalRef.current) {
+            // Reset callDuration to 0 to show "Connected" first
+            setCallDuration(0);
+            // Set start time to now
+            const startTime = Date.now();
+            callStartTimeRef.current = startTime;
+            
+            console.log('🕐 [WebRTC] Starting timer...', {
+              userId: user?._id,
+              isCaller: !call.isReceivingCall,
+              startTime
+            });
+            
+            // Start the interval - first update will happen after 1 second
+            const intervalId = setInterval(() => {
               if (callStartTimeRef.current) {
-                setCallDuration(Math.floor((Date.now() - callStartTimeRef.current) / 1000));
+                const duration = Math.floor((Date.now() - callStartTimeRef.current) / 1000);
+                console.log('⏱️ [WebRTC] Timer tick:', duration, { userId: user?._id });
+                setCallDuration(duration);
+              } else {
+                // If start time was cleared, stop the interval
+                if (callDurationIntervalRef.current) {
+                  clearInterval(callDurationIntervalRef.current);
+                  callDurationIntervalRef.current = null;
+                }
               }
             }, 1000);
+            callDurationIntervalRef.current = intervalId;
+            console.log('✅ [WebRTC] Call duration timer started (connection state)', {
+              userId: user?._id,
+              isCaller: !call.isReceivingCall,
+              intervalId: intervalId.toString()
+            });
+          } else {
+            console.log('⚠️ [WebRTC] Timer already running, skipping duplicate initialization', {
+              hasStartTime: !!callStartTimeRef.current,
+              hasInterval: !!callDurationIntervalRef.current,
+              userId: user?._id,
+              isCaller: !call.isReceivingCall
+            });
           }
           // Reset reconnection attempts on successful connection
           reconnectionAttempts.current = 0;
@@ -349,6 +384,32 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             clearTimeout(iceDisconnectedTimeoutRef.current);
             iceDisconnectedTimeoutRef.current = null;
             console.log('✅ [WebRTC] ICE connection recovered - cleared disconnected timeout');
+          }
+          // Also start timer here if connection state is also connected (for both users)
+          // This ensures timer starts even if connectionstatechange fires before iceconnectionstatechange
+          if (pc.connectionState === 'connected' && !callDurationIntervalRef.current) {
+            // Reset callDuration to 0 to show "Connected" first
+            setCallDuration(0);
+            // Set start time to now
+            callStartTimeRef.current = Date.now();
+            
+            // Start the interval - first update will happen after 1 second
+            const intervalId = setInterval(() => {
+              if (callStartTimeRef.current) {
+                const duration = Math.floor((Date.now() - callStartTimeRef.current) / 1000);
+                setCallDuration(duration);
+              } else {
+                if (callDurationIntervalRef.current) {
+                  clearInterval(callDurationIntervalRef.current);
+                  callDurationIntervalRef.current = null;
+                }
+              }
+            }, 1000);
+            callDurationIntervalRef.current = intervalId;
+            console.log('✅ [WebRTC] Call duration timer started (from ICE connection state)', {
+              userId: user?._id,
+              isCaller: !call.isReceivingCall
+            });
           }
           break;
         case 'failed':

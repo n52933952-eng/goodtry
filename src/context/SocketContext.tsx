@@ -175,7 +175,42 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Listen for new posts
     socketService.on(SOCKET_EVENTS.NEW_POST, (post) => {
       console.log('📩 New post received:', post);
-      addPost(post);
+      
+      // Check if it's a chess game post - these should always be added (backend only emits to followers)
+      const isChessPost = !!post?.chessGameData;
+      
+      if (isChessPost) {
+        // Chess posts: Backend already filters to only send to followers, so always add
+        console.log('✅ [SocketContext] Adding chess game post to feed:', post._id);
+        addPost(post);
+        return;
+      }
+      
+      // For regular posts, check if user follows the author
+      if (post?.postedBy?._id || post?.postedBy) {
+        const authorId = post.postedBy._id?.toString?.() || post.postedBy.toString?.() || post.postedBy;
+        const userFollowing = user?.following || [];
+        const isFollowing = userFollowing.some((f: any) => {
+          const followId = f?._id?.toString?.() || f?.toString?.() || f;
+          return followId === authorId;
+        });
+        
+        // Add post if following the author OR if it's a system post (Weather, Football, etc.)
+        const isSystemPost = post.postedBy?.username === 'Weather' || 
+                            post.postedBy?.username === 'Football' ||
+                            post.postedBy?.username === 'AlJazeera';
+        
+        if (isFollowing || isSystemPost) {
+          console.log('✅ [SocketContext] Adding post to feed:', post._id);
+          addPost(post);
+        } else {
+          console.log('⚠️ [SocketContext] Ignoring post from user not followed:', authorId);
+        }
+      } else {
+        // If no author info, add it anyway (shouldn't happen, but be safe)
+        console.log('⚠️ [SocketContext] Post has no author info, adding anyway:', post._id);
+        addPost(post);
+      }
     });
 
     // Listen for post updates
@@ -195,9 +230,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // Listen for post deletions
-    socketService.on(SOCKET_EVENTS.POST_DELETED, (postId) => {
-      console.log('🗑️ Post deleted:', postId);
-      deletePost(postId);
+    socketService.on(SOCKET_EVENTS.POST_DELETED, (payload) => {
+      // Backend sends: { postId: post._id } or just postId string
+      const postId = payload?.postId?.toString?.() ?? payload?.toString?.() ?? payload;
+      console.log('🗑️ [SocketContext] Post deleted event received:', { payload, postId });
+      if (postId) {
+        console.log('✅ [SocketContext] Removing post from feed:', postId);
+        deletePost(postId);
+      } else {
+        console.warn('⚠️ [SocketContext] Post deletion event received but postId is missing:', payload);
+      }
     });
 
     // Listen for football updates

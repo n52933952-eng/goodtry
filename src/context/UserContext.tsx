@@ -112,6 +112,12 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
   const login = async (userData: User) => {
     try {
+      // Clear any previous user data first to prevent showing stale data
+      // This ensures clean state when switching between users
+      setUserState(null);
+      await AsyncStorage.removeItem(STORAGE_KEYS.USER).catch(() => {});
+      
+      // Set new user data
       await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
       setUserState(userData);
       

@@ -22,7 +22,7 @@ const LoginScreen = ({ navigation }: any) => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   
-  const { login } = useUser();
+  const { login, logout } = useUser();
   const { language, setLanguage, t, isRTL } = useLanguage();
   const showToast = useShowToast();
 
@@ -42,6 +42,9 @@ const LoginScreen = ({ navigation }: any) => {
 
     setLoading(true);
     try {
+      // Clear any previous user data first to prevent showing stale data
+      await logout();
+      
       const response = await apiService.post(ENDPOINTS.LOGIN, {
         username: username.toLowerCase(),
         password,

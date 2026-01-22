@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -8,6 +9,7 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { COLORS } from '../../utils/constants';
@@ -23,6 +25,7 @@ const SearchScreen = ({ navigation }: any) => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [updatingUserIds, setUpdatingUserIds] = useState<Record<string, boolean>>({});
 
   const followingSet = useMemo(() => {
@@ -34,6 +37,20 @@ const SearchScreen = ({ navigation }: any) => {
     fetchSuggestedUsers();
   }, []);
 
+  // Refresh when screen comes into focus to pick up follow/unfollow changes from other screens
+  useFocusEffect(
+    React.useCallback(() => {
+      // Only refresh if we're not searching (showing suggested users)
+      if (!searchQuery.trim()) {
+        // Small delay to ensure UserContext has updated
+        const timer = setTimeout(() => {
+          fetchSuggestedUsers();
+        }, 100);
+        return () => clearTimeout(timer);
+      }
+    }, [searchQuery])
+  );
+
   useEffect(() => {
     if (searchQuery.trim()) {
       handleSearch(searchQuery);
@@ -42,11 +59,47 @@ const SearchScreen = ({ navigation }: any) => {
     }
   }, [searchQuery]);
 
-  const fetchSuggestedUsers = async () => {
+  // List of all system accounts/channels to filter out (only show real users)
+  // Check both username and name fields
+  const systemAccounts = [
+    'Football', 'Weather', 'AlJazeera', 'NBCNews', 'BeinSportsNews', 
+    'SkyNews', 'Sky News', 'Sky Sport', 'Cartoonito', 'NatGeoKids', 
+    'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 
+    'MBCDrama', 'Fox11', 'NBC News', 'beIN SPORTS', 'MBC Drama'
+  ];
+  
+  const isSystemAccount = (user: any) => {
+    if (!user) return false;
+    const username = user.username?.toLowerCase().trim() || '';
+    const name = user.name?.toLowerCase().trim() || '';
+    
+    return systemAccounts.some(sys => {
+      const sysLower = sys.toLowerCase();
+      return username === sysLower || name === sysLower || 
+             name.includes(sysLower) || username.includes(sysLower);
+    });
+  };
+
+  const fetchSuggestedUsers = async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    
     try {
       const data = await apiService.get(ENDPOINTS.GET_SUGGESTED_USERS);
       const arr = Array.isArray(data) ? data : [];
-      const filtered = arr.filter((u: any) => u?.username !== 'Football' && u?.username !== 'Weather');
+      // Filter out ALL system accounts/channels - only show real users
+      const filtered = arr.filter((u: any) => {
+        if (!u || !u.username) return false;
+        // Exclude system accounts (check both username and name)
+        if (isSystemAccount(u)) {
+          return false;
+        }
+        // Only include real users (must have a valid username)
+        return u.username.trim().length > 0;
+      });
       setSuggestedUsers(filtered);
     } catch (error) {
       console.error('Error fetching suggested users:', error);
@@ -54,6 +107,14 @@ const SearchScreen = ({ navigation }: any) => {
       showToast('Error', 'Failed to load suggested users', 'error');
     } finally {
       setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const handleRefresh = () => {
+    if (!searchQuery.trim()) {
+      // Only refresh suggested users if not searching
+      fetchSuggestedUsers(true);
     }
   };
 
@@ -66,7 +127,18 @@ const SearchScreen = ({ navigation }: any) => {
     setSearchLoading(true);
     try {
       const data = await apiService.get(`${ENDPOINTS.SEARCH_USERS}?search=${encodeURIComponent(query)}`);
-      setSearchResults(Array.isArray(data) ? data : []);
+      const arr = Array.isArray(data) ? data : [];
+      // Filter out ALL system accounts/channels - only show real users
+      const filtered = arr.filter((u: any) => {
+        if (!u || !u.username) return false;
+        // Exclude system accounts (check both username and name)
+        if (isSystemAccount(u)) {
+          return false;
+        }
+        // Only include real users (must have a valid username)
+        return u.username.trim().length > 0;
+      });
+      setSearchResults(filtered);
     } catch (error) {
       console.error('Error searching users:', error);
       setSearchResults([]);
@@ -135,7 +207,10 @@ const SearchScreen = ({ navigation }: any) => {
       <View style={styles.userItem}>
         <TouchableOpacity
           style={styles.userTapArea}
-          onPress={() => navigation.navigate('UserProfile', { username: item.username })}
+          onPress={() => navigation.navigate('Profile', { 
+            screen: 'UserProfile', 
+            params: { username: item.username } 
+          })}
           activeOpacity={0.8}
         >
           {item.profilePic ? (
@@ -215,6 +290,13 @@ const SearchScreen = ({ navigation }: any) => {
               data={suggestedUsers}
               renderItem={renderUser}
               keyExtractor={(item) => item._id}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor={COLORS.primary}
+                />
+              }
             />
           )}
         </View>

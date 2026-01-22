@@ -68,6 +68,57 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
   const [weatherDataArray, setWeatherDataArray] = useState<any[]>([]);
   const [weatherLoading, setWeatherLoading] = useState(false);
 
+  // Chess game post state
+  const isChessPost = !!post?.chessGameData;
+  const [chessGameData, setChessGameData] = useState<any>(null);
+  
+  // Parse chess game data
+  useEffect(() => {
+    if (isChessPost && post.chessGameData) {
+      try {
+        const parsed = typeof post.chessGameData === 'string' 
+          ? JSON.parse(post.chessGameData) 
+          : post.chessGameData;
+        setChessGameData(parsed);
+      } catch (e) {
+        console.error('❌ [Post] Error parsing chessGameData:', e);
+        setChessGameData(null);
+      }
+    } else {
+      setChessGameData(null);
+    }
+  }, [isChessPost, post?.chessGameData]);
+
+  // Handle chess post click - navigate to watch game
+  const handleChessPostClick = () => {
+    if (!chessGameData || !chessGameData.roomId) {
+      showToast('Error', 'Invalid chess game data', 'error');
+      return;
+    }
+
+    const currentUserId = user?._id?.toString();
+    const player1Id = chessGameData.player1?._id?.toString();
+    const player2Id = chessGameData.player2?._id?.toString();
+    const roomId = chessGameData.roomId;
+
+    // Determine opponent ID for navigation
+    let opponentId = player1Id;
+    if (currentUserId === player1Id) {
+      opponentId = player2Id || player1Id;
+    } else if (currentUserId === player2Id) {
+      opponentId = player1Id || player2Id;
+    }
+
+    // Navigate to ChessGame screen as spectator
+    console.log('♟️ [Post] Navigating to chess game:', { roomId, opponentId, isSpectator: true });
+    navigation.navigate('ChessGame', {
+      roomId,
+      opponentId: opponentId || player1Id,
+      color: 'white', // Spectators view as white by default
+      isSpectator: true,
+    });
+  };
+
   // Update local state when post prop changes
   useEffect(() => {
     setLocalLiked(post.likes?.includes(user?._id));
@@ -532,9 +583,27 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         ) : (
           // FEED OPTIMIZATION: render a lightweight placeholder instead of mounting WebView in a scrolling list
           <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
-            <View style={[styles.videoContainer, { justifyContent: 'center', alignItems: 'center' }]}>
-              <Text style={{ fontSize: 42, color: '#FFFFFF' }}>▶</Text>
-              <Text style={{ color: COLORS.textGray, marginTop: 8 }}>Tap to play</Text>
+            <View style={styles.videoContainer}>
+              {/* Show thumbnail if available (for channels or posts with thumbnail) */}
+              {post.thumbnail ? (
+                <Image
+                  source={{ uri: post.thumbnail }}
+                  style={styles.videoThumbnail}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.videoContainer, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }]}>
+                  <Text style={{ fontSize: 42, color: '#FFFFFF' }}>▶</Text>
+                  <Text style={{ color: COLORS.textGray, marginTop: 8 }}>Tap to play</Text>
+                </View>
+              )}
+              {/* Always show play button overlay */}
+              <View style={styles.youtubeOverlay}>
+                <View style={styles.youtubePlayButton}>
+                  <Text style={styles.youtubePlayIcon}>▶</Text>
+                </View>
+                <Text style={styles.youtubeWatchText}>Tap to play</Text>
+              </View>
             </View>
           </TouchableOpacity>
         )
@@ -608,6 +677,76 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
           </Text>
           <Text style={styles.footballStatus}>{post.footballData.status}</Text>
         </View>
+      )}
+
+      {/* Chess Game Card Display */}
+      {isChessPost && chessGameData && (
+        <TouchableOpacity
+          style={styles.chessCard}
+          onPress={handleChessPostClick}
+          activeOpacity={0.8}
+        >
+          <View style={styles.chessCardHeader}>
+            <View style={styles.chessCardTitle}>
+              <Text style={styles.chessIcon}>♟️</Text>
+              <View>
+                <Text style={styles.chessTitle}>Playing Chess</Text>
+                <Text style={styles.chessSubtitle}>Tap to watch</Text>
+              </View>
+            </View>
+            <View style={styles.chessLiveBadge}>
+              <Text style={styles.chessLiveText}>Live</Text>
+            </View>
+          </View>
+          
+          <View style={styles.chessPlayers}>
+            {/* Player 1 */}
+            <View style={styles.chessPlayer}>
+              {chessGameData.player1?.profilePic ? (
+                <Image
+                  source={{ uri: chessGameData.player1.profilePic }}
+                  style={styles.chessPlayerAvatar}
+                />
+              ) : (
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder]}>
+                  <Text style={styles.chessPlayerAvatarText}>
+                    {chessGameData.player1?.name?.[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.chessPlayerName} numberOfLines={1}>
+                {chessGameData.player1?.name || 'Player 1'}
+              </Text>
+              <Text style={styles.chessPlayerUsername} numberOfLines={1}>
+                @{chessGameData.player1?.username || 'player1'}
+              </Text>
+            </View>
+
+            <Text style={styles.chessVs}>vs</Text>
+
+            {/* Player 2 */}
+            <View style={styles.chessPlayer}>
+              {chessGameData.player2?.profilePic ? (
+                <Image
+                  source={{ uri: chessGameData.player2.profilePic }}
+                  style={styles.chessPlayerAvatar}
+                />
+              ) : (
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder]}>
+                  <Text style={styles.chessPlayerAvatarText}>
+                    {chessGameData.player2?.name?.[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.chessPlayerName} numberOfLines={1}>
+                {chessGameData.player2?.name || 'Player 2'}
+              </Text>
+              <Text style={styles.chessPlayerUsername} numberOfLines={1}>
+                @{chessGameData.player2?.username || 'player2'}
+              </Text>
+            </View>
+          </View>
+        </TouchableOpacity>
       )}
 
       <View style={styles.footer} pointerEvents="box-none">
@@ -735,6 +874,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   youtubeThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  videoThumbnail: {
     width: '100%',
     height: '100%',
   },
@@ -880,6 +1023,92 @@ const styles = StyleSheet.create({
   actionText: {
     fontSize: 14,
     color: COLORS.textGray,
+  },
+  chessCard: {
+    backgroundColor: COLORS.backgroundLight,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  chessCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  chessCardTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  chessIcon: {
+    fontSize: 32,
+  },
+  chessTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  chessSubtitle: {
+    fontSize: 12,
+    color: COLORS.textGray,
+    marginTop: 2,
+  },
+  chessLiveBadge: {
+    backgroundColor: COLORS.success,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  chessLiveText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chessPlayers: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    gap: 16,
+  },
+  chessPlayer: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  chessPlayerAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginBottom: 8,
+  },
+  chessPlayerAvatarPlaceholder: {
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chessPlayerAvatarText: {
+    color: '#FFFFFF',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  chessPlayerName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  chessPlayerUsername: {
+    fontSize: 12,
+    color: COLORS.textGray,
+    textAlign: 'center',
+  },
+  chessVs: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: COLORS.text,
   },
 });
 

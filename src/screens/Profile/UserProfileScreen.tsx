@@ -21,7 +21,7 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
-  const { user: currentUser } = useUser();
+  const { user: currentUser, updateUser } = useUser();
   const username = usernameParam === 'self' ? currentUser?.username : usernameParam;
   const showToast = useShowToast();
   const { t } = useLanguage();
@@ -40,15 +40,46 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const POSTS_PER_PAGE = 9;
 
   useEffect(() => {
+    // Clear previous data immediately when username changes to prevent showing stale data
+    setProfileUser(null);
+    setPosts([]);
+    setFollowing(false);
+    setLoading(true);
+    setSkip(0);
+    setHasMore(true);
+    
+    // Fetch new data
     fetchUserProfile();
     fetchUserPosts(false); // Initial load
+    
+    // Cleanup function to prevent state updates if component unmounts or username changes
+    return () => {
+      // This will prevent stale data from being set if navigation changes
+    };
   }, [username]);
+
+  // Update following state immediately from UserContext when profile user or currentUser changes
+  // This ensures the button shows correct state even before backend response
+  useEffect(() => {
+    if (profileUser && currentUser) {
+      const profileUserId = profileUser._id?.toString();
+      const isFollowingFromContext = (currentUser.following || []).some(
+        (id: any) => id?.toString() === profileUserId
+      );
+      setFollowing(isFollowingFromContext);
+    }
+  }, [profileUser?._id, currentUser?.following]);
 
   // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile)
   useFocusEffect(
     React.useCallback(() => {
-      // Only refresh if we're viewing own profile (username matches current user)
-      if (username === currentUser?.username || username === 'self') {
+      const isOwnProfile = username === currentUser?.username || username === 'self';
+      
+      // If viewing own profile, clear state first to prevent showing stale data
+      if (isOwnProfile) {
+        setProfileUser(null);
+        setPosts([]);
+        setLoading(true);
         fetchUserProfile();
       }
     }, [username, currentUser?.username])
@@ -77,24 +108,55 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   }, [currentUser?.profilePic, currentUser?.name, currentUser?.username, currentUser?.bio, currentUser?.country, username]);
 
   const fetchUserProfile = async () => {
+    // Store current username to verify response is still relevant
+    const currentUsername = username;
+    
     try {
-      const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/${username}`);
+      const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/${currentUsername}`);
+      
+      // Verify we're still viewing the same profile (prevent stale data)
+      if (currentUsername !== username) {
+        console.log('⚠️ [UserProfileScreen] Username changed during fetch, ignoring response');
+        return;
+      }
+      
       setProfileUser(data);
+      
+      // Check UserContext first for immediate accuracy (avoids double follow)
+      const profileUserId = data._id?.toString();
+      const isFollowingFromContext = (currentUser?.following || []).some(
+        (id: any) => id?.toString() === profileUserId
+      );
+      
       // Prefer backend-calculated follow state (works even if follower list is capped for scalability)
+      // But also verify against UserContext to ensure consistency
       if (typeof data?.isFollowedByMe === 'boolean') {
+        // Use backend value, but UserContext useEffect will sync it if different
         setFollowing(data.isFollowedByMe);
       } else {
-        setFollowing(data.followers?.includes(currentUser?._id));
+        // Fallback: check both backend followers list and UserContext
+        const isFollowingFromBackend = data.followers?.includes(currentUser?._id);
+        // Prefer UserContext as source of truth (most up-to-date)
+        setFollowing(isFollowingFromContext || isFollowingFromBackend);
       }
     } catch (error: any) {
-      showToast('Error', 'Failed to load profile', 'error');
+      // Only show error if we're still viewing the same profile
+      if (currentUsername === username) {
+        showToast('Error', 'Failed to load profile', 'error');
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      // Only update loading state if we're still viewing the same profile
+      if (currentUsername === username) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
   const fetchUserPosts = async (isLoadMore = false) => {
+    // Store current username to verify response is still relevant
+    const currentUsername = username;
+    
     if (isLoadMore) {
       setLoadingMore(true);
     } else {
@@ -105,8 +167,14 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     try {
       const currentSkip = isLoadMore ? skip : 0;
       const data = await apiService.get(
-        `${ENDPOINTS.GET_USER_POSTS}/${username}?limit=${POSTS_PER_PAGE}&skip=${currentSkip}`
+        `${ENDPOINTS.GET_USER_POSTS}/${currentUsername}?limit=${POSTS_PER_PAGE}&skip=${currentSkip}`
       );
+      
+      // Verify we're still viewing the same profile (prevent stale data)
+      if (currentUsername !== username) {
+        console.log('⚠️ [UserProfileScreen] Username changed during posts fetch, ignoring response');
+        return;
+      }
       
       const newPosts = data.posts || data || [];
       
@@ -138,11 +206,17 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         setHasMore(newPosts.length === POSTS_PER_PAGE);
       }
     } catch (error) {
-      console.error('Error fetching user posts:', error);
-      showToast('Error', 'Failed to load posts', 'error');
+      // Only show error if we're still viewing the same profile
+      if (currentUsername === username) {
+        console.error('Error fetching user posts:', error);
+        showToast('Error', 'Failed to load posts', 'error');
+      }
     } finally {
-      setLoadingMore(false);
-      setRefreshing(false);
+      // Only update loading state if we're still viewing the same profile
+      if (currentUsername === username) {
+        setLoadingMore(false);
+        setRefreshing(false);
+      }
     }
   };
   
@@ -159,7 +233,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     try {
       // Backend expects POST, not PUT (same as web)
       await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
+      
+      const profileUserId = profileUser._id?.toString();
+      const isCurrentlyFollowing = following;
+      const nextFollowing = isCurrentlyFollowing
+        ? (currentUser.following || []).filter((id: any) => id?.toString() !== profileUserId)
+        : [...(currentUser.following || []), profileUserId];
+      
+      // Update local state
       setFollowing(!following);
+      
+      // Update UserContext so other screens (like SearchScreen) reflect the change
+      updateUser({ following: nextFollowing as any });
+      
       showToast(t('success'), following ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToFollowUnfollow'), 'error');

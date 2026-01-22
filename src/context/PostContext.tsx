@@ -10,6 +10,7 @@ export interface Post {
   };
   text: string;
   img?: string;
+  thumbnail?: string;
   isCollaborative?: boolean;
   contributors?: any[];
   likes: string[];
@@ -21,6 +22,7 @@ export interface Post {
   isFootballPost?: boolean;
   weatherData?: any;
   footballData?: any;
+  chessGameData?: string; // JSON string containing chess game data
 }
 
 interface PostContextType {

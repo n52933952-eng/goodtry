@@ -323,9 +323,12 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
           <Text style={styles.userName}>
             {call.isReceivingCall ? call.name : userName || 'User'}
           </Text>
-          <Text style={styles.statusText}>
-            {getConnectionStatus()}
-          </Text>
+          {/* Show status in center ONLY when NOT fully connected - hide completely when connected */}
+          {!(callAccepted && connectionState === 'connected' && iceConnectionState === 'connected') ? (
+            <Text key="center-status" style={styles.statusText}>
+              {getConnectionStatus()}
+            </Text>
+          ) : null}
         </View>
       )}
 
@@ -411,9 +414,16 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
         <Text style={styles.callTypeText}>
           {callType === 'video' ? '📹 Video Call' : '📞 Voice Call'}
         </Text>
-        <Text style={styles.durationText}>
-          {getConnectionStatus()}
-        </Text>
+        {/* Show timer or "Connected" in top overlay - same for both caller and receiver */}
+        {callAccepted && connectionState === 'connected' && iceConnectionState === 'connected' ? (
+          <Text key="call-status" style={styles.durationText}>
+            {callDuration > 0 ? formatCallDuration(callDuration) : 'Connected'}
+          </Text>
+        ) : (
+          <Text key="call-status-connecting" style={styles.durationText}>
+            {getConnectionStatus()}
+          </Text>
+        )}
         {(connectionState === 'failed' || iceConnectionState === 'failed') && (
           <Text style={styles.errorText}>
             Connection issue - trying to reconnect...

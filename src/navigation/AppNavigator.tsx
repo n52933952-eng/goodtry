@@ -144,7 +144,21 @@ const MainTabs = () => (
               });
 
               if (!isFocused && !event.defaultPrevented) {
-                props.navigation.navigate(route.name);
+                // Special handling for Profile tab: always navigate to own profile
+                if (route.name === 'Profile') {
+                  props.navigation.navigate('Profile', {
+                    screen: 'UserProfile',
+                    params: { username: 'self' }
+                  });
+                } else {
+                  props.navigation.navigate(route.name);
+                }
+              } else if (isFocused && route.name === 'Profile') {
+                // If already on Profile tab, navigate to own profile (in case viewing another user's profile)
+                props.navigation.navigate('Profile', {
+                  screen: 'UserProfile',
+                  params: { username: 'self' }
+                });
               }
             };
 
