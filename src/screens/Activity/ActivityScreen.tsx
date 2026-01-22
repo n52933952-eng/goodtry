@@ -19,6 +19,7 @@ const formatTimeAgo = (dateString: string) => {
   try {
     const date = new Date(dateString);
     const now = new Date();
+    console.log(now)
     
     // Validate date
     if (isNaN(date.getTime())) {
