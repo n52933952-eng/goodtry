@@ -16,6 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { usePost } from '../context/PostContext';
 import { useTheme } from '../context/ThemeContext';
+import { useSocket } from '../context/SocketContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
@@ -56,6 +57,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
   const { user } = useUser();
   const { likePost, unlikePost, deletePost: deletePostContext } = usePost();
   const { colors } = useTheme();
+  const { socket } = useSocket();
   const showToast = useShowToast();
 
   const [isLiking, setIsLiking] = useState(false);
@@ -70,9 +72,30 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
   const [weatherDataArray, setWeatherDataArray] = useState<any[]>([]);
   const [weatherLoading, setWeatherLoading] = useState(false);
 
+  // Football post detection - log all posts to debug
+  const isFootballPost = post.isFootballPost || post.postedBy?.username === 'Football';
+  if (isFootballPost || post.postedBy?.username === 'Football') {
+    console.log('⚽ [Post] Football post detected:', {
+      isFootballPost: post.isFootballPost,
+      username: post.postedBy?.username,
+      hasLiveMatches: !!post.liveMatches,
+      hasMatches: !!post.matches,
+      hasTodayMatches: !!post.todayMatches,
+      hasFootballData: !!post.footballData,
+      allKeys: Object.keys(post),
+      allKeysFull: Object.keys(post).join(', '), // Show all keys as string
+      text: post.text?.substring(0, 50),
+      fullPost: post // Log entire post structure
+    });
+  }
+
   // Chess game post state
   const isChessPost = !!post?.chessGameData;
   const [chessGameData, setChessGameData] = useState<any>(null);
+
+  // Football post state - fetch matches from API
+  const [footballMatches, setFootballMatches] = useState<any[]>([]);
+  const [footballLoading, setFootballLoading] = useState(false);
   
   // Parse chess game data
   useEffect(() => {
@@ -90,6 +113,81 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
       setChessGameData(null);
     }
   }, [isChessPost, post?.chessGameData]);
+
+  // Fetch football matches for football posts (reusable function)
+  const fetchFootballMatches = React.useCallback(async (silent = false) => {
+    if (!isFootballPost) return;
+
+    try {
+      if (!silent) {
+        setFootballLoading(true);
+        console.log('⚽ [Post] Starting to fetch matches...');
+      }
+      
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Fetch ONLY live matches (today) - no upcoming matches in feed
+      const liveData = await apiService.get(
+        `${ENDPOINTS.GET_MATCHES}?status=live&date=${today}`
+      );
+      const liveMatches = liveData.matches || [];
+      
+      // Only set live matches (no upcoming matches in feed)
+      setFootballMatches(liveMatches);
+      
+      if (!silent) {
+        console.log('⚽ [Post] Fetched LIVE matches only:', {
+          live: liveMatches.length,
+          total: liveMatches.length,
+          liveMatches: liveMatches
+        });
+      }
+    } catch (error: any) {
+      console.error('⚽ [Post] Error fetching football matches:', error);
+    } finally {
+      if (!silent) {
+        setFootballLoading(false);
+      }
+    }
+  }, [isFootballPost]);
+
+  // Initial fetch on mount
+  useEffect(() => {
+    console.log('⚽ [Post] useEffect triggered:', { isFootballPost, username: post.postedBy?.username });
+    if (!isFootballPost) {
+      console.log('⚽ [Post] Skipping fetch - not a football post');
+      return;
+    }
+
+    fetchFootballMatches();
+  }, [isFootballPost, fetchFootballMatches]);
+
+  // Listen for real-time match updates via socket
+  useEffect(() => {
+    if (!isFootballPost || !socket) return;
+
+    const handleFootballMatchUpdate = () => {
+      console.log('⚽ [Post] Match update received via socket, refreshing matches silently...');
+      fetchFootballMatches(true); // Silent refresh (no loading spinner)
+    };
+
+    const handleFootballPageUpdate = (data: any) => {
+      console.log('⚽ [Post] Page update received via socket:', {
+        live: data.live?.length || 0,
+        upcoming: data.upcoming?.length || 0,
+        finished: data.finished?.length || 0
+      });
+      fetchFootballMatches(true); // Silent refresh
+    };
+
+    socket.on('footballMatchUpdate', handleFootballMatchUpdate);
+    socket.on('footballPageUpdate', handleFootballPageUpdate);
+
+    return () => {
+      socket.off('footballMatchUpdate', handleFootballMatchUpdate);
+      socket.off('footballPageUpdate', handleFootballPageUpdate);
+    };
+  }, [isFootballPost, socket, fetchFootballMatches]);
 
   // Handle chess post click - navigate to watch game
   const handleChessPostClick = () => {
@@ -434,18 +532,21 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         )}
       </View>
 
-      {disableNavigation ? (
-        <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
-      ) : (
-        <TouchableOpacity 
-          onPress={() => {
-            // Navigate to PostDetail
-            navigateToPostDetail(post._id);
-          }}
-          activeOpacity={0.9}
-        >
+      {/* Hide post text for football posts if we have matches (from API or post data) */}
+      {!(isFootballPost && (footballMatches.length > 0 || post.liveMatches?.length > 0 || post.matches?.length > 0 || post.todayMatches?.length > 0)) && (
+        disableNavigation ? (
           <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
-        </TouchableOpacity>
+        ) : (
+          <TouchableOpacity 
+            onPress={() => {
+              // Navigate to PostDetail
+              navigateToPostDetail(post._id);
+            }}
+            activeOpacity={0.9}
+          >
+            <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+          </TouchableOpacity>
+        )
       )}
 
       {post.img && isYouTubeEmbed && youtubeVideoId ? (
@@ -680,7 +781,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         </View>
       )}
 
-      {post.isFootballPost && (
+      {isFootballPost && (
         <View style={{ marginBottom: 10 }}>
           {/* Debug: Log football post data */}
           {console.log('⚽ [Post] Football post data:', { 
@@ -694,25 +795,64 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             allKeys: Object.keys(post),
             text: post.text?.substring(0, 100)
           })}
-          {/* Check if we have liveMatches array (new format) */}
-          {(post.liveMatches && post.liveMatches.length > 0) || (post.matches && post.matches.length > 0) || (post.todayMatches && post.todayMatches.length > 0) ? (
+          {/* Check if we have matches from API fetch or post data */}
+          {footballLoading ? (
+            <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', marginTop: 8 }]}>
+                Loading matches...
+              </Text>
+            </View>
+          ) : (footballMatches.length > 0 || (post.liveMatches && post.liveMatches.length > 0) || (post.matches && post.matches.length > 0) || (post.todayMatches && post.todayMatches.length > 0)) ? (
             <>
               {(() => {
-                const matchesArray = post.liveMatches || post.matches || post.todayMatches || [];
-                const liveMatches = matchesArray.filter((m: any) => m.status === 'IN_PLAY' || m.status === 'LIVE' || m.status === 'PAUSED');
+                const matchesArray = footballMatches.length > 0 ? footballMatches : (post.liveMatches || post.matches || post.todayMatches || []);
+                
+                // Filter to ONLY show live matches (no upcoming matches in feed)
+                const liveMatches = matchesArray.filter((m: any) => {
+                  const status = m.fixture?.status?.short || m.fixture?.status?.long || m.status;
+                  return status === 'LIVE' || status === 'IN_PLAY' || status === 'PAUSED' || m.fixture?.status?.elapsed !== null;
+                });
+                
+                console.log('⚽ [Post] Rendering LIVE matches only:', {
+                  totalMatches: matchesArray.length,
+                  liveMatchesCount: liveMatches.length,
+                  liveMatches: liveMatches
+                });
+                
                 const hasLive = liveMatches.length > 0;
+                
+                // If no live matches, show "No matches" message
+                if (!hasLive) {
+                  return (
+                    <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
+                      <Text style={[styles.footballTeam, { color: colors.cardText, textAlign: 'center' }]}>
+                        ⚽ No live matches right now
+                      </Text>
+                      <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', fontSize: 12 }]}>
+                        Check back during match hours
+                      </Text>
+                    </View>
+                  );
+                }
                 
                 return (
                   <>
-                    {hasLive && (
-                      <View style={[styles.footballCard, { backgroundColor: colors.error, marginBottom: 8 }]}>
-                        <Text style={[styles.footballTeam, { color: '#FFFFFF', fontWeight: 'bold', textAlign: 'center' }]}>
-                          🔴 LIVE MATCHES ({liveMatches.length})
-                        </Text>
-                      </View>
-                    )}
-                    {matchesArray.map((match: any, index: number) => {
-                      const isLive = match.status === 'IN_PLAY' || match.status === 'LIVE' || match.status === 'PAUSED';
+                    <View style={[styles.footballCard, { backgroundColor: colors.error, marginBottom: 8 }]}>
+                      <Text style={[styles.footballTeam, { color: '#FFFFFF', fontWeight: 'bold', textAlign: 'center' }]}>
+                        🔴 LIVE MATCHES ({liveMatches.length})
+                      </Text>
+                    </View>
+                    {liveMatches.map((match: any, index: number) => {
+                      // Handle MongoDB match structure: teams, goals, fixture
+                      const homeTeam = match.teams?.home?.name || match.homeTeam?.name || match.homeTeam || 'Home';
+                      const awayTeam = match.teams?.away?.name || match.awayTeam?.name || match.awayTeam || 'Away';
+                      const homeScore = match.goals?.home ?? match.score?.fullTime?.home ?? match.homeScore ?? 0;
+                      const awayScore = match.goals?.away ?? match.score?.fullTime?.away ?? match.awayScore ?? 0;
+                      const status = match.fixture?.status?.short || match.fixture?.status?.long || match.status || 'NS';
+                      const minute = match.fixture?.status?.elapsed || match.minute || null;
+                      const isLive = status === 'LIVE' || status === 'IN_PLAY' || status === 'PAUSED' || match.fixture?.status?.elapsed !== null;
+                      
                       return (
                         <View key={index} style={[
                           styles.footballCard, 
@@ -725,15 +865,15 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                         ]}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                             <Text style={[styles.footballTeam, { color: colors.cardText, flex: 1 }]}>
-                              {match.homeTeam?.name || match.homeTeam} vs {match.awayTeam?.name || match.awayTeam}
+                              {homeTeam} vs {awayTeam}
                             </Text>
                             {isLive && <Text style={{ color: colors.error, fontSize: 12, fontWeight: 'bold', marginLeft: 8 }}>● LIVE</Text>}
                           </View>
                           <Text style={[styles.footballScore, { color: colors.cardText, fontSize: 24, fontWeight: 'bold' }]}>
-                            {match.homeScore !== undefined ? match.homeScore : match.score?.fullTime?.home || 0} - {match.awayScore !== undefined ? match.awayScore : match.score?.fullTime?.away || 0}
+                            {homeScore} - {awayScore}
                           </Text>
                           <Text style={[styles.footballStatus, { color: colors.cardText }]}>
-                            {match.minute ? `${match.minute}' ` : ''}{match.status}
+                            {minute ? `${minute}' ` : ''}{status}
                           </Text>
                         </View>
                       );
@@ -754,13 +894,13 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
               <Text style={[styles.footballStatus, { color: colors.cardText }]}>{post.footballData.status}</Text>
             </View>
           ) : (
-            // No matches available
+            // No matches available (neither live nor upcoming)
             <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
               <Text style={[styles.footballTeam, { color: colors.cardText, textAlign: 'center' }]}>
-                No live matches right now
+                ⚽ No matches available
               </Text>
               <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', fontSize: 12 }]}>
-                Check back during match hours
+                Check back later for live updates
               </Text>
             </View>
           )}

@@ -65,16 +65,6 @@ const FeedScreen = ({ navigation }: any) => {
     fetchFeed();
   }, []);
 
-  // Auto-refresh feed every 2 minutes for live match updates
-  useEffect(() => {
-    const refreshInterval = setInterval(() => {
-      console.log('🔄 [FeedScreen] Auto-refreshing for live updates...');
-      fetchFeed(false);
-    }, 2 * 60 * 1000); // 2 minutes
-
-    return () => clearInterval(refreshInterval);
-  }, []);
-
   // Socket listeners specific to FeedScreen UI
   // NOTE: post create/update/delete events are handled globally in SocketContext/PostContext
   useEffect(() => {
@@ -111,8 +101,7 @@ const FeedScreen = ({ navigation }: any) => {
     // Football real-time updates
     const handleFootballUpdate = (data: any) => {
       console.log('⚽ [FeedScreen] Football update received, refreshing feed silently...', data);
-      // Force refresh to get updated football posts
-      setPosts([]); // Clear posts to force fresh fetch
+      // Silent refresh to get updated football posts (no clearing, just refresh)
       fetchFeed(false);
     };
 
@@ -138,7 +127,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('footballMatchUpdate', handleFootballUpdate);
       socket.off('weatherUpdate', handleWeatherUpdate);
     };
-  }, [socket, user, navigation, posts]);
+  }, [socket, user, navigation]);
 
   const fetchFeed = async (loadMore = false) => {
     // Prevent duplicate requests

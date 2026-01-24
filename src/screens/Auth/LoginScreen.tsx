@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { useTheme } from '../../context/ThemeContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -24,6 +25,7 @@ const LoginScreen = ({ navigation }: any) => {
   
   const { login, logout } = useUser();
   const { language, setLanguage, t, isRTL } = useLanguage();
+  const { colors } = useTheme();
   const showToast = useShowToast();
 
   // Note: I18nManager.forceRTL() requires app restart to take full effect
@@ -72,29 +74,29 @@ const LoginScreen = ({ navigation }: any) => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.content}>
           {/* Language Toggle Button */}
           <TouchableOpacity 
-            style={styles.languageToggle}
+            style={[styles.languageToggle, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
             onPress={handleToggleLanguage}
           >
-            <Text style={styles.languageToggleText}>
+            <Text style={[styles.languageToggleText, { color: colors.text }]}>
               {language === 'en' ? '🇬🇧 EN' : '🇸🇦 AR'}
             </Text>
           </TouchableOpacity>
 
-          <Text style={[styles.title, isRTL && styles.titleRTL]}>{t('welcomeBack')}</Text>
-          <Text style={[styles.subtitle, isRTL && styles.subtitleRTL]}>{t('loginToAccount')}</Text>
+          <Text style={[styles.title, isRTL && styles.titleRTL, { color: colors.text }]}>{t('welcomeBack')}</Text>
+          <Text style={[styles.subtitle, isRTL && styles.subtitleRTL, { color: colors.textGray }]}>{t('loginToAccount')}</Text>
 
           <View style={styles.form}>
             <TextInput
-              style={[styles.input, isRTL && styles.inputRTL]}
+              style={[styles.input, isRTL && styles.inputRTL, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
               placeholder={t('username')}
-              placeholderTextColor={COLORS.textGray}
+              placeholderTextColor={colors.textGray}
               value={username}
               onChangeText={setUsername}
               autoCapitalize="none"
@@ -104,9 +106,9 @@ const LoginScreen = ({ navigation }: any) => {
 
             <View style={styles.passwordContainer}>
               <TextInput
-                style={[styles.input, styles.passwordInput, isRTL && styles.inputRTL]}
+                style={[styles.input, styles.passwordInput, isRTL && styles.inputRTL, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
                 placeholder={t('password')}
-                placeholderTextColor={COLORS.textGray}
+                placeholderTextColor={colors.textGray}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
@@ -119,19 +121,19 @@ const LoginScreen = ({ navigation }: any) => {
                 accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Text style={styles.eyeText}>{showPassword ? '👁️' : '🔒'}</Text>
+                <Text style={[styles.eyeText, { color: colors.textGray }]}>{showPassword ? '👁️' : '🔒'}</Text>
               </TouchableOpacity>
             </View>
 
             <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
+              style={[styles.button, loading && styles.buttonDisabled, { backgroundColor: colors.primary }]}
               onPress={handleLogin}
               disabled={loading}
             >
               {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={colors.buttonText || '#FFFFFF'} />
               ) : (
-                <Text style={styles.buttonText}>{t('login')}</Text>
+                <Text style={[styles.buttonText, { color: colors.buttonText || '#FFFFFF' }]}>{t('login')}</Text>
               )}
             </TouchableOpacity>
 
@@ -139,8 +141,8 @@ const LoginScreen = ({ navigation }: any) => {
               style={styles.linkButton}
               onPress={() => navigation.navigate('Signup')}
             >
-              <Text style={[styles.linkText, isRTL && styles.linkTextRTL]}>
-                {t('dontHaveAccount')} <Text style={styles.linkTextBold}>{t('signUp')}</Text>
+              <Text style={[styles.linkText, isRTL && styles.linkTextRTL, { color: colors.textGray }]}>
+                {t('dontHaveAccount')} <Text style={[styles.linkTextBold, { color: colors.primary }]}>{t('signUp')}</Text>
               </Text>
             </TouchableOpacity>
           </View>
@@ -153,7 +155,6 @@ const LoginScreen = ({ navigation }: any) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
   },
   scrollContainer: {
     flexGrow: 1,

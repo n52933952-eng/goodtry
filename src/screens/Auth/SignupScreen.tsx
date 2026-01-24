@@ -13,6 +13,7 @@ import {
   FlatList,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useTheme } from '../../context/ThemeContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -92,6 +93,7 @@ const SignupScreen = ({ navigation }: any) => {
   const [showPassword, setShowPassword] = useState(false);
   
   const { login } = useUser();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   const { t, isRTL } = useLanguage();
 
@@ -142,28 +144,28 @@ const SignupScreen = ({ navigation }: any) => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={[styles.content, isRTL && styles.contentRTL]}>
-          <Text style={styles.title}>{t('createAccount')}</Text>
-          <Text style={styles.subtitle}>{t('signUpToGetStarted')}</Text>
+          <Text style={[styles.title, { color: colors.text }]}>{t('createAccount')}</Text>
+          <Text style={[styles.subtitle, { color: colors.textGray }]}>{t('signUpToGetStarted')}</Text>
 
           <View style={styles.form}>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
               placeholder={t('fullName')}
-              placeholderTextColor={COLORS.textGray}
+              placeholderTextColor={colors.textGray}
               value={name}
               onChangeText={setName}
               autoCapitalize="words"
             />
 
             <TextInput
-              style={styles.input}
+              style={[styles.input, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
               placeholder={t('username')}
-              placeholderTextColor={COLORS.textGray}
+              placeholderTextColor={colors.textGray}
               value={username}
               onChangeText={setUsername}
               autoCapitalize="none"
@@ -171,9 +173,9 @@ const SignupScreen = ({ navigation }: any) => {
             />
 
             <TextInput
-              style={styles.input}
+              style={[styles.input, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
               placeholder={t('email')}
-              placeholderTextColor={COLORS.textGray}
+              placeholderTextColor={colors.textGray}
               value={email}
               onChangeText={setEmail}
               autoCapitalize="none"
@@ -182,20 +184,20 @@ const SignupScreen = ({ navigation }: any) => {
             />
 
             <TouchableOpacity
-              style={styles.select}
+              style={[styles.select, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
               onPress={() => setCountryModalVisible(true)}
               activeOpacity={0.85}
             >
-              <Text style={[styles.selectText, !country && styles.selectPlaceholder]}>
+              <Text style={[styles.selectText, !country && styles.selectPlaceholder, { color: country ? colors.text : colors.textGray }]}>
                 {country || t('selectCountry')}
               </Text>
             </TouchableOpacity>
 
             <View style={styles.passwordContainer}>
               <TextInput
-                style={[styles.input, styles.passwordInput]}
+                style={[styles.input, styles.passwordInput, { backgroundColor: colors.backgroundLight, borderColor: colors.border, color: colors.text }]}
                 placeholder={t('passwordMin6')}
-                placeholderTextColor={COLORS.textGray}
+                placeholderTextColor={colors.textGray}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
@@ -207,19 +209,19 @@ const SignupScreen = ({ navigation }: any) => {
                 accessibilityLabel={showPassword ? t('hidePassword') : t('showPassword')}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Text style={styles.eyeText}>{showPassword ? '👁️' : '🔒'}</Text>
+                <Text style={[styles.eyeText, { color: colors.textGray }]}>{showPassword ? '👁️' : '🔒'}</Text>
               </TouchableOpacity>
             </View>
 
             <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
+              style={[styles.button, loading && styles.buttonDisabled, { backgroundColor: colors.primary }]}
               onPress={handleSignup}
               disabled={loading}
             >
               {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={colors.buttonText || '#FFFFFF'} />
               ) : (
-                <Text style={styles.buttonText}>{t('signUp')}</Text>
+                <Text style={[styles.buttonText, { color: colors.buttonText || '#FFFFFF' }]}>{t('signUp')}</Text>
               )}
             </TouchableOpacity>
 
@@ -227,8 +229,8 @@ const SignupScreen = ({ navigation }: any) => {
               style={styles.linkButton}
               onPress={() => navigation.navigate('Login')}
             >
-              <Text style={styles.linkText}>
-                {t('alreadyHaveAccount')} <Text style={styles.linkTextBold}>{t('login')}</Text>
+              <Text style={[styles.linkText, { color: colors.textGray }]}>
+                {t('alreadyHaveAccount')} <Text style={[styles.linkTextBold, { color: colors.primary }]}>{t('login')}</Text>
               </Text>
             </TouchableOpacity>
           </View>
@@ -242,29 +244,29 @@ const SignupScreen = ({ navigation }: any) => {
         onRequestClose={() => setCountryModalVisible(false)}
       >
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{t('selectCountry')}</Text>
+          <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text, borderBottomColor: colors.border }]}>{t('selectCountry')}</Text>
             <FlatList
               data={COUNTRIES}
               keyExtractor={(item) => item}
               keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => (
                 <TouchableOpacity
-                  style={styles.modalItem}
+                  style={[styles.modalItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
                     setCountry(item);
                     setCountryModalVisible(false);
                   }}
                 >
-                  <Text style={styles.modalItemText}>{item}</Text>
+                  <Text style={[styles.modalItemText, { color: colors.text }]}>{item}</Text>
                 </TouchableOpacity>
               )}
             />
             <TouchableOpacity
-              style={styles.modalClose}
+              style={[styles.modalClose, { borderTopColor: colors.border }]}
               onPress={() => setCountryModalVisible(false)}
             >
-              <Text style={styles.modalCloseText}>{t('close')}</Text>
+              <Text style={[styles.modalCloseText, { color: colors.primary }]}>{t('close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -276,7 +278,6 @@ const SignupScreen = ({ navigation }: any) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
   },
   scrollContainer: {
     flexGrow: 1,
@@ -305,13 +306,10 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   input: {
-    backgroundColor: COLORS.backgroundLight,
     borderWidth: 1,
-    borderColor: COLORS.border,
     borderRadius: 8,
     padding: 15,
     marginBottom: 15,
-    color: COLORS.text,
     fontSize: 16,
   },
   passwordContainer: {
@@ -334,23 +332,18 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
   },
   select: {
-    backgroundColor: COLORS.backgroundLight,
     borderWidth: 1,
-    borderColor: COLORS.border,
     borderRadius: 8,
     padding: 15,
     marginBottom: 15,
     justifyContent: 'center',
   },
   selectText: {
-    color: COLORS.text,
     fontSize: 16,
   },
   selectPlaceholder: {
-    color: COLORS.textGray,
   },
   button: {
-    backgroundColor: COLORS.primary,
     borderRadius: 8,
     padding: 15,
     alignItems: 'center',
@@ -383,39 +376,31 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   modalCard: {
-    backgroundColor: COLORS.backgroundLight,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
     maxHeight: '80%',
     overflow: 'hidden',
   },
   modalTitle: {
-    color: COLORS.text,
     fontSize: 18,
     fontWeight: 'bold',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
   },
   modalItem: {
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
   },
   modalItemText: {
-    color: COLORS.text,
     fontSize: 16,
   },
   modalClose: {
     padding: 16,
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
   },
   modalCloseText: {
-    color: COLORS.primary,
     fontWeight: 'bold',
     fontSize: 16,
   },
