@@ -255,12 +255,14 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
         options={({ navigation }) => ({
           headerShown: true,
           title: 'Profile',
+          headerTitleAlign: 'center',
           headerStyle: {
             backgroundColor: COLORS.background,
           },
           headerTintColor: COLORS.text,
           headerTitleStyle: {
             fontWeight: 'bold',
+            fontSize: 18,
           },
           headerLeft: () => (
             <TouchableOpacity 
@@ -273,9 +275,16 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
                   navigation.navigate('Feed');
                 }
               }} 
-              style={{ marginLeft: 10 }}
+              style={{ 
+                marginLeft: 15,
+                padding: 5,
+              }}
             >
-              <Text style={{ color: COLORS.text, fontSize: 24 }}>←</Text>
+              <Text style={{ 
+                color: COLORS.text, 
+                fontSize: 28,
+                fontWeight: 'bold',
+              }}>←</Text>
             </TouchableOpacity>
           ),
         })}

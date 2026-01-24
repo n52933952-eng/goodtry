@@ -1,9 +1,13 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
-import { SOCKET_EVENTS } from '../utils/constants';
+import { SOCKET_EVENTS, API_URL } from '../utils/constants';
 import Sound from 'react-native-sound';
+
+const NOTIFICATION_COUNT_KEY = '@notification_count';
 
 interface SocketContextType {
   socket: typeof socketService;
@@ -25,6 +29,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [isNotificationCountLoaded, setIsNotificationCountLoaded] = useState(false);
   
   // Notification sounds
   const notificationSounds = useRef<{
@@ -103,13 +108,83 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
+  // Load notification count from storage on mount
+  useEffect(() => {
+    const loadNotificationCount = async () => {
+      try {
+        const savedCount = await AsyncStorage.getItem(NOTIFICATION_COUNT_KEY);
+        if (savedCount !== null) {
+          const count = parseInt(savedCount, 10);
+          if (!isNaN(count)) {
+            console.log('📱 [SocketContext] Loaded notification count from storage:', count);
+            setNotificationCount(count);
+          }
+        }
+      } catch (error) {
+        console.error('❌ [SocketContext] Error loading notification count:', error);
+      } finally {
+        setIsNotificationCountLoaded(true);
+      }
+    };
+    loadNotificationCount();
+  }, []);
+
+  // Fetch actual notification count from server when user is available
+  useEffect(() => {
+    if (!user?._id || !isNotificationCountLoaded) return;
+
+    const fetchNotificationCount = async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/notification`, {
+          credentials: 'include',
+        });
+        const data = await response.json();
+        
+        if (response.ok && data.unreadCount !== undefined) {
+          const serverCount = data.unreadCount || 0;
+          console.log('📱 [SocketContext] Fetched notification count from server:', serverCount);
+          setNotificationCount(serverCount);
+          // Save to storage
+          await AsyncStorage.setItem(NOTIFICATION_COUNT_KEY, String(serverCount));
+        }
+      } catch (error) {
+        console.error('❌ [SocketContext] Error fetching notification count:', error);
+      }
+    };
+
+    fetchNotificationCount();
+  }, [user?._id, isNotificationCountLoaded]);
+
+  // Persist notification count whenever it changes
+  useEffect(() => {
+    if (!isNotificationCountLoaded) return;
+    
+    const saveCount = async () => {
+      try {
+        await AsyncStorage.setItem(NOTIFICATION_COUNT_KEY, String(notificationCount));
+        console.log('💾 [SocketContext] Saved notification count to storage:', notificationCount);
+      } catch (error) {
+        console.error('❌ [SocketContext] Error saving notification count:', error);
+      }
+    };
+    
+    saveCount();
+  }, [notificationCount, isNotificationCountLoaded]);
+
   // Presence optimization:
   // - Prefer `presenceSnapshot` + `presenceUpdate` for a targeted list of users (followers/following)
   // - Keep legacy `getOnlineUser` as fallback for old server/client behavior
   const [presenceMap, setPresenceMap] = useState<Record<string, boolean>>({});
 
+  // Clear notification count when user logs out
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      // User logged out - clear notification count
+      setNotificationCount(0);
+      AsyncStorage.removeItem(NOTIFICATION_COUNT_KEY).catch(() => {});
+      setIsNotificationCountLoaded(false);
+      return;
+    }
 
     // CRITICAL: Remove all existing listeners first to prevent duplicates
     // This ensures we don't accumulate listeners if useEffect runs multiple times
@@ -262,8 +337,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           timestamp: Date.now(),
         }];
       });
-      // Play chess challenge sound
+      // Play chess challenge sound and vibrate
       playNotificationSound('chessChallenge');
+      Vibration.vibrate(400); // Vibrate for 400ms
     });
 
     // Listen for chess moves
@@ -275,7 +351,21 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Listen for new notifications
     socketService.on('newNotification', (notification) => {
       console.log('🔔 New notification received:', notification);
-      setNotificationCount(prev => prev + 1);
+      // Only increment if notification is not already read
+      // Backend should send read status, but be safe and increment only if not explicitly read
+      const isRead = notification.read === true;
+      if (!isRead) {
+        setNotificationCount(prev => {
+          // Prevent count from going negative
+          const newCount = prev + 1;
+          console.log('🔔 [SocketContext] Incrementing notification count:', prev, '->', newCount);
+          return newCount;
+        });
+        // Vibrate phone when receiving unread notification
+        Vibration.vibrate(400); // Vibrate for 400ms
+      } else {
+        console.log('🔔 [SocketContext] Notification already read, skipping count increment');
+      }
       // Play notification sound for likes, comments, follows, mentions, etc.
       playNotificationSound('notification');
     });
@@ -315,9 +405,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         willPlaySound: shouldPlay
       });
       
-      // Play sound only for unread messages from other users AND not from currently open conversation
+      // Play sound and vibrate only for unread messages from other users AND not from currently open conversation
       if (shouldPlay) {
         playNotificationSound('message');
+        Vibration.vibrate(400); // Vibrate for 400ms
       }
     });
 

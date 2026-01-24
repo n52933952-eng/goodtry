@@ -15,6 +15,7 @@ import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
+import { useFocusEffect } from '@react-navigation/native';
 
 interface NotificationsScreenProps {
   navigation: any;
@@ -34,16 +35,32 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     fetchNotifications();
   }, []);
 
+  // Sync notification count when screen comes into focus
+  // This ensures the count is always accurate from the server
+  useFocusEffect(
+    React.useCallback(() => {
+      // Re-fetch notifications to sync count with server
+      fetchNotifications();
+    }, [])
+  );
+
   // Listen for new notifications via socket
   useEffect(() => {
     if (!socket) return;
 
     const handleNewNotification = (notification: any) => {
       console.log('🔔 New notification received on notifications page:', notification);
-      setNotifications(prev => [notification, ...prev]);
-      if (setNotificationCount) {
-        setNotificationCount(prev => prev + 1);
-      }
+      // Check if notification already exists (prevent duplicates)
+      setNotifications(prev => {
+        const exists = prev.some(n => n._id === notification._id);
+        if (exists) {
+          console.log('🔔 [NotificationsScreen] Notification already exists, skipping');
+          return prev;
+        }
+        return [notification, ...prev];
+      });
+      // Don't increment count here - SocketContext already handles it
+      // This prevents double counting
     };
 
     const handleNotificationDeleted = (data: any) => {
@@ -114,6 +131,43 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       }
     } catch (error) {
       console.error('Error marking notification as read:', error);
+    }
+  };
+
+  const markAllAsRead = async () => {
+    try {
+      const baseUrl = API_URL;
+      const unreadNotifications = notifications.filter(n => !n.read);
+      
+      if (unreadNotifications.length === 0) {
+        showToast(t('info') || 'Info', t('allNotificationsRead') || 'All notifications are already read', 'info');
+        return;
+      }
+
+      // Mark all unread notifications as read
+      const promises = unreadNotifications.map(notification =>
+        fetch(`${baseUrl}/api/notification/${notification._id}/read`, {
+          method: 'PUT',
+          credentials: 'include',
+        })
+      );
+
+      await Promise.all(promises);
+      
+      // Update all notifications to read
+      setNotifications(prev =>
+        prev.map(n => ({ ...n, read: true }))
+      );
+      
+      // Reset notification count to 0
+      if (setNotificationCount) {
+        setNotificationCount(0);
+      }
+      
+      showToast(t('success') || 'Success', t('allNotificationsMarkedAsRead') || 'All notifications marked as read', 'success');
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+      showToast(t('error') || 'Error', t('failedToMarkAllAsRead') || 'Failed to mark all as read', 'error');
     }
   };
 
@@ -302,7 +356,20 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       </View>
       
       <View style={styles.notificationActions}>
-        {!item.read && <View style={styles.unreadDot} />}
+        {!item.read && (
+          <>
+            <TouchableOpacity
+              style={styles.markReadButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                markAsRead(item._id);
+              }}
+            >
+              <Text style={styles.markReadButtonText}>✓</Text>
+            </TouchableOpacity>
+            <View style={styles.unreadDot} />
+          </>
+        )}
         <TouchableOpacity
           style={styles.deleteButton}
           onPress={(e) => {
@@ -324,10 +391,20 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     );
   }
 
+  const unreadCount = notifications.filter(n => !n.read).length;
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>{t('notifications')}</Text>
+        {unreadCount > 0 && (
+          <TouchableOpacity
+            style={styles.markAllButton}
+            onPress={markAllAsRead}
+          >
+            <Text style={styles.markAllButtonText}>{t('markAllAsRead') || 'Mark All Read'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <FlatList
@@ -365,11 +442,25 @@ const styles = StyleSheet.create({
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  markAllButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: COLORS.primary,
+  },
+  markAllButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   loadingContainer: {
     flex: 1,
@@ -447,6 +538,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  markReadButton: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: COLORS.backgroundLight,
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  markReadButtonText: {
+    fontSize: 16,
+    color: COLORS.primary,
+    fontWeight: 'bold',
   },
   unreadDot: {
     width: 8,

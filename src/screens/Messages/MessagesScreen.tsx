@@ -23,7 +23,7 @@ const MessagesScreen = ({ navigation }: any) => {
   const { onlineUsers, socket, selectedConversationId } = useSocket();
   const { t } = useLanguage();
   const [conversations, setConversations] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const isFetchingConversationsRef = useRef(false);
@@ -31,6 +31,7 @@ const MessagesScreen = ({ navigation }: any) => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [followingUsers, setFollowingUsers] = useState<any[]>([]);
+  const isFirstLoadRef = useRef(true);
 
   useEffect(() => {
     fetchFollowingUsers();
@@ -134,8 +135,13 @@ const MessagesScreen = ({ navigation }: any) => {
   // Refresh conversations when screen comes into focus (e.g., when returning from ChatScreen)
   useFocusEffect(
     React.useCallback(() => {
-      // Silent refresh so header/search doesn't flicker when coming back from ChatScreen
-      fetchConversations(false, { silent: true });
+      // On first load, show loading spinner if no conversations yet
+      // On subsequent loads (returning from ChatScreen), refresh silently
+      const isFirstLoad = isFirstLoadRef.current;
+      if (isFirstLoad) {
+        isFirstLoadRef.current = false;
+      }
+      fetchConversations(false, { silent: !isFirstLoad });
     }, [])
   );
 

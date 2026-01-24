@@ -70,7 +70,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   }, [profileUser?._id, currentUser?.following]);
 
-  // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile)
+
+  // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile or CreatePost)
   useFocusEffect(
     React.useCallback(() => {
       const isOwnProfile = username === currentUser?.username || username === 'self';
@@ -81,6 +82,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         setPosts([]);
         setLoading(true);
         fetchUserProfile();
+        fetchUserPosts(false); // Also refresh posts to show newly created posts
       }
     }, [username, currentUser?.username])
   );
@@ -92,6 +94,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       setProfileUser((prev: any) => {
         if (prev && prev._id === currentUser._id) {
           // Update profileUser with latest user data (especially profilePic, name, bio, etc.)
+          // Preserve followersCount, followingCount from previous state
           return {
             ...prev,
             profilePic: currentUser.profilePic,
@@ -100,6 +103,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
             bio: currentUser.bio,
             country: currentUser.country,
             email: currentUser.email,
+            // Preserve counts to avoid resetting them
+            followersCount: prev.followersCount,
+            followingCount: prev.followingCount,
           };
         }
         return prev;
@@ -246,6 +252,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       // Update UserContext so other screens (like SearchScreen) reflect the change
       updateUser({ following: nextFollowing as any });
       
+      // Refresh profile to get updated followers/following counts
+      fetchUserProfile();
+      
       showToast(t('success'), following ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToFollowUnfollow'), 'error');
@@ -336,15 +345,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               
               <View style={styles.stats}>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.postsCount || posts.length}</Text>
+                  <Text style={styles.statNumber}>{posts.length}</Text>
                   <Text style={styles.statLabel}>{t('posts')}</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.followersCount ?? (profileUser.followers?.length || 0)}</Text>
+                  <Text style={styles.statNumber}>
+                    {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
+                  </Text>
                   <Text style={styles.statLabel}>{t('followers')}</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{profileUser.followingCount ?? (profileUser.following?.length || 0)}</Text>
+                  <Text style={styles.statNumber}>
+                    {profileUser.followingCount ?? (profileUser.following?.length || 0)}
+                  </Text>
                   <Text style={styles.statLabel}>{t('following')}</Text>
                 </View>
               </View>
