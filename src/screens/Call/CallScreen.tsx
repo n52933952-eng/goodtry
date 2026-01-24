@@ -35,8 +35,10 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
     toggleMute,
     toggleCamera,
     switchCamera,
+    toggleSpeaker,
     isMuted,
     isCameraOff,
+    isSpeakerOn,
     connectionState,
     iceConnectionState,
     callDuration,
@@ -372,12 +374,37 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
             </>
           ) : (
             <>
-              {/* Regular call controls (mute, camera, etc.) */}
+              {/* Regular call controls (mute, speaker, camera, etc.) */}
               <TouchableOpacity
                 style={[styles.controlButton, isMuted && styles.controlButtonActive]}
                 onPress={toggleMute}
               >
-                <Text style={styles.controlIcon}>{isMuted ? '🔇' : '🎤'}</Text>
+                <View style={styles.controlIconContainer}>
+                  <Text style={styles.controlIconLarge}>
+                    {isMuted ? '🔇' : '🎤'}
+                  </Text>
+                  <Text style={styles.controlLabel}>
+                    {isMuted ? 'Unmute' : 'Mute'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {/* Speaker toggle - available for both audio and video calls */}
+              <TouchableOpacity
+                style={[
+                  styles.controlButton, 
+                  isSpeakerOn && styles.speakerActiveButton
+                ]}
+                onPress={toggleSpeaker}
+              >
+                <View style={styles.controlIconContainer}>
+                  <Text style={styles.controlIconLarge}>
+                    {isSpeakerOn ? '🔊' : '🎧'}
+                  </Text>
+                  <Text style={styles.controlLabel}>
+                    {isSpeakerOn ? 'Speaker' : 'Earpiece'}
+                  </Text>
+                </View>
               </TouchableOpacity>
 
               {callType === 'video' && (
@@ -386,14 +413,22 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
                     style={[styles.controlButton, isCameraOff && styles.controlButtonActive]}
                     onPress={toggleCamera}
                   >
-                    <Text style={styles.controlIcon}>{isCameraOff ? '📷' : '📹'}</Text>
+                    <View style={styles.controlIconContainer}>
+                      <Text style={styles.controlIconLarge}>
+                        {isCameraOff ? '📷' : '📹'}
+                      </Text>
+                      <Text style={styles.controlLabel}>Camera</Text>
+                    </View>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={styles.controlButton}
                     onPress={switchCamera}
                   >
-                    <Text style={styles.controlIcon}>🔄</Text>
+                    <View style={styles.controlIconContainer}>
+                      <Text style={styles.controlIconLarge}>🔄</Text>
+                      <Text style={styles.controlLabel}>Flip</Text>
+                    </View>
                   </TouchableOpacity>
                 </>
               )}
@@ -402,7 +437,10 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
                 style={[styles.controlButton, styles.endCallButton]}
                 onPress={handleLeaveCall}
               >
-                <Text style={styles.controlIcon}>📞</Text>
+                <View style={styles.controlIconContainer}>
+                  <Text style={styles.controlIconLarge}>📞</Text>
+                  <Text style={styles.controlLabel}>End</Text>
+                </View>
               </TouchableOpacity>
             </>
           )}
@@ -517,11 +555,27 @@ const styles = StyleSheet.create({
   controlButtonActive: {
     backgroundColor: COLORS.error,
   },
+  speakerActiveButton: {
+    backgroundColor: COLORS.primary,
+  },
   endCallButton: {
     backgroundColor: COLORS.error,
     width: 70,
     height: 70,
     borderRadius: 35,
+  },
+  controlIconContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  controlIconLarge: {
+    fontSize: 24,
+  },
+  controlLabel: {
+    fontSize: 8,
+    color: COLORS.text,
+    marginTop: 2,
+    fontWeight: '600',
   },
   answerButton: {
     backgroundColor: COLORS.success,

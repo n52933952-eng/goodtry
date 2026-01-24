@@ -13,6 +13,7 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
+import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
@@ -21,6 +22,7 @@ import { useLanguage } from '../../context/LanguageContext';
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
   const { onlineUsers, socket, selectedConversationId } = useSocket();
+  const { colors } = useTheme();
   const { t } = useLanguage();
   const [conversations, setConversations] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -32,107 +34,130 @@ const MessagesScreen = ({ navigation }: any) => {
   const [searching, setSearching] = useState(false);
   const [followingUsers, setFollowingUsers] = useState<any[]>([]);
   const isFirstLoadRef = useRef(true);
+  
+  // Track selected conversation with ref (like web version)
+  const selectedConversationIdRef = useRef<string | null>(null);
+  
+  // Ref to fetchConversations function so it can be called from handleNewMessage
+  const fetchConversationsRef = useRef<any>(null);
 
+  // Update selectedConversationId ref whenever it changes
   useEffect(() => {
-    fetchFollowingUsers();
+    selectedConversationIdRef.current = selectedConversationId || null;
+  }, [selectedConversationId]);
+
+  // Handle new messages - STABLE FUNCTION (like web version)
+  const handleNewMessage = React.useCallback((messageData: any) => {
+    console.log('🔔🔔🔔 [MessagesScreen] handleNewMessage: Received newMessage event!', {
+      hasData: !!messageData,
+      conversationId: messageData?.conversationId,
+      selectedConversationId: selectedConversationIdRef.current,
+      senderId: messageData?.sender?._id || messageData?.sender,
+      currentUserId: user?._id,
+      messageId: messageData?._id,
+      messageText: messageData?.text?.substring(0, 30)
+    });
+    
+    setConversations((prevConvos) => {
+      const conversationId = messageData.conversationId?.toString();
+      if (!conversationId) return prevConvos;
+
+      // Get sender ID (handle both populated object and ID string)
+      const senderId = messageData.sender?._id?.toString() || messageData.sender?.toString() || messageData.sender;
+      const isOwnMessage = senderId === user?._id?.toString();
+      // Use REF instead of closure variable (like web version)
+      const isConversationOpen =
+        !!selectedConversationIdRef.current &&
+        selectedConversationIdRef.current.toString() === conversationId.toString();
+
+      // Check if conversation already exists
+      const existingIndex = prevConvos.findIndex(
+        (conv) => conv._id?.toString() === conversationId
+      );
+
+      if (existingIndex >= 0) {
+        // Update existing conversation
+        const lastMessageText = messageData.text || (messageData.img ? '📷 Image' : '');
+        
+        const updatedConversation = {
+          ...prevConvos[existingIndex],
+          lastMessage: {
+            text: lastMessageText,
+            createdAt: messageData.createdAt,
+            sender: messageData.sender,
+          },
+          updatedAt: messageData.conversationUpdatedAt || messageData.createdAt || new Date(),
+          // Only increment unread count if message is from other user
+          // And only if this conversation isn't currently open
+          unreadCount: (!isOwnMessage && !isConversationOpen)
+            ? ((prevConvos[existingIndex].unreadCount || 0) + 1)
+            : (isConversationOpen ? 0 : (prevConvos[existingIndex].unreadCount || 0)),
+        };
+
+        // Move to top WITHOUT full re-sort (new message => most recent)
+        return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
+      } else {
+        // New conversation - fetch it from API to get full conversation data
+        console.log('💬 [MessagesScreen] New conversation detected, fetching...');
+        // Silent refresh so header/search doesn't flash a full-screen spinner
+        if (fetchConversationsRef.current) {
+          fetchConversationsRef.current(false, { silent: true });
+        }
+        return prevConvos;
+      }
+    });
+  }, [user?._id]);
+
+  const handleUnreadCountUpdate = React.useCallback((data: any) => {
+    console.log('🔔 [MessagesScreen] Unread count update:', data);
+    // Optionally update total unread count if needed
   }, []);
 
-  // Listen for real-time message updates
+  const handleMessagesSeen = React.useCallback((data: any) => {
+    const conversationId = data.conversationId?.toString();
+    if (!conversationId) return;
+
+    // Prevent infinite loop: only update if unreadCount is actually > 0
+    setConversations((prevConvos) => {
+      const existingIndex = prevConvos.findIndex(
+        (conv) => conv._id?.toString() === conversationId
+      );
+      
+      // Only update if conversation exists and has unread messages
+      if (existingIndex >= 0 && (prevConvos[existingIndex].unreadCount || 0) > 0) {
+        const updated = [...prevConvos];
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          unreadCount: 0,
+        };
+        return updated;
+      }
+      
+      // No change needed, return same array reference to prevent re-render
+      return prevConvos;
+    });
+  }, []);
+
+  // Listen for real-time message updates - ONCE (like web version)
   useEffect(() => {
     if (!socket || !user?._id) return;
 
-    const handleNewMessage = (messageData: any) => {
-      console.log('💬 [MessagesScreen] New message received:', messageData);
-      
-      setConversations((prevConvos) => {
-        const conversationId = messageData.conversationId?.toString();
-        if (!conversationId) return prevConvos;
-
-        // Get sender ID (handle both populated object and ID string)
-        const senderId = messageData.sender?._id?.toString() || messageData.sender?.toString() || messageData.sender;
-        const isOwnMessage = senderId === user._id.toString();
-        const isConversationOpen =
-          !!selectedConversationId &&
-          selectedConversationId.toString() === conversationId.toString();
-
-        // Check if conversation already exists
-        const existingIndex = prevConvos.findIndex(
-          (conv) => conv._id?.toString() === conversationId
-        );
-
-        if (existingIndex >= 0) {
-          // Update existing conversation
-          const lastMessageText = messageData.text || (messageData.img ? '📷 Image' : '');
-          
-          const updatedConversation = {
-            ...prevConvos[existingIndex],
-            lastMessage: {
-              text: lastMessageText,
-              createdAt: messageData.createdAt,
-              sender: messageData.sender,
-            },
-            updatedAt: messageData.conversationUpdatedAt || messageData.createdAt || new Date(),
-            // Only increment unread count if message is from other user
-            // And only if this conversation isn't currently open
-            unreadCount: (!isOwnMessage && !isConversationOpen)
-              ? ((prevConvos[existingIndex].unreadCount || 0) + 1)
-              : (isConversationOpen ? 0 : (prevConvos[existingIndex].unreadCount || 0)),
-          };
-
-          // Move to top WITHOUT full re-sort (new message => most recent)
-          return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
-        } else {
-          // New conversation - fetch it from API to get full conversation data
-          console.log('💬 [MessagesScreen] New conversation detected, fetching...');
-          // Silent refresh so header/search doesn't flash a full-screen spinner
-          fetchConversations(false, { silent: true });
-          return prevConvos;
-        }
-      });
-    };
-
-    const handleUnreadCountUpdate = (data: any) => {
-      console.log('🔔 [MessagesScreen] Unread count update:', data);
-      // Optionally update total unread count if needed
-    };
-
-    const handleMessagesSeen = (data: any) => {
-      const conversationId = data.conversationId?.toString();
-      if (!conversationId) return;
-
-      // Prevent infinite loop: only update if unreadCount is actually > 0
-      setConversations((prevConvos) => {
-        const existingIndex = prevConvos.findIndex(
-          (conv) => conv._id?.toString() === conversationId
-        );
-        
-        // Only update if conversation exists and has unread messages
-        if (existingIndex >= 0 && (prevConvos[existingIndex].unreadCount || 0) > 0) {
-          const updated = [...prevConvos];
-          updated[existingIndex] = {
-            ...updated[existingIndex],
-            unreadCount: 0,
-          };
-          return updated;
-        }
-        
-        // No change needed, return same array reference to prevent re-render
-        return prevConvos;
-      });
-    };
+    console.log('✅ [MessagesScreen] Setting up socket listeners (persistent)');
 
     socket.on('newMessage', handleNewMessage);
     socket.on('unreadCountUpdate', handleUnreadCountUpdate);
     socket.on('messagesSeen', handleMessagesSeen);
 
     return () => {
+      console.log('🔌 [MessagesScreen] Removing socket listeners');
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
       socket.off('messagesSeen', handleMessagesSeen);
     };
-  }, [socket, user?._id]);
+  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen]);
 
-  // Refresh conversations when screen comes into focus (e.g., when returning from ChatScreen)
+  // Refresh conversations and following users when screen comes into focus 
+  // (e.g., when returning from ChatScreen or after following a new user)
   useFocusEffect(
     React.useCallback(() => {
       // On first load, show loading spinner if no conversations yet
@@ -142,6 +167,9 @@ const MessagesScreen = ({ navigation }: any) => {
         isFirstLoadRef.current = false;
       }
       fetchConversations(false, { silent: !isFirstLoad });
+      
+      // Refresh following users list so newly followed users appear in search
+      fetchFollowingUsers();
     }, [])
   );
 
@@ -199,6 +227,11 @@ const MessagesScreen = ({ navigation }: any) => {
       setLoadingMoreConversations(false);
     }
   };
+  
+  // Assign fetchConversations to ref so handleNewMessage can use it
+  useEffect(() => {
+    fetchConversationsRef.current = fetchConversations;
+  }, [fetchConversations]);
 
   const fetchFollowingUsers = async () => {
     if (!user?._id) {
@@ -364,7 +397,7 @@ const MessagesScreen = ({ navigation }: any) => {
 
     return (
       <TouchableOpacity
-        style={styles.conversationItem}
+        style={[styles.conversationItem, { borderBottomColor: colors.border }]}
         onPress={() => navigation.navigate('ChatScreen', { 
           conversationId: item._id,
           otherUser: otherUserData 
@@ -375,24 +408,24 @@ const MessagesScreen = ({ navigation }: any) => {
           {otherUserData?.profilePic ? (
             <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
               <Text style={styles.avatarText}>
                 {otherUserData?.name?.[0]?.toUpperCase() || '?'}
               </Text>
             </View>
           )}
-          {isOnline && <View style={styles.onlineDot} />}
+          {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
         </View>
         <View style={styles.conversationInfo}>
           <View style={styles.conversationHeader}>
             <View style={styles.userNameRow}>
-              <Text style={styles.userName}>
+              <Text style={[styles.userName, { color: colors.text }]}>
                 {otherUserData?.name || t('unknown')}
               </Text>
             </View>
             <View style={styles.rightHeader}>
               {item.lastMessage && (
-                <Text style={styles.time}>
+                <Text style={[styles.time, { color: colors.textGray }]}>
                   {formatTime(item.lastMessage.createdAt || item.updatedAt)}
                 </Text>
               )}
@@ -407,13 +440,18 @@ const MessagesScreen = ({ navigation }: any) => {
           </View>
           <View style={styles.lastMessageRow}>
             <Text 
-              style={[styles.lastMessage, unreadCount > 0 && styles.unreadMessage]}
+              style={[
+                styles.lastMessage, 
+                { color: colors.textGray },
+                unreadCount > 0 && styles.unreadMessage,
+                unreadCount > 0 && { color: colors.text }
+              ]}
               numberOfLines={1}
             >
               {item.lastMessage?.text || t('noMessagesYet')}
             </Text>
             {unreadCount > 0 && (
-              <View style={styles.unreadBadge}>
+              <View style={[styles.unreadBadge, { backgroundColor: colors.primary }]}>
                 <Text style={styles.unreadText}>{unreadCount}</Text>
               </View>
             )}
@@ -425,24 +463,24 @@ const MessagesScreen = ({ navigation }: any) => {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>{t('messages')}</Text>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('messages')}</Text>
       </View>
 
       {/* Search Input */}
-      <View style={styles.searchContainer}>
+      <View style={[styles.searchContainer, { borderBottomColor: colors.border }]}>
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInput, { backgroundColor: colors.backgroundLight, color: colors.text, borderColor: colors.border }]}
           placeholder={t('searchUsers')}
-          placeholderTextColor={COLORS.textGray}
+          placeholderTextColor={colors.textGray}
           value={searchQuery}
           onChangeText={handleSearch}
         />
@@ -450,10 +488,10 @@ const MessagesScreen = ({ navigation }: any) => {
 
       {/* Search Results */}
       {searchQuery.trim() && (
-        <View style={styles.searchResultsContainer}>
+        <View style={[styles.searchResultsContainer, { borderBottomColor: colors.border }]}>
           {searching ? (
             <View style={styles.searchLoading}>
-              <ActivityIndicator size="small" color={COLORS.primary} />
+              <ActivityIndicator size="small" color={colors.primary} />
             </View>
           ) : searchResults.length > 0 ? (
             <FlatList
@@ -463,26 +501,26 @@ const MessagesScreen = ({ navigation }: any) => {
                 const isOnline = item._id ? isUserOnline(item._id) : false;
                 return (
                   <TouchableOpacity
-                    style={styles.searchResultItem}
+                    style={[styles.searchResultItem, { borderBottomColor: colors.border }]}
                     onPress={() => handleStartConversation(item)}
                   >
                     <View style={styles.avatarContainer}>
                       {item.profilePic ? (
                         <Image source={{ uri: item.profilePic }} style={styles.avatar} />
                       ) : (
-                        <View style={[styles.avatar, styles.avatarPlaceholder]}>
+                        <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                           <Text style={styles.avatarText}>
                             {item.name?.[0]?.toUpperCase() || '?'}
                           </Text>
                         </View>
                       )}
-                      {isOnline && <View style={styles.onlineDot} />}
+                      {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
                     </View>
                     <View style={styles.searchResultInfo}>
                       <View style={styles.userNameRow}>
-                        <Text style={styles.userName}>{item.name || t('unknown')}</Text>
+                        <Text style={[styles.userName, { color: colors.text }]}>{item.name || t('unknown')}</Text>
                       </View>
-                      <Text style={styles.userUsername}>@{item.username}</Text>
+                      <Text style={[styles.userUsername, { color: colors.textGray }]}>@{item.username}</Text>
                     </View>
                   </TouchableOpacity>
                 );
@@ -490,7 +528,7 @@ const MessagesScreen = ({ navigation }: any) => {
             />
           ) : (
             <View style={styles.searchEmpty}>
-              <Text style={styles.searchEmptyText}>{t('noUsersFound')}</Text>
+              <Text style={[styles.searchEmptyText, { color: colors.textGray }]}>{t('noUsersFound')}</Text>
             </View>
           )}
         </View>
@@ -513,14 +551,14 @@ const MessagesScreen = ({ navigation }: any) => {
           ListFooterComponent={
             loadingMoreConversations ? (
               <View style={{ paddingVertical: 16 }}>
-                <ActivityIndicator size="small" color={COLORS.primary} />
+                <ActivityIndicator size="small" color={colors.primary} />
               </View>
             ) : null
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>{t('noConversations')}</Text>
-              <Text style={styles.emptySubtext}>{t('startConversation')}</Text>
+              <Text style={[styles.emptyText, { color: colors.text }]}>{t('noConversations')}</Text>
+              <Text style={[styles.emptySubtext, { color: colors.textGray }]}>{t('startConversation')}</Text>
             </View>
           }
         />

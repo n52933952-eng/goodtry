@@ -12,6 +12,7 @@ import {
   FlatList,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
@@ -22,6 +23,7 @@ import { useLanguage } from '../../context/LanguageContext';
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
   const { user: currentUser, updateUser } = useUser();
+  const { colors } = useTheme();
   const username = usernameParam === 'self' ? currentUser?.username : usernameParam;
   const showToast = useShowToast();
   const { t } = useLanguage();
@@ -273,8 +275,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   if (!profileUser) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>{t('userNotFound')}</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <Text style={[styles.errorText, { color: colors.text }]}>{t('userNotFound')}</Text>
       </View>
     );
   }
@@ -282,7 +284,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const isOwnProfile = profileUser._id === currentUser?._id;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
         data={posts}
         keyExtractor={(item, index) => {
@@ -304,39 +306,44 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <View>
-            <View style={styles.profileHeader}>
+            <View style={[styles.profileHeader, { borderBottomColor: colors.border }]}>
               {profileUser.profilePic ? (
                 <Image source={{ uri: profileUser.profilePic }} style={styles.avatar} />
               ) : (
-                <View style={[styles.avatar, styles.avatarPlaceholder]}>
+                <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                   <Text style={styles.avatarText}>
                     {profileUser.name?.[0]?.toUpperCase() || '?'}
                   </Text>
                 </View>
               )}
-              <Text style={styles.name}>{profileUser.name}</Text>
-              <Text style={styles.username}>@{profileUser.username}</Text>
-              {profileUser.bio && <Text style={styles.bio}>{profileUser.bio}</Text>}
+              <Text style={[styles.name, { color: colors.text }]}>{profileUser.name}</Text>
+              <Text style={[styles.username, { color: colors.textGray }]}>@{profileUser.username}</Text>
+              {profileUser.bio && <Text style={[styles.bio, { color: colors.text }]}>{profileUser.bio}</Text>}
               
               {isOwnProfile && (
                 <TouchableOpacity
-                  style={styles.updateButton}
+                  style={[styles.updateButton, { backgroundColor: colors.primary }]}
                   onPress={() => navigation.navigate('UpdateProfile')}
                 >
-                  <Text style={styles.updateButtonText}>{t('updateProfile')}</Text>
+                  <Text style={[styles.updateButtonText, { color: colors.buttonText }]}>{t('updateProfile')}</Text>
                 </TouchableOpacity>
               )}
               
               {!isOwnProfile && (
                 <TouchableOpacity
-                  style={[styles.followButton, following && styles.followingButton]}
+                  style={[
+                    styles.followButton, 
+                    { backgroundColor: colors.primary },
+                    following && styles.followingButton,
+                    following && { backgroundColor: colors.border }
+                  ]}
                   onPress={handleFollow}
                   disabled={followLoading}
                 >
                   {followLoading ? (
-                    <ActivityIndicator color={following ? COLORS.text : '#FFFFFF'} />
+                    <ActivityIndicator color={colors.buttonText} />
                   ) : (
-                    <Text style={[styles.followButtonText, following && styles.followingButtonText]}>
+                    <Text style={[styles.followButtonText, { color: colors.buttonText }, following && styles.followingButtonText]}>
                       {following ? t('following') : t('follow')}
                     </Text>
                   )}
@@ -345,37 +352,37 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               
               <View style={styles.stats}>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>{posts.length}</Text>
-                  <Text style={styles.statLabel}>{t('posts')}</Text>
+                  <Text style={[styles.statNumber, { color: colors.text }]}>{posts.length}</Text>
+                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('posts')}</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>
+                  <Text style={[styles.statNumber, { color: colors.text }]}>
                     {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
                   </Text>
-                  <Text style={styles.statLabel}>{t('followers')}</Text>
+                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>
+                  <Text style={[styles.statNumber, { color: colors.text }]}>
                     {profileUser.followingCount ?? (profileUser.following?.length || 0)}
                   </Text>
-                  <Text style={styles.statLabel}>{t('following')}</Text>
+                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
                 </View>
               </View>
             </View>
-            <View style={styles.postsSection}>
-              <Text style={styles.postsTitle}>{t('posts')}</Text>
+            <View style={[styles.postsSection, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+              <Text style={[styles.postsTitle, { color: colors.text }]}>{t('posts')}</Text>
             </View>
           </View>
         }
         ListEmptyComponent={
           !loading ? (
-            <Text style={styles.emptyText}>{t('noPostsYet')}</Text>
+            <Text style={[styles.emptyText, { color: colors.textGray }]}>{t('noPostsYet')}</Text>
           ) : null
         }
         ListFooterComponent={
           loadingMore ? (
             <View style={styles.loadingMoreContainer}>
-              <ActivityIndicator size="small" color={COLORS.primary} />
+              <ActivityIndicator size="small" color={colors.primary} />
             </View>
           ) : null
         }

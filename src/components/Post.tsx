@@ -15,6 +15,7 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import { useNavigation } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { usePost } from '../context/PostContext';
+import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
@@ -54,6 +55,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
   };
   const { user } = useUser();
   const { likePost, unlikePost, deletePost: deletePostContext } = usePost();
+  const { colors } = useTheme();
   const showToast = useShowToast();
 
   const [isLiking, setIsLiking] = useState(false);
@@ -355,7 +357,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
   const videoHeight = (width - 30) * 0.5625; // 16:9 aspect ratio
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
       <View style={styles.header}>
         <TouchableOpacity
           onPress={(e) => {
@@ -397,7 +399,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                 style={styles.avatar}
               />
             ) : (
-              <View style={[styles.avatar, styles.avatarPlaceholder]}>
+              <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                 <Text style={styles.avatarText}>
                   {(() => {
                     // For channels, use first two letters of username or name
@@ -416,13 +418,13 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
 
         <View style={styles.headerInfo}>
           <View style={styles.headerTop}>
-            <Text style={styles.name}>{post.postedBy?.name || 'Unknown'}</Text>
+            <Text style={[styles.name, { color: colors.text }]}>{post.postedBy?.name || 'Unknown'}</Text>
             {post.isCollaborative && (
               <Text style={styles.collaborativeBadge}>👥</Text>
             )}
-            <Text style={styles.time}>· {formatTime(post.createdAt)}</Text>
+            <Text style={[styles.time, { color: colors.textGray }]}>· {formatTime(post.createdAt)}</Text>
           </View>
-          <Text style={styles.username}>@{post.postedBy?.username}</Text>
+          <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
         </View>
 
         {isOwner && (
@@ -433,7 +435,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
       </View>
 
       {disableNavigation ? (
-        <Text style={styles.text}>{post.text}</Text>
+        <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
       ) : (
         <TouchableOpacity 
           onPress={() => {
@@ -442,7 +444,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
           }}
           activeOpacity={0.9}
         >
-          <Text style={styles.text}>{post.text}</Text>
+          <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
         </TouchableOpacity>
       )}
 
@@ -517,12 +519,13 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                 <!DOCTYPE html>
                 <html>
                   <head>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
                     <style>
                       * {
                         margin: 0;
                         padding: 0;
                         box-sizing: border-box;
+                        -webkit-tap-highlight-color: transparent;
                       }
                       body {
                         margin: 0;
@@ -533,6 +536,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                         align-items: center;
                         height: 100vh;
                         overflow: hidden;
+                        touch-action: manipulation;
                       }
                       video {
                         width: 100%;
@@ -540,17 +544,26 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                         max-height: 400px;
                         object-fit: contain;
                       }
+                      /* Make video controls more accessible */
+                      video::-webkit-media-controls {
+                        transform: scale(1.3);
+                      }
+                      video::-webkit-media-controls-panel {
+                        background-color: rgba(0, 0, 0, 0.8);
+                      }
+                      video::-webkit-media-controls-play-button {
+                        width: 50px;
+                        height: 50px;
+                      }
                     </style>
                   </head>
                   <body>
                     <video
                       src="${post.img}"
                       controls
-                      autoplay
-                      muted
                       playsinline
-                      loop
-                      onloadeddata="this.play().catch(e => console.log('Autoplay prevented:', e))"
+                      preload="metadata"
+                      controlsList="nodownload"
                     ></video>
                   </body>
                 </html>
@@ -558,7 +571,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             }}
             style={styles.videoWebView}
             allowsFullscreenVideo={true}
-            mediaPlaybackRequiresUserAction={false}
+            mediaPlaybackRequiresUserAction={true}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             allowsInlineMediaPlayback={true}
@@ -640,21 +653,21 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             </View>
           ) : weatherDataArray.length > 0 ? (
             weatherDataArray.map((weather: any, index: number) => (
-              <View key={index} style={styles.weatherCard}>
+              <View key={index} style={[styles.weatherCard, { backgroundColor: colors.cardBg }]}>
                 <View style={styles.weatherHeader}>
-                  <Text style={styles.weatherCity}>
+                  <Text style={[styles.weatherCity, { color: colors.cardText }]}>
                     {weather.city}{weather.country ? `, ${weather.country}` : ''}
                   </Text>
-                  <Text style={styles.weatherTemp}>
+                  <Text style={[styles.weatherTemp, { color: colors.cardText }]}>
                     {Math.round(weather.temperature)}°C
                   </Text>
                 </View>
-                <Text style={styles.weatherDesc}>
+                <Text style={[styles.weatherDesc, { color: colors.cardText }]}>
                   {weather.description || weather.condition}
                 </Text>
                 <View style={styles.weatherDetails}>
-                  <Text style={styles.weatherDetail}>💧 {weather.humidity}%</Text>
-                  <Text style={styles.weatherDetail}>💨 {weather.windSpeed?.toFixed(1) || 0} m/s</Text>
+                  <Text style={[styles.weatherDetail, { color: colors.cardText }]}>💧 {weather.humidity}%</Text>
+                  <Text style={[styles.weatherDetail, { color: colors.cardText }]}>💨 {weather.windSpeed?.toFixed(1) || 0} m/s</Text>
                 </View>
               </View>
             ))
@@ -667,22 +680,97 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         </View>
       )}
 
-      {post.isFootballPost && post.footballData && (
-        <View style={styles.footballCard}>
-          <Text style={styles.footballTeam}>
-            {post.footballData.homeTeam} vs {post.footballData.awayTeam}
-          </Text>
-          <Text style={styles.footballScore}>
-            {post.footballData.homeScore} - {post.footballData.awayScore}
-          </Text>
-          <Text style={styles.footballStatus}>{post.footballData.status}</Text>
+      {post.isFootballPost && (
+        <View style={{ marginBottom: 10 }}>
+          {/* Debug: Log football post data */}
+          {console.log('⚽ [Post] Football post data:', { 
+            hasLiveMatches: !!post.liveMatches, 
+            liveMatchesLength: post.liveMatches?.length,
+            hasMatches: !!post.matches,
+            matchesLength: post.matches?.length,
+            hasTodayMatches: !!post.todayMatches,
+            todayMatchesLength: post.todayMatches?.length,
+            hasFootballData: !!post.footballData,
+            allKeys: Object.keys(post),
+            text: post.text?.substring(0, 100)
+          })}
+          {/* Check if we have liveMatches array (new format) */}
+          {(post.liveMatches && post.liveMatches.length > 0) || (post.matches && post.matches.length > 0) || (post.todayMatches && post.todayMatches.length > 0) ? (
+            <>
+              {(() => {
+                const matchesArray = post.liveMatches || post.matches || post.todayMatches || [];
+                const liveMatches = matchesArray.filter((m: any) => m.status === 'IN_PLAY' || m.status === 'LIVE' || m.status === 'PAUSED');
+                const hasLive = liveMatches.length > 0;
+                
+                return (
+                  <>
+                    {hasLive && (
+                      <View style={[styles.footballCard, { backgroundColor: colors.error, marginBottom: 8 }]}>
+                        <Text style={[styles.footballTeam, { color: '#FFFFFF', fontWeight: 'bold', textAlign: 'center' }]}>
+                          🔴 LIVE MATCHES ({liveMatches.length})
+                        </Text>
+                      </View>
+                    )}
+                    {matchesArray.map((match: any, index: number) => {
+                      const isLive = match.status === 'IN_PLAY' || match.status === 'LIVE' || match.status === 'PAUSED';
+                      return (
+                        <View key={index} style={[
+                          styles.footballCard, 
+                          { 
+                            backgroundColor: isLive ? colors.cardBg : colors.backgroundLight, 
+                            marginBottom: 8,
+                            borderLeftWidth: isLive ? 4 : 0,
+                            borderLeftColor: isLive ? colors.error : 'transparent'
+                          }
+                        ]}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <Text style={[styles.footballTeam, { color: colors.cardText, flex: 1 }]}>
+                              {match.homeTeam?.name || match.homeTeam} vs {match.awayTeam?.name || match.awayTeam}
+                            </Text>
+                            {isLive && <Text style={{ color: colors.error, fontSize: 12, fontWeight: 'bold', marginLeft: 8 }}>● LIVE</Text>}
+                          </View>
+                          <Text style={[styles.footballScore, { color: colors.cardText, fontSize: 24, fontWeight: 'bold' }]}>
+                            {match.homeScore !== undefined ? match.homeScore : match.score?.fullTime?.home || 0} - {match.awayScore !== undefined ? match.awayScore : match.score?.fullTime?.away || 0}
+                          </Text>
+                          <Text style={[styles.footballStatus, { color: colors.cardText }]}>
+                            {match.minute ? `${match.minute}' ` : ''}{match.status}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </>
+          ) : post.footballData ? (
+            // Fallback to old single match format
+            <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
+              <Text style={[styles.footballTeam, { color: colors.cardText }]}>
+                {post.footballData.homeTeam} vs {post.footballData.awayTeam}
+              </Text>
+              <Text style={[styles.footballScore, { color: colors.cardText }]}>
+                {post.footballData.homeScore} - {post.footballData.awayScore}
+              </Text>
+              <Text style={[styles.footballStatus, { color: colors.cardText }]}>{post.footballData.status}</Text>
+            </View>
+          ) : (
+            // No matches available
+            <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
+              <Text style={[styles.footballTeam, { color: colors.cardText, textAlign: 'center' }]}>
+                No live matches right now
+              </Text>
+              <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', fontSize: 12 }]}>
+                Check back during match hours
+              </Text>
+            </View>
+          )}
         </View>
       )}
 
       {/* Chess Game Card Display */}
       {isChessPost && chessGameData && (
         <TouchableOpacity
-          style={styles.chessCard}
+          style={[styles.chessCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={handleChessPostClick}
           activeOpacity={0.8}
         >
@@ -690,11 +778,11 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             <View style={styles.chessCardTitle}>
               <Text style={styles.chessIcon}>♟️</Text>
               <View>
-                <Text style={styles.chessTitle}>Playing Chess</Text>
-                <Text style={styles.chessSubtitle}>Tap to watch</Text>
+                <Text style={[styles.chessTitle, { color: colors.cardText }]}>Playing Chess</Text>
+                <Text style={[styles.chessSubtitle, { color: colors.cardText, opacity: 0.6 }]}>Tap to watch</Text>
               </View>
             </View>
-            <View style={styles.chessLiveBadge}>
+            <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
               <Text style={styles.chessLiveText}>Live</Text>
             </View>
           </View>
@@ -708,21 +796,21 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                   style={styles.chessPlayerAvatar}
                 />
               ) : (
-                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder]}>
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                   <Text style={styles.chessPlayerAvatarText}>
                     {chessGameData.player1?.name?.[0]?.toUpperCase() || '?'}
                   </Text>
                 </View>
               )}
-              <Text style={styles.chessPlayerName} numberOfLines={1}>
+              <Text style={[styles.chessPlayerName, { color: colors.cardText }]} numberOfLines={1}>
                 {chessGameData.player1?.name || 'Player 1'}
               </Text>
-              <Text style={styles.chessPlayerUsername} numberOfLines={1}>
+              <Text style={[styles.chessPlayerUsername, { color: colors.cardText, opacity: 0.6 }]} numberOfLines={1}>
                 @{chessGameData.player1?.username || 'player1'}
               </Text>
             </View>
 
-            <Text style={styles.chessVs}>vs</Text>
+            <Text style={[styles.chessVs, { color: colors.cardText }]}>vs</Text>
 
             {/* Player 2 */}
             <View style={styles.chessPlayer}>
@@ -732,16 +820,16 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                   style={styles.chessPlayerAvatar}
                 />
               ) : (
-                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder]}>
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                   <Text style={styles.chessPlayerAvatarText}>
                     {chessGameData.player2?.name?.[0]?.toUpperCase() || '?'}
                   </Text>
                 </View>
               )}
-              <Text style={styles.chessPlayerName} numberOfLines={1}>
+              <Text style={[styles.chessPlayerName, { color: colors.cardText }]} numberOfLines={1}>
                 {chessGameData.player2?.name || 'Player 2'}
               </Text>
-              <Text style={styles.chessPlayerUsername} numberOfLines={1}>
+              <Text style={[styles.chessPlayerUsername, { color: colors.cardText, opacity: 0.6 }]} numberOfLines={1}>
                 @{chessGameData.player2?.username || 'player2'}
               </Text>
             </View>

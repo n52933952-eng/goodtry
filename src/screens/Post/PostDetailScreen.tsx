@@ -15,6 +15,7 @@ import {
   Keyboard,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
@@ -26,6 +27,7 @@ import { useLanguage } from '../../context/LanguageContext';
 const PostDetailScreen = ({ route, navigation }: any) => {
   const { postId, fromScreen, userProfileParams } = route.params || {};
   const { user } = useUser();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
   
@@ -332,25 +334,25 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   if (!post) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>{t('postNotFound')}</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <Text style={[styles.errorText, { color: colors.error }]}>{t('postNotFound')}</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView
         ref={scrollViewRef}
-        style={styles.content}
+        style={[styles.content, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.contentContainer}
         refreshControl={
           <RefreshControl
@@ -359,6 +361,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
               setRefreshing(true);
               fetchPost();
             }}
+            tintColor={colors.primary}
           />
         }
         keyboardShouldPersistTaps="handled"
@@ -366,7 +369,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         <Post post={post} disableNavigation={true} />
 
         <View style={styles.repliesSection}>
-          <Text style={styles.repliesTitle}>{t('comments')} ({post.replies?.length || 0})</Text>
+          <Text style={[styles.repliesTitle, { color: colors.text }]}>{t('comments')} ({post.replies?.length || 0})</Text>
 
           {(post.replies || [])
             .filter((r: any) => !r?.parentReplyId)
@@ -391,7 +394,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           {post.replies && 
            (post.replies.filter((r: any) => !r?.parentReplyId).length > visibleCommentsCount) && (
             <TouchableOpacity
-              style={styles.loadMoreButton}
+              style={[styles.loadMoreButton, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
               onPress={() => {
                 setVisibleCommentsCount(prev => prev + COMMENTS_PER_PAGE);
                 // Scroll to show the newly loaded comments after a short delay
@@ -400,7 +403,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                 }, 100);
               }}
             >
-              <Text style={styles.loadMoreText}>
+              <Text style={[styles.loadMoreText, { color: colors.primary }]}>
                 {t('loadMoreComments')} ({post.replies.filter((r: any) => !r?.parentReplyId).length - visibleCommentsCount} {t('remaining')})
               </Text>
             </TouchableOpacity>
@@ -412,13 +415,13 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
-        <View style={styles.inputContainer}>
+        <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
         <View style={styles.inputWrapper}>
           <TextInput
             ref={replyInputRef}
-            style={styles.input}
+            style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
             placeholder={replyParentId ? t('writeReplyToComment') : t('writeComment')}
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
             value={replyText}
             onChangeText={handleReplyTextChange}
             multiline
@@ -426,7 +429,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           
           {/* Mention suggestions dropdown */}
           {showSuggestions && mentionSuggestions.length > 0 && (
-            <View style={styles.suggestionsContainer}>
+            <View style={[styles.suggestionsContainer, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
               <FlatList
                 data={mentionSuggestions}
                 keyExtractor={(item) => item._id?.toString() || item.username || String(Math.random())}
@@ -434,22 +437,22 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                   <TouchableOpacity
                     style={[
                       styles.suggestionItem,
-                      index === selectedSuggestionIndex && styles.suggestionItemSelected,
+                      { backgroundColor: index === selectedSuggestionIndex ? colors.border : 'transparent' },
                     ]}
                     onPress={() => selectMentionUser(item)}
                   >
                     {item.profilePic ? (
                       <Image source={{ uri: item.profilePic }} style={styles.suggestionAvatar} />
                     ) : (
-                      <View style={[styles.suggestionAvatar, styles.suggestionAvatarPlaceholder]}>
+                      <View style={[styles.suggestionAvatar, styles.suggestionAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                         <Text style={styles.suggestionAvatarText}>
                           {(item.username || '?')[0]?.toUpperCase() || '?'}
                         </Text>
                       </View>
                     )}
                     <View style={styles.suggestionInfo}>
-                      <Text style={styles.suggestionUsername}>{item.username}</Text>
-                      {item.name && <Text style={styles.suggestionName}>{item.name}</Text>}
+                      <Text style={[styles.suggestionUsername, { color: colors.text }]}>{item.username}</Text>
+                      {item.name && <Text style={[styles.suggestionName, { color: colors.textGray }]}>{item.name}</Text>}
                     </View>
                   </TouchableOpacity>
                 )}
@@ -461,14 +464,14 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         </View>
         
         <TouchableOpacity
-          style={[styles.sendButton, replying && styles.sendButtonDisabled]}
+          style={[styles.sendButton, { backgroundColor: colors.primary }, replying && styles.sendButtonDisabled]}
           onPress={handleReply}
           disabled={replying || !replyText.trim()}
         >
           {replying ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={colors.buttonText} />
           ) : (
-            <Text style={styles.sendButtonText}>Send</Text>
+            <Text style={[styles.sendButtonText, { color: colors.buttonText }]}>Send</Text>
           )}
         </TouchableOpacity>
       </View>

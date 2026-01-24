@@ -12,6 +12,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
@@ -19,6 +20,7 @@ import { useShowToast } from '../../hooks/useShowToast';
 
 const SearchScreen = ({ navigation }: any) => {
   const { user: currentUser, updateUser } = useUser();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestedUsers, setSuggestedUsers] = useState<any[]>([]);
@@ -204,7 +206,7 @@ const SearchScreen = ({ navigation }: any) => {
     const isFollowing = userId ? followingSet.has(userId) : false;
 
     return (
-      <View style={styles.userItem}>
+      <View style={[styles.userItem, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
         <TouchableOpacity
           style={styles.userTapArea}
           onPress={() => navigation.navigate('Profile', { 
@@ -216,30 +218,36 @@ const SearchScreen = ({ navigation }: any) => {
           {item.profilePic ? (
             <Image source={{ uri: item.profilePic }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
               <Text style={styles.avatarText}>{item.name?.[0]?.toUpperCase() || '?'}</Text>
             </View>
           )}
           <View style={styles.userInfo}>
-            <Text style={styles.userName} numberOfLines={1}>
+            <Text style={[styles.userName, { color: colors.text }]} numberOfLines={1}>
               {item.name}
             </Text>
-            <Text style={styles.userUsername} numberOfLines={1}>
+            <Text style={[styles.userUsername, { color: colors.textGray }]} numberOfLines={1}>
               @{item.username}
             </Text>
           </View>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.followButton, isFollowing && styles.followButtonFollowing, isUpdating && styles.followButtonDisabled]}
+          style={[
+            styles.followButton,
+            { backgroundColor: colors.primary },
+            isFollowing && styles.followButtonFollowing,
+            isFollowing && { backgroundColor: colors.border },
+            isUpdating && styles.followButtonDisabled
+          ]}
           onPress={() => handleFollowToggle(item)}
           disabled={isUpdating}
           activeOpacity={0.85}
         >
           {isUpdating ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
+            <ActivityIndicator size="small" color={colors.buttonText} />
           ) : (
-            <Text style={[styles.followButtonText, isFollowing && styles.followButtonTextFollowing]}>
+            <Text style={[styles.followButtonText, { color: colors.buttonText }, isFollowing && styles.followButtonTextFollowing]}>
               {isFollowing ? 'Unfollow' : 'Follow'}
             </Text>
           )}
@@ -249,15 +257,15 @@ const SearchScreen = ({ navigation }: any) => {
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Search</Text>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Search</Text>
       </View>
 
       <TextInput
-        style={styles.searchInput}
+        style={[styles.searchInput, { backgroundColor: colors.backgroundLight, color: colors.text, borderColor: colors.border }]}
         placeholder="Search users..."
-        placeholderTextColor={COLORS.textGray}
+        placeholderTextColor={colors.textGray}
         value={searchQuery}
         onChangeText={setSearchQuery}
         autoCapitalize="none"
@@ -265,7 +273,7 @@ const SearchScreen = ({ navigation }: any) => {
 
       {searchLoading && (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       )}
 
@@ -276,15 +284,15 @@ const SearchScreen = ({ navigation }: any) => {
           keyExtractor={(item) => item._id}
           ListEmptyComponent={
             !searchLoading && (
-              <Text style={styles.emptyText}>No users found</Text>
+              <Text style={[styles.emptyText, { color: colors.textGray }]}>No users found</Text>
             )
           }
         />
       ) : (
         <View style={styles.suggestedSection}>
-          <Text style={styles.sectionTitle}>Suggested Users</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Suggested Users</Text>
           {loading ? (
-            <ActivityIndicator size="large" color={COLORS.primary} />
+            <ActivityIndicator size="large" color={colors.primary} />
           ) : (
             <FlatList
               data={suggestedUsers}
@@ -294,7 +302,7 @@ const SearchScreen = ({ navigation }: any) => {
                 <RefreshControl
                   refreshing={refreshing}
                   onRefresh={handleRefresh}
-                  tintColor={COLORS.primary}
+                  tintColor={colors.primary}
                 />
               }
             />

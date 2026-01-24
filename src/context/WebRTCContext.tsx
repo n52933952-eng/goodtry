@@ -7,6 +7,7 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import { Platform, PermissionsAndroid, DeviceEventEmitter, AppState } from 'react-native';
+import InCallManager from 'react-native-incall-manager';
 import { useSocket } from './SocketContext';
 import { useUser } from './UserContext';
 import fcmService from '../services/fcmService';
@@ -36,8 +37,10 @@ interface WebRTCContextType {
   toggleMute: () => void;
   toggleCamera: () => void;
   switchCamera: () => void;
+  toggleSpeaker: () => void;
   isMuted: boolean;
   isCameraOff: boolean;
+  isSpeakerOn: boolean;
   connectionState: string;
   iceConnectionState: string;
   callDuration: number;
@@ -74,6 +77,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [callType, setCallType] = useState<'audio' | 'video'>('video');
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [connectionState, setConnectionState] = useState<string>('new');
   const [iceConnectionState, setIceConnectionState] = useState<string>('new');
   const [callDuration, setCallDuration] = useState<number>(0);
@@ -171,6 +175,19 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       const stream = await mediaDevices.getUserMedia(constraints);
       setLocalStream(stream);
+      
+      // Initialize InCallManager for audio routing
+      // For video calls, default to speaker
+      // For audio calls, default to earpiece
+      const media = type === 'video' ? 'video' : 'audio';
+      const auto = type === 'video'; // Auto-enable speaker for video calls
+      
+      InCallManager.start({ media, auto, ringback: '' });
+      console.log(`📞 [WebRTC] InCallManager started - media: ${media}, speaker: ${auto}`);
+      
+      // Set initial speaker state
+      setIsSpeakerOn(auto);
+      
       return stream;
     } catch (error) {
       console.error('Error getting media stream:', error);
@@ -516,6 +533,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const cleanupPeer = () => {
     console.log('🧹 [WebRTC] Cleaning up peer connection...');
     
+    // Stop InCallManager
+    InCallManager.stop();
+    console.log('📞 [WebRTC] InCallManager stopped');
+    
     // Clear timers
     if (callDurationIntervalRef.current) {
       clearInterval(callDurationIntervalRef.current);
@@ -583,6 +604,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setCallDuration(0);
     setConnectionState('new');
     setIceConnectionState('new');
+    setIsSpeakerOn(false);
     
     console.log('✅ [WebRTC] Cleanup complete');
   };
@@ -1073,6 +1095,28 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         // @ts-ignore
         track._switchCamera();
       });
+    }
+  };
+
+  // Toggle speaker (earpiece <-> speaker)
+  const toggleSpeaker = () => {
+    const newSpeakerState = !isSpeakerOn;
+    setIsSpeakerOn(newSpeakerState);
+    
+    try {
+      if (newSpeakerState) {
+        // Switch to speaker
+        InCallManager.setForceSpeakerphoneOn(true);
+        InCallManager.setSpeakerphoneOn(true);
+        console.log('📢 [WebRTC] Speaker ON');
+      } else {
+        // Switch to earpiece
+        InCallManager.setForceSpeakerphoneOn(false);
+        InCallManager.setSpeakerphoneOn(false);
+        console.log('📱 [WebRTC] Earpiece ON (Speaker OFF)');
+      }
+    } catch (error) {
+      console.error('❌ [WebRTC] Error toggling speaker:', error);
     }
   };
 
@@ -2346,8 +2390,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         toggleMute,
         toggleCamera,
         switchCamera,
+        toggleSpeaker,
         isMuted,
         isCameraOff,
+        isSpeakerOn,
         connectionState,
         iceConnectionState,
         callDuration,

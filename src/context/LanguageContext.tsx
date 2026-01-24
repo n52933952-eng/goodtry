@@ -487,7 +487,9 @@ export const LanguageProvider = ({ children }: { children: ReactNode }) => {
     return translations[language][key] || key;
   };
 
-  const isRTL = language === 'ar';
+  // Force isRTL to always be false to keep LTR layout
+  // Text will be in Arabic when language is 'ar', but layout stays Left-to-Right
+  const isRTL = false; // Always LTR layout regardless of language
 
   return (
     <LanguageContext.Provider value={{ language, setLanguage, t, isRTL }}>

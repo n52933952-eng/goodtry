@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
+import { useTheme } from '../../context/ThemeContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
@@ -24,6 +25,7 @@ interface NotificationsScreenProps {
 const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation }) => {
   const { user } = useUser();
   const { socket, notificationCount, setNotificationCount } = useSocket();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
   
@@ -314,7 +316,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     <TouchableOpacity
       style={[
         styles.notificationItem,
-        !item.read && styles.unreadNotification,
+        { backgroundColor: !item.read ? colors.cardBg : colors.backgroundLight, borderBottomColor: colors.border },
       ]}
       onPress={() => handleNotificationPress(item)}
     >
@@ -332,7 +334,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
               style={styles.avatar}
             />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
               <Text style={styles.avatarText}>
                 {item.from?.name?.[0]?.toUpperCase() || '?'}
               </Text>
@@ -340,15 +342,15 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
           )}
           
           <View style={styles.textContainer}>
-            <Text style={styles.notificationText}>
+            <Text style={[styles.notificationText, { color: !item.read ? colors.cardText : colors.text }]}>
               {getNotificationText(item)}
             </Text>
             {item.comment && (
-              <Text style={styles.commentText} numberOfLines={2}>
+              <Text style={[styles.commentText, { color: !item.read ? colors.cardText : colors.textGray }]} numberOfLines={2}>
                 "{item.comment}"
               </Text>
             )}
-            <Text style={styles.notificationTime}>
+            <Text style={[styles.notificationTime, { color: !item.read ? colors.cardText : colors.textGray }]}>
               {formatTime(item.createdAt)}
             </Text>
           </View>
@@ -385,8 +387,8 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -394,15 +396,15 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   const unreadCount = notifications.filter(n => !n.read).length;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>{t('notifications')}</Text>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('notifications')}</Text>
         {unreadCount > 0 && (
           <TouchableOpacity
-            style={styles.markAllButton}
+            style={[styles.markAllButton, { backgroundColor: colors.primary }]}
             onPress={markAllAsRead}
           >
-            <Text style={styles.markAllButtonText}>{t('markAllAsRead') || 'Mark All Read'}</Text>
+            <Text style={[styles.markAllButtonText, { color: colors.buttonText }]}>{t('markAllAsRead') || 'Mark All Read'}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -416,14 +418,14 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={COLORS.primary}
+            tintColor={colors.primary}
           />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>🔔</Text>
-            <Text style={styles.emptyText}>{t('noNotifications')}</Text>
-            <Text style={styles.emptySubtext}>
+            <Text style={[styles.emptyText, { color: colors.text }]}>{t('noNotifications')}</Text>
+            <Text style={[styles.emptySubtext, { color: colors.textGray }]}>
               {t('youWillSeeNotifications')}
             </Text>
           </View>

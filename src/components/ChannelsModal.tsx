@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { API_URL, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
+import { useTheme } from '../context/ThemeContext';
 
 interface Channel {
   id: string;
@@ -35,6 +36,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
   onClose,
   onChannelFollowed,
 }) => {
+  const { colors } = useTheme();
   const showToast = useShowToast();
   
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -135,17 +137,17 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       onRequestClose={onClose}
     >
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
+        <View style={[styles.modalContent, { backgroundColor: colors.backgroundLight }]}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>📺 Channels</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>📺 Channels</Text>
             <TouchableOpacity onPress={onClose}>
-              <Text style={styles.modalCloseButton}>✕</Text>
+              <Text style={[styles.modalCloseButton, { color: colors.textGray }]}>✕</Text>
             </TouchableOpacity>
           </View>
 
           {loading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={COLORS.primary} />
+              <ActivityIndicator size="large" color={colors.primary} />
             </View>
           ) : (
             <ScrollView 
@@ -156,13 +158,14 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
               {/* Live Stream Channels */}
               {channels.length > 0 && (
                 <View style={styles.liveChannelsSection}>
-                  <Text style={styles.sectionTitle}>🔴 Live Channels</Text>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>🔴 Live Channels</Text>
                   <View style={styles.liveChannelsGrid}>
                     {channels.map((channel) => (
                       <TouchableOpacity
                         key={channel.id}
                         style={[
                           styles.liveChannelCard,
+                          { backgroundColor: colors.cardBg, borderColor: colors.border },
                           expandedChannel === channel.id && styles.expandedChannelCard,
                         ]}
                         onPress={() =>
@@ -170,13 +173,13 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
                         }
                       >
                         <View style={styles.liveChannelHeader}>
-                          <View style={styles.liveChannelAvatar}>
+                          <View style={[styles.liveChannelAvatar, { backgroundColor: colors.avatarBg }]}>
                             <Text style={styles.liveChannelAvatarText}>
                               {channel.name.charAt(0).toUpperCase()}
                             </Text>
                           </View>
                           <View style={styles.liveChannelInfo}>
-                            <Text style={styles.liveChannelName} numberOfLines={1}>
+                            <Text style={[styles.liveChannelName, { color: colors.cardText }]} numberOfLines={1}>
                               {channel.name}
                             </Text>
                             <Text style={styles.liveChannelCategory}>
@@ -187,7 +190,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
 
                         {expandedChannel === channel.id && (
                           <View style={styles.expandedContent}>
-                            <Text style={styles.channelBio}>{channel.bio}</Text>
+                            <Text style={[styles.channelBio, { color: colors.cardText }]}>{channel.bio}</Text>
                             <View style={styles.streamsContainer}>
                               {channel.streams.map((stream, index) => {
                                 const loadingKey = `${channel.id}-${index}`;

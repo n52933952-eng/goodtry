@@ -16,6 +16,7 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useWebRTC } from '../../context/WebRTCContext';
+import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
@@ -34,10 +35,11 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { user } = useUser();
   const { socket, onlineUsers, setSelectedConversationId } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
+  const { colors } = useTheme();
   const { t } = useLanguage();
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Start false to avoid flash
   const [sending, setSending] = useState(false);
   const [currentConversationId, setCurrentConversationId] = useState(conversationId);
   const [pendingMedia, setPendingMedia] = useState<any | null>(null); // ImagePicker asset
@@ -51,6 +53,9 @@ const ChatScreen = ({ route, navigation }: any) => {
   const hasMarkedSeenRef = useRef(false); // Prevent duplicate markmessageasSeen emits
 
   const currentUserIdStr = useMemo(() => (user?._id?.toString?.() ?? String(user?._id ?? '')), [user?._id]);
+  
+  // Track current conversation ID with ref (like web version)
+  const currentConversationIdRef = useRef<string | null>(null);
 
   const getSenderId = (sender: any) => {
     return sender?._id?.toString?.() ?? sender?.toString?.() ?? (sender ? String(sender) : '');
@@ -60,6 +65,77 @@ const ChatScreen = ({ route, navigation }: any) => {
     if (!url) return false;
     return url.includes('/video/upload/') || /\.(mp4|webm|ogg|mov)$/i.test(url);
   };
+
+  // Handle new messages from socket - STABLE FUNCTION (like web version)
+  // Defined here (before useEffects) to avoid hoisting issues
+  const handleNewMessage = useCallback((data: any) => {
+    console.log('🔔🔔🔔 [ChatScreen] handleNewMessage: Received newMessage event!', {
+      hasData: !!data,
+      conversationId: data?.conversationId,
+      currentConversationId: currentConversationIdRef.current,
+      senderId: data?.sender?._id || data?.sender,
+      currentUserId: user?._id,
+      messageId: data?._id,
+      messageText: data?.text?.substring(0, 30)
+    });
+
+    // Ignore own messages (same as web version) - handleMessageSent already handles them
+    const messageSenderId = data.sender?._id?.toString() || data.sender?.toString() || data.sender;
+    const currentUserId = user?._id?.toString();
+    const isFromCurrentUser = messageSenderId && currentUserId && messageSenderId === currentUserId;
+    
+    if (isFromCurrentUser) {
+      console.log('💬 [ChatScreen] handleNewMessage: Ignoring own message (already handled by handleSend)');
+      return;
+    }
+
+    // Handle messages for current conversation - Use REF (like web version)
+    const currentConvId = currentConversationIdRef.current;
+    if (data.conversationId === currentConvId || 
+        (data.conversationId && !currentConvId && data.sender === userId)) {
+      // If this is the first message and we didn't have a conversationId, set it now
+      if (!currentConvId && data.conversationId) {
+        console.log('💬 [ChatScreen] handleNewMessage: Setting conversationId', data.conversationId);
+        setCurrentConversationId(data.conversationId);
+      }
+      
+      // Prevent duplicate messages
+      setMessages((prev) => {
+        const isDuplicate = prev.some(msg => 
+          msg._id && data._id && msg._id.toString() === data._id.toString()
+        );
+        if (isDuplicate) {
+          console.log('💬 [ChatScreen] handleNewMessage: Duplicate message detected, skipping');
+          return prev;
+        }
+        console.log('💬 [ChatScreen] handleNewMessage: Adding message to list');
+        return [...prev, data];
+      });
+      
+      messagesEndRef.current?.scrollToEnd({ animated: true });
+    } else {
+      console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
+    }
+  }, [user?._id, userId]);
+
+  // Update current conversation ID ref whenever it changes
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversationId || conversationId || null;
+  }, [currentConversationId, conversationId]);
+
+  // Set up socket listener ONCE (like web version) - persistent listener
+  useEffect(() => {
+    if (!socket || !user?._id) return;
+    
+    console.log('✅ [ChatScreen] Setting up newMessage socket listener (persistent)');
+    
+    socket.on('newMessage', handleNewMessage);
+    
+    return () => {
+      console.log('🔌 [ChatScreen] Removing newMessage socket listener');
+      socket.off('newMessage', handleNewMessage);
+    };
+  }, [socket, user?._id, handleNewMessage]);
 
   useEffect(() => {
     console.log('💬 [ChatScreen] useEffect: Mount/Update', { 
@@ -97,15 +173,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       console.log('💬 [ChatScreen] useEffect: No conversationId or userId+otherUser, stopping loading');
       setLoading(false);
     }
-    
-    if (socket) {
-      socket.on('newMessage', handleNewMessage);
-      
-      return () => {
-        socket.off('newMessage', handleNewMessage);
-      };
-    }
-  }, [socket, conversationId, userId, otherUser?._id, user?._id, fetchMessages]);
+  }, [conversationId, userId, otherUser?._id, user?._id]);
 
   // Track currently open conversation globally (used to avoid incrementing unread while viewing)
   useEffect(() => {
@@ -205,53 +273,6 @@ const ChatScreen = ({ route, navigation }: any) => {
       setLoading(false);
     }
   }, [otherUser?._id, userId, conversationId, currentConversationId, socket, user?._id]);
-
-  const handleNewMessage = (data: any) => {
-    console.log('💬 [ChatScreen] handleNewMessage: Received', {
-      conversationId: data?.conversationId,
-      currentConversationId,
-      senderId: data?.sender?._id || data?.sender,
-      userId: user?._id,
-      messageId: data?._id
-    });
-
-    // Ignore own messages (same as web version) - handleMessageSent already handles them
-    const messageSenderId = data.sender?._id?.toString() || data.sender?.toString() || data.sender;
-    const currentUserId = user?._id?.toString();
-    const isFromCurrentUser = messageSenderId && currentUserId && messageSenderId === currentUserId;
-    
-    if (isFromCurrentUser) {
-      console.log('💬 [ChatScreen] handleNewMessage: Ignoring own message (already handled by handleSend)');
-      return;
-    }
-
-    // Handle messages for current conversation
-    if (data.conversationId === currentConversationId || 
-        (data.conversationId && !currentConversationId && data.sender === userId)) {
-      // If this is the first message and we didn't have a conversationId, set it now
-      if (!currentConversationId && data.conversationId) {
-        console.log('💬 [ChatScreen] handleNewMessage: Setting conversationId', data.conversationId);
-        setCurrentConversationId(data.conversationId);
-      }
-      
-      // Prevent duplicate messages
-      setMessages((prev) => {
-        const isDuplicate = prev.some(msg => 
-          msg._id && data._id && msg._id.toString() === data._id.toString()
-        );
-        if (isDuplicate) {
-          console.log('💬 [ChatScreen] handleNewMessage: Duplicate message detected, skipping');
-          return prev;
-        }
-        console.log('💬 [ChatScreen] handleNewMessage: Adding message to list');
-        return [...prev, data];
-      });
-      
-      messagesEndRef.current?.scrollToEnd({ animated: true });
-    } else {
-      console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
-    }
-  };
 
   const handleSend = async () => {
     if (!newMessage.trim() && !pendingMedia) return;
@@ -501,7 +522,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             {senderProfilePic ? (
               <Image source={{ uri: senderProfilePic }} style={styles.messageAvatar} />
             ) : (
-              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder]}>
+              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                 <Text style={styles.messageAvatarText}>
                   {senderName?.[0]?.toUpperCase() || '?'}
                 </Text>
@@ -524,21 +545,29 @@ const ChatScreen = ({ route, navigation }: any) => {
             setReactionTargetId(item._id?.toString?.() ?? null);
             setActionTarget(item);
           }}
-          style={[styles.messageContainer, isSenderLeft ? styles.senderMessage : styles.receiverMessage]}
+          style={[
+            styles.messageContainer, 
+            isSenderLeft ? styles.senderMessage : styles.receiverMessage,
+            isSenderLeft ? { backgroundColor: colors.primary } : { backgroundColor: colors.backgroundLight }
+          ]}
         >
           {item.replyTo && (
-            <View style={styles.replyPreviewInBubble}>
-              <Text style={styles.replyPreviewLabel}>
+            <View style={[styles.replyPreviewInBubble, { backgroundColor: colors.border }]}>
+              <Text style={[styles.replyPreviewLabel, { color: isSenderLeft ? colors.buttonText : colors.text }]}>
                 Reply to {item.replyTo?.sender?.name || item.replyTo?.sender?.username || 'message'}
               </Text>
-              <Text numberOfLines={2} style={styles.replyPreviewText}>
+              <Text numberOfLines={2} style={[styles.replyPreviewText, { color: isSenderLeft ? colors.buttonText : colors.textGray }]}>
                 {item.replyTo?.text || (item.replyTo?.img ? '📎 Attachment' : '')}
               </Text>
             </View>
           )}
 
           {!!item.text && (
-            <Text style={[styles.messageText, isSenderLeft ? styles.senderText : styles.receiverText]}>
+            <Text style={[
+              styles.messageText, 
+              isSenderLeft ? styles.senderText : styles.receiverText,
+              isSenderLeft ? { color: colors.buttonText } : { color: colors.text }
+            ]}>
               {item.text}
             </Text>
           )}
@@ -570,7 +599,11 @@ const ChatScreen = ({ route, navigation }: any) => {
             </View>
           )}
 
-          <Text style={[styles.messageTime, isSenderLeft ? styles.senderTime : styles.receiverTime]}>
+          <Text style={[
+            styles.messageTime, 
+            isSenderLeft ? styles.senderTime : styles.receiverTime,
+            isSenderLeft ? { color: colors.buttonText } : { color: colors.textGray }
+          ]}>
             {formatTime(item.createdAt)}
           </Text>
 
@@ -590,7 +623,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             {senderProfilePic ? (
               <Image source={{ uri: senderProfilePic }} style={styles.messageAvatar} />
             ) : (
-              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder]}>
+              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                 <Text style={styles.messageAvatarText}>
                   {senderName?.[0]?.toUpperCase() || '?'}
                 </Text>
@@ -617,16 +650,16 @@ const ChatScreen = ({ route, navigation }: any) => {
       : {};
 
   return (
-    <Wrapper style={styles.container} {...wrapperProps}>
-      <View style={styles.header}>
+    <Wrapper style={[styles.container, { backgroundColor: colors.background }]} {...wrapperProps}>
+      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>←</Text>
+          <Text style={[styles.backButton, { color: colors.text }]}>←</Text>
         </TouchableOpacity>
 
         {otherUser?.profilePic ? (
           <Image source={{ uri: otherUser.profilePic }} style={styles.avatar} />
         ) : (
-          <View style={[styles.avatar, styles.avatarPlaceholder]}>
+          <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
             <Text style={styles.avatarText}>
               {otherUser?.name?.[0]?.toUpperCase() || '?'}
             </Text>
@@ -635,11 +668,11 @@ const ChatScreen = ({ route, navigation }: any) => {
 
         <View style={styles.headerInfo}>
           <View style={styles.headerTitleRow}>
-            <Text style={styles.headerTitle}>
+            <Text style={[styles.headerTitle, { color: colors.text }]}>
               {otherUser?.name || 'User'}
             </Text>
             {isOtherUserOnline() && (
-              <View style={styles.headerOnlineDot} />
+              <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
         </View>
@@ -673,26 +706,26 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       {/* Reaction picker (minimal) */}
       {reactionTargetId && actionTarget && (
-        <View style={styles.reactionPicker}>
+        <View style={[styles.reactionPicker, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
           <TouchableOpacity
             onPress={() => {
               setReplyingTo(actionTarget);
               setReactionTargetId(null);
               setActionTarget(null);
             }}
-            style={styles.actionBtn}
+            style={[styles.actionBtn, { backgroundColor: colors.primary }]}
           >
             <Text style={styles.actionBtnText}>{t('reply')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => handleDeleteMessage(actionTarget._id)}
-            style={styles.actionBtn}
+            style={[styles.actionBtn, { backgroundColor: colors.error }]}
           >
-            <Text style={[styles.actionBtnText, { color: '#ff4d4d' }]}>{t('delete')}</Text>
+            <Text style={[styles.actionBtnText, { color: '#FFFFFF' }]}>{t('delete')}</Text>
           </TouchableOpacity>
 
-          <View style={styles.actionDivider} />
+          <View style={[styles.actionDivider, { backgroundColor: colors.border }]} />
 
           {['👍', '❤️', '😂', '😮', '😢', '🔥', '👏', '✅', '😡', '🎉', '🤝', '🙏'].map((e) => (
             <TouchableOpacity key={e} onPress={() => handleToggleReaction(reactionTargetId, e)} style={styles.reactionPickBtn}>
@@ -706,41 +739,41 @@ const ChatScreen = ({ route, navigation }: any) => {
       )}
 
       {replyingTo && (
-        <View style={styles.replyBanner}>
+        <View style={[styles.replyBanner, { backgroundColor: colors.border }]}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.replyBannerTitle}>
+            <Text style={[styles.replyBannerTitle, { color: colors.text }]}>
               {t('replyingTo')} {replyingTo?.sender?.name || replyingTo?.sender?.username || t('message')}
             </Text>
-            <Text numberOfLines={1} style={styles.replyBannerText}>
+            <Text numberOfLines={1} style={[styles.replyBannerText, { color: colors.textGray }]}>
               {replyingTo?.text || (replyingTo?.img ? t('attachment') : '')}
             </Text>
           </View>
           <TouchableOpacity onPress={() => setReplyingTo(null)}>
-            <Text style={styles.replyBannerClose}>✕</Text>
+            <Text style={[styles.replyBannerClose, { color: colors.text }]}>✕</Text>
           </TouchableOpacity>
         </View>
       )}
 
       {/* Media preview */}
       {pendingMedia?.uri ? (
-        <View style={styles.mediaPreview}>
-          <Text style={styles.mediaPreviewText}>
+        <View style={[styles.mediaPreview, { backgroundColor: colors.border }]}>
+          <Text style={[styles.mediaPreviewText, { color: colors.text }]}>
             {pendingMedia.type?.startsWith('video') ? t('videoSelected') : t('imageSelected')}
           </Text>
           <TouchableOpacity onPress={() => setPendingMedia(null)}>
-            <Text style={styles.mediaRemove}>{t('remove')}</Text>
+            <Text style={[styles.mediaRemove, { color: colors.error }]}>{t('remove')}</Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
-      <View style={styles.inputContainer}>
-        <TouchableOpacity onPress={handlePickMedia} style={styles.attachBtn}>
-          <Text style={styles.attachIcon}>＋</Text>
+      <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
+        <TouchableOpacity onPress={handlePickMedia} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
+          <Text style={[styles.attachIcon, { color: colors.text }]}>＋</Text>
         </TouchableOpacity>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
           placeholder={t('typeMessage')}
-          placeholderTextColor={COLORS.textGray}
+          placeholderTextColor={colors.textGray}
           value={newMessage}
           onChangeText={setNewMessage}
           multiline
@@ -751,14 +784,14 @@ const ChatScreen = ({ route, navigation }: any) => {
           }}
         />
         <TouchableOpacity
-          style={[styles.sendButton, sending && styles.sendButtonDisabled]}
+          style={[styles.sendButton, { backgroundColor: colors.primary }, sending && styles.sendButtonDisabled]}
           onPress={handleSend}
           disabled={sending || (!newMessage.trim() && !pendingMedia)}
         >
           {sending ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={colors.buttonText} />
           ) : (
-            <Text style={styles.sendButtonText}>{t('send')}</Text>
+            <Text style={[styles.sendButtonText, { color: colors.buttonText }]}>{t('send')}</Text>
           )}
         </TouchableOpacity>
       </View>

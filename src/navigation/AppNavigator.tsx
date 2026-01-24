@@ -5,6 +5,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useUser } from '../context/UserContext';
 import { useWebRTC } from '../context/WebRTCContext';
+import { useTheme } from '../context/ThemeContext';
 import { COLORS } from '../utils/constants';
 import fcmService from '../services/fcmService';
 import oneSignalService from '../services/onesignal';
@@ -38,53 +39,64 @@ const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
 // Auth Stack
-const AuthStack = () => (
-  <Stack.Navigator
-    screenOptions={{
-      headerShown: false,
-      cardStyle: { backgroundColor: COLORS.background },
-    }}
-  >
-    <Stack.Screen name="Login" component={LoginScreen} />
-    <Stack.Screen name="Signup" component={SignupScreen} />
-  </Stack.Navigator>
-);
+const AuthStack = () => {
+  const { colors } = useTheme();
+  
+  return (
+    <Stack.Navigator
+      screenOptions={{
+        headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="Login" component={LoginScreen} />
+      <Stack.Screen name="Signup" component={SignupScreen} />
+    </Stack.Navigator>
+  );
+};
 
 // Feed Stack (nested stack for Feed tab to include PostDetail)
-const FeedStack = () => (
-  <Stack.Navigator
-    screenOptions={{
-      headerShown: false,
-    }}
-  >
-    <Stack.Screen name="FeedScreen" component={FeedScreen} />
-    <Stack.Screen 
-      name="PostDetail" 
-      component={PostDetailScreen}
-      options={{
-        headerShown: true,
-        title: 'Post',
-        headerStyle: {
-          backgroundColor: COLORS.background,
-        },
-        headerTintColor: COLORS.text,
-        headerTitleStyle: {
-          fontWeight: 'bold',
-        },
+const FeedStack = () => {
+  const { colors } = useTheme();
+  
+  return (
+    <Stack.Navigator
+      screenOptions={{
+        headerShown: false,
       }}
-    />
-  </Stack.Navigator>
-);
+    >
+      <Stack.Screen name="FeedScreen" component={FeedScreen} />
+      <Stack.Screen 
+        name="PostDetail" 
+        component={PostDetailScreen}
+        options={{
+          headerShown: true,
+          title: 'Post',
+          headerStyle: {
+            backgroundColor: colors.backgroundLight,
+          },
+          headerTintColor: colors.text,
+          headerTitleStyle: {
+            fontWeight: 'bold',
+          },
+        }}
+      />
+    </Stack.Navigator>
+  );
+};
 
 // Main Tab Navigator (after login)
-const MainTabs = () => (
+const MainTabs = () => {
+  const { colors } = useTheme();
+  
+  return (
   <Tab.Navigator
     screenOptions={{
       headerShown: false,
       tabBarShowLabel: false, // Remove text labels below icons
       tabBarStyle: {
-        backgroundColor: COLORS.backgroundLight,
-        borderTopColor: COLORS.border,
+        backgroundColor: colors.backgroundLight,
+        borderTopColor: colors.border,
         borderTopWidth: 1,
         height: 60,
         paddingBottom: 0,
@@ -96,8 +108,8 @@ const MainTabs = () => (
         shadowOpacity: 0.1,
         shadowRadius: 4,
       },
-      tabBarActiveTintColor: COLORS.primary,
-      tabBarInactiveTintColor: COLORS.textGray,
+      tabBarActiveTintColor: colors.primary,
+      tabBarInactiveTintColor: colors.textGray,
       tabBarIconStyle: {
         width: 28,
         height: 28,
@@ -119,9 +131,9 @@ const MainTabs = () => (
       return (
         <View style={{
           flexDirection: 'row',
-          backgroundColor: COLORS.backgroundLight,
+          backgroundColor: colors.backgroundLight,
           borderTopWidth: 1,
-          borderTopColor: COLORS.border,
+          borderTopColor: colors.border,
           height: 60,
           width: '100%',
           elevation: 8,
@@ -134,7 +146,7 @@ const MainTabs = () => (
             const { options } = props.descriptors[route.key];
             const routeIndex = props.state.routes.findIndex(r => r.key === route.key);
             const isFocused = props.state.index === routeIndex;
-            const color = isFocused ? COLORS.primary : COLORS.textGray;
+            const color = isFocused ? colors.primary : colors.textGray;
 
             const onPress = () => {
               const event = props.navigation.emit({
@@ -239,10 +251,13 @@ const MainTabs = () => (
       options={{ tabBarButton: () => null }}
     />
   </Tab.Navigator>
-);
+  );
+};
 
 // Profile Stack (nested stack for Profile tab to include UserProfile and PostDetail)
 const ProfileStack = ({ navigation: stackNavigation }: any) => {
+  const { colors } = useTheme();
+  
   return (
     <Stack.Navigator
       screenOptions={{
@@ -257,9 +272,9 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
           title: 'Profile',
           headerTitleAlign: 'center',
           headerStyle: {
-            backgroundColor: COLORS.background,
+            backgroundColor: colors.backgroundLight,
           },
-          headerTintColor: COLORS.text,
+          headerTintColor: colors.text,
           headerTitleStyle: {
             fontWeight: 'bold',
             fontSize: 18,
@@ -281,7 +296,7 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
               }}
             >
               <Text style={{ 
-                color: COLORS.text, 
+                color: colors.text, 
                 fontSize: 28,
                 fontWeight: 'bold',
               }}>←</Text>
@@ -296,9 +311,9 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
           headerShown: true,
           title: 'Post',
           headerStyle: {
-            backgroundColor: COLORS.background,
+            backgroundColor: colors.backgroundLight,
           },
-          headerTintColor: COLORS.text,
+          headerTintColor: colors.text,
           headerTitleStyle: {
             fontWeight: 'bold',
           },
@@ -316,32 +331,44 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
 };
 
 // Main Stack with Tabs and Modals
-const MainStack = () => (
-  <Stack.Navigator
-    screenOptions={{
-      headerShown: false,
-      presentation: 'card',
-    }}
-  >
-    <Stack.Screen name="MainTabs" component={MainTabs} />
-    <Stack.Screen 
-      name="CreatePost" 
-      component={CreatePostScreen}
-      options={{ presentation: 'modal' }}
-    />
-    <Stack.Screen name="Activity" component={ActivityScreen} />
-    <Stack.Screen name="ChatScreen" component={ChatScreen} />
-    <Stack.Screen 
-      name="CallScreen" 
-      component={CallScreen}
-      options={{
+const MainStack = () => {
+  const { colors } = useTheme();
+  
+  return (
+    <Stack.Navigator
+      screenOptions={{
         headerShown: false,
-        presentation: 'fullScreenModal',
+        presentation: 'card',
+        cardStyle: { backgroundColor: colors.background },
       }}
-    />
-    <Stack.Screen name="ChessGame" component={ChessGameScreen} />
-  </Stack.Navigator>
-);
+    >
+      <Stack.Screen name="MainTabs" component={MainTabs} />
+      <Stack.Screen 
+        name="CreatePost" 
+        component={CreatePostScreen}
+        options={{ presentation: 'modal' }}
+      />
+      <Stack.Screen name="Activity" component={ActivityScreen} />
+      <Stack.Screen 
+        name="ChatScreen" 
+        component={ChatScreen}
+        options={{
+          cardStyle: { backgroundColor: colors.background },
+          animationEnabled: false,
+        }}
+      />
+      <Stack.Screen 
+        name="CallScreen" 
+        component={CallScreen}
+        options={{
+          headerShown: false,
+          presentation: 'fullScreenModal',
+        }}
+      />
+      <Stack.Screen name="ChessGame" component={ChessGameScreen} />
+    </Stack.Navigator>
+  );
+};
 
 // Simple Icon Components
 const HomeIcon = ({ color }: { color: string }) => (

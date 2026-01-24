@@ -188,6 +188,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
     // CRITICAL: Remove all existing listeners first to prevent duplicates
     // This ensures we don't accumulate listeners if useEffect runs multiple times
+    // NOTE: Do NOT remove 'newMessage' here - ChatScreen and MessagesScreen handle their own listeners
     socketService.off('getOnlineUser');
     socketService.off(SOCKET_EVENTS.NEW_POST);
     socketService.off(SOCKET_EVENTS.POST_UPDATED);
@@ -196,7 +197,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CHESS_MOVE);
     socketService.off('newNotification');
-    socketService.off('newMessage');
+    // socketService.off('newMessage'); // <-- REMOVED: Let screens manage their own listeners
 
     // Set up listeners - will be queued if socket not ready yet
     console.log('🔧 Setting up socket listeners in SocketContext');
@@ -435,7 +436,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
       socketService.off(SOCKET_EVENTS.CHESS_MOVE);
       socketService.off('newNotification');
-      socketService.off('newMessage');
+      // socketService.off('newMessage'); // <-- Don't remove - screens manage their own
     };
   }, [user, addPost, updatePost, deletePost, selectedConversationId, playNotificationSound]);
 

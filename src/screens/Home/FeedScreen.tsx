@@ -14,6 +14,7 @@ import { usePost } from '../../context/PostContext';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { useTheme } from '../../context/ThemeContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -33,6 +34,7 @@ const FeedScreen = ({ navigation }: any) => {
   const { user, logout } = useUser();
   const { socket, onlineUsers, notificationCount } = useSocket();
   const { t, isRTL } = useLanguage();
+  const { theme, toggleTheme, colors } = useTheme();
   const showToast = useShowToast();
   
   const [loading, setLoading] = useState(true);
@@ -51,11 +53,9 @@ const FeedScreen = ({ navigation }: any) => {
   // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
   useFocusEffect(
     useCallback(() => {
-      // Only refetch if posts are empty (initial load scenario)
-      // This ensures feed loads when navigating back to an empty feed
-      // The useEffect below handles the initial mount load
-      if (posts.length === 0 && !loading && !isFetchingRef.current) {
-        console.log('🔄 [FeedScreen] useFocusEffect: Refetching empty feed');
+      // Always refresh to get latest live matches and weather
+      if (!loading && !isFetchingRef.current) {
+        console.log('🔄 [FeedScreen] useFocusEffect: Refreshing feed for live updates');
         fetchFeed();
       }
     }, [])
@@ -63,6 +63,16 @@ const FeedScreen = ({ navigation }: any) => {
 
   useEffect(() => {
     fetchFeed();
+  }, []);
+
+  // Auto-refresh feed every 2 minutes for live match updates
+  useEffect(() => {
+    const refreshInterval = setInterval(() => {
+      console.log('🔄 [FeedScreen] Auto-refreshing for live updates...');
+      fetchFeed(false);
+    }, 2 * 60 * 1000); // 2 minutes
+
+    return () => clearInterval(refreshInterval);
   }, []);
 
   // Socket listeners specific to FeedScreen UI
@@ -98,16 +108,37 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
+    // Football real-time updates
+    const handleFootballUpdate = (data: any) => {
+      console.log('⚽ [FeedScreen] Football update received, refreshing feed silently...', data);
+      // Force refresh to get updated football posts
+      setPosts([]); // Clear posts to force fresh fetch
+      fetchFeed(false);
+    };
+
+    // Weather real-time updates
+    const handleWeatherUpdate = (data: any) => {
+      console.log('🌤️ [FeedScreen] Weather update received, refreshing feed silently...');
+      // Silent refresh to get updated weather posts
+      fetchFeed(false);
+    };
+
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('acceptChessChallenge', handleAcceptChessChallenge);
     socket.on('chessDeclined', handleChessDeclined);
+    socket.on('footballPageUpdate', handleFootballUpdate);
+    socket.on('footballMatchUpdate', handleFootballUpdate);
+    socket.on('weatherUpdate', handleWeatherUpdate);
 
     return () => {
       socket.off('chessChallenge', handleChessChallenge);
       socket.off('acceptChessChallenge', handleAcceptChessChallenge);
       socket.off('chessDeclined', handleChessDeclined);
+      socket.off('footballPageUpdate', handleFootballUpdate);
+      socket.off('footballMatchUpdate', handleFootballUpdate);
+      socket.off('weatherUpdate', handleWeatherUpdate);
     };
-  }, [socket, user, navigation]);
+  }, [socket, user, navigation, posts]);
 
   const fetchFeed = async (loadMore = false) => {
     // Prevent duplicate requests
@@ -345,25 +376,33 @@ const FeedScreen = ({ navigation }: any) => {
   const renderPost = ({ item }: { item: any }) => <Post post={item} />;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={[styles.headerTitle, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
         <View style={styles.headerButtons}>
           <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
             <Text style={styles.logoutButtonText}>⬅️</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.createButton}
+            style={[styles.themeButton, { backgroundColor: colors.primary }]}
+            onPress={toggleTheme}
+          >
+            <Text style={[styles.themeButtonText, { color: colors.buttonText }]}>
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.createButton, { backgroundColor: colors.primary }]}
             onPress={() => navigation.navigate('CreatePost')}
           >
-            <Text style={styles.createButtonText}>+</Text>
+            <Text style={[styles.createButtonText, { color: colors.buttonText }]}>+</Text>
           </TouchableOpacity>
         </View>
       </View>
 
       <View style={styles.quickAccessRightRail}>
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => navigation.navigate('Notifications')}
         >
           <View style={styles.notificationIconContainer}>
@@ -376,47 +415,47 @@ const FeedScreen = ({ navigation }: any) => {
               </View>
             )}
           </View>
-          <Text style={styles.quickAccessLabel}>Alerts</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Alerts</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={handleOpenChessModal}
         >
           <Text style={styles.quickAccessIcon}>♟️</Text>
-          <Text style={styles.quickAccessLabel}>Chess</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Chess</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => navigation.navigate('Weather')}
         >
           <Text style={styles.quickAccessIcon}>🌤️</Text>
-          <Text style={styles.quickAccessLabel}>Weather</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Weather</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => navigation.navigate('Football')}
         >
           <Text style={styles.quickAccessIcon}>⚽</Text>
-          <Text style={styles.quickAccessLabel}>Football</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Football</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => setShowChannelsModal(true)}
         >
           <Text style={styles.quickAccessIcon}>📺</Text>
-          <Text style={styles.quickAccessLabel}>Channels</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Channels</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.quickAccessButton}
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => setShowActivityModal(true)}
         >
           <Text style={styles.quickAccessIcon}>🔴</Text>
-          <Text style={styles.quickAccessLabel}>Activity</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Activity</Text>
         </TouchableOpacity>
       </View>
 
@@ -640,6 +679,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 24,
     fontWeight: 'bold',
+  },
+  themeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  themeButtonText: {
+    fontSize: 20,
   },
   loadingContainer: {
     flex: 1,

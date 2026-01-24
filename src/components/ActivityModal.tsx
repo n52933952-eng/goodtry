@@ -14,6 +14,7 @@ import { API_URL, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useUser } from '../context/UserContext';
 import { useSocket } from '../context/SocketContext';
+import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
 
@@ -68,6 +69,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
 }) => {
   const { user } = useUser();
   const { socket } = useSocket();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -226,7 +228,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
 
   const renderActivity = ({ item }: { item: Activity }) => (
     <TouchableOpacity
-      style={styles.activityItem}
+      style={[styles.activityItem, { backgroundColor: colors.cardBg, borderBottomColor: colors.border }]}
       onPress={() => handleActivityPress(item)}
     >
       <View style={styles.activityContent}>
@@ -238,7 +240,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
             style={styles.avatar}
           />
         ) : (
-          <View style={[styles.avatar, styles.avatarPlaceholder]}>
+          <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
             <Text style={styles.avatarText}>
               {item.userId?.name?.[0]?.toUpperCase() || '?'}
             </Text>
@@ -246,8 +248,8 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
         )}
         
         <View style={styles.activityTextContainer}>
-          <Text style={styles.activityText}>{getActivityText(item)}</Text>
-          <Text style={styles.activityTime}>{formatTimeAgo(item.createdAt)}</Text>
+          <Text style={[styles.activityText, { color: colors.cardText }]}>{getActivityText(item)}</Text>
+          <Text style={[styles.activityTime, { color: colors.cardText, opacity: 0.6 }]}>{formatTimeAgo(item.createdAt)}</Text>
         </View>
       </View>
       
@@ -268,23 +270,23 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
       onRequestClose={onClose}
     >
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Live Activity</Text>
+        <View style={[styles.modalContent, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Live Activity</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeButtonText}>✕</Text>
+              <Text style={[styles.closeButtonText, { color: colors.text }]}>✕</Text>
             </TouchableOpacity>
           </View>
 
           {loading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={COLORS.primary} />
+              <ActivityIndicator size="large" color={colors.primary} />
             </View>
           ) : activities.length === 0 ? (
             <View style={styles.emptyContainer}>
               <Text style={styles.emptyIcon}>🔴</Text>
-              <Text style={styles.emptyText}>No recent activity</Text>
-              <Text style={styles.emptySubtext}>
+              <Text style={[styles.emptyText, { color: colors.text }]}>No recent activity</Text>
+              <Text style={[styles.emptySubtext, { color: colors.textGray }]}>
                 Activity from users you follow will appear here
               </Text>
             </View>
