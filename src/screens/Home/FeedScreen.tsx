@@ -42,10 +42,13 @@ const FeedScreen = ({ navigation }: any) => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [showChessModal, setShowChessModal] = useState(false);
+  const [showCardModal, setShowCardModal] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
+  const [incomingCardChallenge, setIncomingCardChallenge] = useState<any>(null);
   const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
+  const [busyCardUserIds, setBusyCardUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
   const isFetchingRef = useRef(false);
@@ -98,6 +101,31 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
+    const handleCardChallenge = (data: any) => {
+      if (data.to === user?._id) {
+        setIncomingCardChallenge(data);
+        showToast('Card Challenge!', `${data.fromName} challenged you to Go Fish!`, 'info');
+      }
+    };
+
+    const handleAcceptCardChallenge = (data: any) => {
+      if (!data?.roomId) return;
+
+      showToast('Challenge Accepted', 'Game starting!', 'success');
+      navigation.navigate('CardGame', { 
+        roomId: data.roomId,
+        opponentId: data.opponentId 
+      });
+    };
+
+    const handleCardDeclined = (data: any) => {
+      console.log('🃏 [FeedScreen] Card challenge declined by:', data.from);
+      showToast('Challenge Declined', 'Your challenge was declined', 'info');
+      if (data.from) {
+        setBusyCardUserIds(prev => prev.filter(id => id?.toString() !== data.from?.toString()));
+      }
+    };
+
     // Football real-time updates
     const handleFootballUpdate = (data: any) => {
       console.log('⚽ [FeedScreen] Football update received, refreshing feed silently...', data);
@@ -115,6 +143,9 @@ const FeedScreen = ({ navigation }: any) => {
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('acceptChessChallenge', handleAcceptChessChallenge);
     socket.on('chessDeclined', handleChessDeclined);
+    socket.on('cardChallenge', handleCardChallenge);
+    socket.on('acceptCardChallenge', handleAcceptCardChallenge);
+    socket.on('cardDeclined', handleCardDeclined);
     socket.on('footballPageUpdate', handleFootballUpdate);
     socket.on('footballMatchUpdate', handleFootballUpdate);
     socket.on('weatherUpdate', handleWeatherUpdate);
@@ -123,6 +154,9 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('chessChallenge', handleChessChallenge);
       socket.off('acceptChessChallenge', handleAcceptChessChallenge);
       socket.off('chessDeclined', handleChessDeclined);
+      socket.off('cardChallenge', handleCardChallenge);
+      socket.off('acceptCardChallenge', handleAcceptCardChallenge);
+      socket.off('cardDeclined', handleCardDeclined);
       socket.off('footballPageUpdate', handleFootballUpdate);
       socket.off('footballMatchUpdate', handleFootballUpdate);
       socket.off('weatherUpdate', handleWeatherUpdate);
@@ -225,6 +259,16 @@ const FeedScreen = ({ navigation }: any) => {
         setBusyChessUserIds([]);
       }
 
+      // Fetch busy card users (from Redis) so we can filter them out
+      try {
+        const busyCardRes = await apiService.get('/api/user/busyCardUsers');
+        const cardIds: string[] = busyCardRes?.busyUserIds || [];
+        setBusyCardUserIds(cardIds.map((x) => x?.toString()).filter(Boolean));
+      } catch (e) {
+        // Best-effort; if it fails we still show online users.
+        setBusyCardUserIds([]);
+      }
+
       // 2) Fetch fresh current user profile to get latest following/followers (same as web)
       let freshUserData: any = user;
       try {
@@ -281,9 +325,10 @@ const FeedScreen = ({ navigation }: any) => {
         });
 
         const isNotSelf = userIdStr !== currentUserIdStr;
-        const isNotBusy = !busyChessUserIds.some((busyId) => busyId?.toString() === userIdStr);
+        const isNotBusyChess = !busyChessUserIds.some((busyId) => busyId?.toString() === userIdStr);
+        const isNotBusyCard = !busyCardUserIds.some((busyId) => busyId?.toString() === userIdStr);
 
-        return isOnline && isNotSelf && isNotBusy;
+        return isOnline && isNotSelf && isNotBusyChess && isNotBusyCard;
       });
 
       setAvailableUsers(onlineAvailableUsers);
@@ -297,6 +342,11 @@ const FeedScreen = ({ navigation }: any) => {
 
   const handleOpenChessModal = () => {
     setShowChessModal(true);
+    fetchAvailableUsers();
+  };
+
+  const handleOpenCardModal = () => {
+    setShowCardModal(true);
     fetchAvailableUsers();
   };
 
@@ -348,6 +398,56 @@ const FeedScreen = ({ navigation }: any) => {
     });
 
     setIncomingChallenge(null);
+    showToast('Info', 'Challenge declined', 'info');
+  };
+
+  const handleSendCardChallenge = (opponent: AvailableUser) => {
+    if (!socket) {
+      showToast('Error', 'Not connected to server', 'error');
+      return;
+    }
+
+    socket.emit('cardChallenge', {
+      from: user?._id,
+      to: opponent._id,
+      fromName: user?.name,
+      fromUsername: user?.username,
+      fromProfilePic: user?.profilePic || '',
+    });
+
+    showToast('Success', `Challenge sent to ${opponent.name}!`, 'success');
+    setShowCardModal(false);
+  };
+
+  const handleAcceptCardChallenge = () => {
+    if (!socket || !incomingCardChallenge) return;
+
+    const roomId = `card_${incomingCardChallenge.from}_${user?._id}_${Date.now()}`;
+    
+    socket.emit('acceptCardChallenge', {
+      from: user?._id,
+      to: incomingCardChallenge.from,
+      roomId: roomId,
+    });
+
+    navigation.navigate('CardGame', { 
+      roomId: roomId,
+      opponentId: incomingCardChallenge.from
+    });
+    
+    setIncomingCardChallenge(null);
+    showToast('Success', 'Challenge accepted!', 'success');
+  };
+
+  const handleDeclineCardChallenge = () => {
+    if (!socket || !incomingCardChallenge) return;
+
+    socket.emit('declineCardChallenge', {
+      from: user?._id,
+      to: incomingCardChallenge.from,
+    });
+
+    setIncomingCardChallenge(null);
     showToast('Info', 'Challenge declined', 'info');
   };
 
@@ -413,6 +513,14 @@ const FeedScreen = ({ navigation }: any) => {
         >
           <Text style={styles.quickAccessIcon}>♟️</Text>
           <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Chess</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+          onPress={handleOpenCardModal}
+        >
+          <Text style={styles.quickAccessIcon}>🃏</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Cards</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -518,6 +626,102 @@ const FeedScreen = ({ navigation }: any) => {
           }
         }}
       />
+
+      {/* Card Challenge Modal */}
+      <Modal
+        visible={showCardModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCardModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>🃏 Challenge to Go Fish</Text>
+              <TouchableOpacity onPress={() => setShowCardModal(false)}>
+                <Text style={styles.modalCloseButton}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.modalSubtitle}>
+              {loadingUsers
+                ? 'Loading online users...'
+                : availableUsers.length > 0
+                ? 'Select a user to challenge:'
+                : 'No online users available'}
+            </Text>
+
+            {loadingUsers ? (
+              <View style={styles.modalLoading}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+              </View>
+            ) : availableUsers.length > 0 ? (
+              <FlatList
+                data={availableUsers}
+                keyExtractor={(item) => item._id}
+                style={styles.userList}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.userItem}
+                    onPress={() => handleSendCardChallenge(item)}
+                  >
+                    <View style={styles.userInfo}>
+                      <View style={styles.userAvatar}>
+                        <Text style={styles.userAvatarText}>
+                          {item.name?.charAt(0).toUpperCase() || '?'}
+                        </Text>
+                      </View>
+                      <View>
+                        <Text style={styles.userName}>{item.name}</Text>
+                        <Text style={styles.userUsername}>@{item.username}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.onlineDot} />
+                  </TouchableOpacity>
+                )}
+              />
+            ) : (
+              <View style={styles.modalEmpty}>
+                <Text style={styles.emptyText}>
+                  No online users to challenge.{'\n'}
+                  Follow users to challenge them!
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Incoming Card Challenge Modal */}
+      <Modal
+        visible={!!incomingCardChallenge}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIncomingCardChallenge(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.challengeModalContent}>
+            <Text style={styles.challengeModalTitle}>🃏 Go Fish Challenge!</Text>
+            <Text style={styles.challengeModalText}>
+              {incomingCardChallenge?.fromName} challenged you to a Go Fish match!
+            </Text>
+            <View style={styles.challengeModalButtons}>
+              <TouchableOpacity
+                style={[styles.challengeModalButton, styles.declineButton]}
+                onPress={handleDeclineCardChallenge}
+              >
+                <Text style={styles.challengeModalButtonText}>Decline</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.challengeModalButton, styles.acceptButton]}
+                onPress={handleAcceptCardChallenge}
+              >
+                <Text style={styles.challengeModalButtonText}>Accept</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Chess Challenge Modal */}
       <Modal

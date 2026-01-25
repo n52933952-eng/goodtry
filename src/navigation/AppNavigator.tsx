@@ -32,6 +32,9 @@ import CallScreen from '../screens/Call/CallScreen';
 import ChessScreen from '../screens/Chess/ChessScreen';
 import ChessGameScreen from '../screens/Chess/ChessGameScreen';
 import ChessChallengeNotification from '../components/ChessChallengeNotification';
+import CardChallengeNotification from '../components/CardChallengeNotification';
+import CardScreen from '../screens/Card/CardScreen';
+import CardGameScreen from '../screens/Card/CardGameScreen';
 import ActivityScreen from '../screens/Activity/ActivityScreen';
 import { useSocket } from '../context/SocketContext';
 
@@ -241,6 +244,11 @@ const MainTabs = () => {
       options={{ tabBarButton: () => null }}
     />
     <Tab.Screen
+      name="Card"
+      component={CardScreen}
+      options={{ tabBarButton: () => null }}
+    />
+    <Tab.Screen
       name="Weather"
       component={WeatherScreen}
       options={{ tabBarButton: () => null }}
@@ -366,6 +374,7 @@ const MainStack = () => {
         }}
       />
       <Stack.Screen name="ChessGame" component={ChessGameScreen} />
+      <Stack.Screen name="CardGame" component={CardGameScreen} />
     </Stack.Navigator>
   );
 };
@@ -391,7 +400,7 @@ const MessagesIcon = ({ color }: { color: string }) => (
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
   const { call, pendingCancel } = useWebRTC();
-  const { chessChallenges, clearChessChallenge, socket } = useSocket();
+  const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
   const navigationRef = useRef<any>(null);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
 
@@ -796,6 +805,49 @@ const AppNavigator = () => {
                 }, 100);
               } finally {
                 clearChessChallenge(challenge?.from);
+              }
+            }}
+          />
+        )}
+        {user && (
+          <CardChallengeNotification
+            challenges={cardChallenges}
+            onDecline={(challenge) => {
+              try {
+                if (socket && user?._id && challenge?.from) {
+                  socket.emit('declineCardChallenge', {
+                    from: user._id,
+                    to: challenge.from,
+                  });
+                }
+              } finally {
+                clearCardChallenge(challenge?.from);
+              }
+            }}
+            onAccept={(challenge) => {
+              try {
+                if (!socket || !user?._id || !challenge?.from) {
+                  clearCardChallenge(challenge?.from);
+                  return;
+                }
+
+                const roomId = `card_${challenge.from}_${user._id}_${Date.now()}`;
+
+                // Navigate first (like web), then emit accept
+                navigationRef.current?.navigate('CardGame', {
+                  roomId,
+                  opponentId: challenge.from,
+                });
+
+                setTimeout(() => {
+                  socket.emit('acceptCardChallenge', {
+                    from: user._id, // accepter
+                    to: challenge.from, // challenger
+                    roomId,
+                  });
+                }, 100);
+              } finally {
+                clearCardChallenge(challenge?.from);
               }
             }}
           />

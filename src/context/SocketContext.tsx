@@ -13,7 +13,9 @@ interface SocketContextType {
   socket: typeof socketService;
   onlineUsers: any[];
   chessChallenges: any[];
+  cardChallenges: any[];
   clearChessChallenge: (challengeFrom?: string) => void;
+  clearCardChallenge: (challengeFrom?: string) => void;
   notificationCount: number;
   setNotificationCount: (count: number | ((prev: number) => number)) => void;
   selectedConversationId: string | null;
@@ -27,6 +29,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { addPost, updatePost, deletePost } = usePost();
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
+  const [cardChallenges, setCardChallenges] = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isNotificationCountLoaded, setIsNotificationCountLoaded] = useState(false);
@@ -196,6 +199,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.FOOTBALL_MATCH_UPDATE);
     socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CHESS_MOVE);
+    socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
+    socketService.off(SOCKET_EVENTS.CARD_MOVE);
     socketService.off('newNotification');
     // socketService.off('newMessage'); // <-- REMOVED: Let screens manage their own listeners
 
@@ -349,6 +354,31 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       // Handle chess moves
     });
 
+    // Listen for card game challenges
+    socketService.on(SOCKET_EVENTS.CARD_CHALLENGE, (data) => {
+      console.log('🃏 Card challenge received:', data);
+      // Store for global in-app notification UI (like web)
+      // Prevent duplicates
+      setCardChallenges(prev => {
+        if (prev.some(c => c.from === data.from)) {
+          return prev; // Already have this challenge
+        }
+        return [...prev, {
+          ...data,
+          timestamp: Date.now(),
+        }];
+      });
+      // Play notification sound and vibrate
+      playNotificationSound('notification');
+      Vibration.vibrate(400); // Vibrate for 400ms
+    });
+
+    // Listen for card game moves
+    socketService.on(SOCKET_EVENTS.CARD_MOVE, (data) => {
+      console.log('🃏 Card move received:', data);
+      // Handle card moves
+    });
+
     // Listen for new notifications
     socketService.on('newNotification', (notification) => {
       console.log('🔔 New notification received:', notification);
@@ -448,12 +478,22 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const clearCardChallenge = (challengeFrom?: string) => {
+    if (challengeFrom) {
+      setCardChallenges(prev => prev.filter(c => c.from !== challengeFrom));
+    } else {
+      setCardChallenges([]);
+    }
+  };
+
   return (
     <SocketContext.Provider value={{ 
       socket: socketService, 
       onlineUsers, 
-      chessChallenges, 
+      chessChallenges,
+      cardChallenges,
       clearChessChallenge,
+      clearCardChallenge,
       notificationCount,
       setNotificationCount,
       selectedConversationId,

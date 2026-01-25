@@ -64,6 +64,12 @@ export const ENDPOINTS = {
   MAKE_CHESS_MOVE: '/api/chess/move',
   GET_CHESS_GAME: '/api/chess/game',
   
+  // Card Game
+  CREATE_CARD_CHALLENGE: '/api/card/challenge',
+  ACCEPT_CARD_CHALLENGE: '/api/card/accept',
+  MAKE_CARD_MOVE: '/api/card/move',
+  GET_CARD_GAME: '/api/card/game',
+  
   // Notifications
   GET_NOTIFICATIONS: '/api/notification',
   MARK_READ: '/api/notification/read',
@@ -92,6 +98,8 @@ export const SOCKET_EVENTS = {
   FOOTBALL_MATCH_UPDATE: 'footballMatchUpdate',
   CHESS_CHALLENGE: 'chessChallenge',
   CHESS_MOVE: 'chessMove',
+  CARD_CHALLENGE: 'cardChallenge',
+  CARD_MOVE: 'cardMove',
   NOTIFICATION: 'notification',
 };
 
