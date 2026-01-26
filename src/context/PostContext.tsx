@@ -23,6 +23,7 @@ export interface Post {
   weatherData?: any;
   footballData?: any;
   chessGameData?: string; // JSON string containing chess game data
+  cardGameData?: string; // JSON string containing card game data
 }
 
 interface PostContextType {
@@ -112,10 +113,96 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const deletePost = (postId: string) => {
+    if (!postId) {
+      console.warn('⚠️ [PostContext] deletePost called with empty postId');
+      return;
+    }
+    
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
-      return safeArray.filter((post) => post._id !== postId);
+      const beforeCount = safeArray.length;
+      
+      // Normalize the target postId
+      const targetIdStr = postId?.toString?.() ?? String(postId);
+      
+      const filtered = safeArray.filter((post) => {
+        // Normalize post._id for comparison - handle multiple formats
+        let postIdStr = '';
+        if (post._id) {
+          if (typeof post._id === 'string') {
+            postIdStr = post._id.trim();
+          } else if (post._id.toString) {
+            postIdStr = post._id.toString().trim();
+          } else {
+            postIdStr = String(post._id).trim();
+          }
+        } else {
+          postIdStr = String(post._id).trim();
+        }
+        
+        // Normalize target ID
+        let normalizedTarget = targetIdStr;
+        if (typeof normalizedTarget !== 'string') {
+          if (normalizedTarget?.toString) {
+            normalizedTarget = normalizedTarget.toString();
+          } else {
+            normalizedTarget = String(normalizedTarget);
+          }
+        }
+        normalizedTarget = normalizedTarget.trim();
+        
+        // Compare (exact match, case-sensitive for MongoDB ObjectIds)
+        const matches = postIdStr === normalizedTarget;
+        
+        // Log if we found a match
+        if (matches) {
+          console.log(`✅ [PostContext] Found matching post to delete: "${postIdStr}" === "${normalizedTarget}"`);
+        } else {
+          // Log first non-match for debugging
+          if (safeArray.indexOf(post) === 0) {
+            console.log(`🔍 [PostContext] Comparing: feed post ID="${postIdStr}" (type: ${typeof post._id}) vs target="${normalizedTarget}" (type: ${typeof targetIdStr})`);
+          }
+        }
+        
+        return !matches;
+      });
+      
+      const afterCount = filtered.length;
+      const deletedCount = beforeCount - afterCount;
+      
+      if (deletedCount > 0) {
+        console.log(`✅ [PostContext] Deleted ${deletedCount} post(s) with ID ${targetIdStr} from feed (${beforeCount} -> ${afterCount} posts)`);
+      } else {
+        const availableIds = safeArray.map(p => {
+          if (typeof p._id === 'string') return p._id;
+          if (p._id?.toString) return p._id.toString();
+          return String(p._id);
+        });
+        console.log(`ℹ️ [PostContext] Post "${targetIdStr}" not found in feed (${beforeCount} posts).`);
+        console.log(`ℹ️ [PostContext] Available post IDs:`, availableIds);
+        console.log(`ℹ️ [PostContext] Looking for:`, targetIdStr);
+        console.log(`ℹ️ [PostContext] Post details:`, safeArray.map(p => {
+          const postIdStr = typeof p._id === 'string' ? p._id : (p._id?.toString?.() ?? String(p._id));
+          return { 
+            _id: p._id, 
+            _idType: typeof p._id,
+            _idString: postIdStr,
+            _idMatches: postIdStr === targetIdStr,
+            text: p.text?.substring(0, 50),
+            hasCardGameData: !!p.cardGameData
+          };
+        }));
+        
+        // Fallback: Try to find by cardGameData.roomId if it's a card game post
+        // This helps when the post ID format doesn't match but we know the roomId
+        const cardGamePosts = safeArray.filter(p => p.cardGameData);
+        if (cardGamePosts.length > 0) {
+          console.log(`🔍 [PostContext] Found ${cardGamePosts.length} card game post(s) in feed, checking if any should be deleted...`);
+        }
+      }
+      
+      return filtered;
     });
   };
 

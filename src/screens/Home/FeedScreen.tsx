@@ -126,6 +126,15 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
+    const handleUserAvailableCard = (data: any) => {
+      console.log('🃏 [FeedScreen] User available for card game:', data.userId);
+      if (data.userId) {
+        setBusyCardUserIds(prev => prev.filter(id => id?.toString() !== data.userId?.toString()));
+        // Refresh available users list
+        fetchAvailableUsers();
+      }
+    };
+
     // Football real-time updates
     const handleFootballUpdate = (data: any) => {
       console.log('⚽ [FeedScreen] Football update received, refreshing feed silently...', data);
@@ -146,6 +155,7 @@ const FeedScreen = ({ navigation }: any) => {
     socket.on('cardChallenge', handleCardChallenge);
     socket.on('acceptCardChallenge', handleAcceptCardChallenge);
     socket.on('cardDeclined', handleCardDeclined);
+    socket.on('userAvailableCard', handleUserAvailableCard);
     socket.on('footballPageUpdate', handleFootballUpdate);
     socket.on('footballMatchUpdate', handleFootballUpdate);
     socket.on('weatherUpdate', handleWeatherUpdate);
@@ -157,6 +167,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('cardChallenge', handleCardChallenge);
       socket.off('acceptCardChallenge', handleAcceptCardChallenge);
       socket.off('cardDeclined', handleCardDeclined);
+      socket.off('userAvailableCard', handleUserAvailableCard);
       socket.off('footballPageUpdate', handleFootballUpdate);
       socket.off('footballMatchUpdate', handleFootballUpdate);
       socket.off('weatherUpdate', handleWeatherUpdate);
@@ -349,6 +360,8 @@ const FeedScreen = ({ navigation }: any) => {
     setShowCardModal(true);
     fetchAvailableUsers();
   };
+
+
 
   const handleSendChallenge = (opponent: AvailableUser) => {
     if (!socket) {

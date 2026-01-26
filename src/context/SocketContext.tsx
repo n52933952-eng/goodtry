@@ -251,18 +251,51 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.on('getOnlineUser', (users) => {
       console.log('👥 Online users event received!', users?.length || 0, 'users');
       setOnlineUsers(users || []);
+     
     });
 
     // Listen for new posts
-    socketService.on(SOCKET_EVENTS.NEW_POST, (post) => {
-      console.log('📩 New post received:', post);
+    socketService.on(SOCKET_EVENTS.NEW_POST, (payload) => {
+      console.log('📩 New post received:', payload);
       
-      // Check if it's a chess game post - these should always be added (backend only emits to followers)
+      // Backend may send either:
+      // 1. Direct post object: { _id: ..., text: ..., ... }
+      // 2. Wrapped object: { postId: ..., post: { _id: ..., text: ..., ... } }
+      let post = payload;
+      if (payload && payload.post && typeof payload.post === 'object') {
+        // It's wrapped: { postId: ..., post: {...} }
+        post = payload.post;
+        // Ensure _id is set from postId if missing
+        if (!post._id && payload.postId) {
+          post._id = payload.postId;
+        }
+        console.log('📦 [SocketContext] Unwrapped post from payload:', { 
+          postId: payload.postId, 
+          postIdFromPost: post._id,
+          hasId: !!post._id
+        });
+      }
+      
+      // Validate post has _id before proceeding
+      if (!post || !post._id) {
+        console.error('❌ [SocketContext] Post missing _id field:', { 
+          payload, 
+          post, 
+          hasPost: !!post,
+          hasId: !!post?._id,
+          postId: payload?.postId
+        });
+        return;
+      }
+      
+      // Check if it's a chess or card game post - these should always be added (backend only emits to followers)
       const isChessPost = !!post?.chessGameData;
+      const isCardPost = !!post?.cardGameData;
       
-      if (isChessPost) {
-        // Chess posts: Backend already filters to only send to followers, so always add
-        console.log('✅ [SocketContext] Adding chess game post to feed:', post._id);
+      if (isChessPost || isCardPost) {
+        // Game posts: Backend already filters to only send to followers, so always add
+        const gameType = isChessPost ? 'chess' : 'card';
+        console.log(`✅ [SocketContext] Adding ${gameType} game post to feed:`, post._id);
         addPost(post);
         return;
       }
@@ -289,7 +322,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         }
       } else {
         // If no author info, add it anyway (shouldn't happen, but be safe)
-        console.log('⚠️ [SocketContext] Post has no author info, adding anyway:', post._id);
+        console.warn('⚠️ [SocketContext] Post missing postedBy field, adding anyway:', post._id);
         addPost(post);
       }
     });
@@ -313,11 +346,51 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Listen for post deletions
     socketService.on(SOCKET_EVENTS.POST_DELETED, (payload) => {
       // Backend sends: { postId: post._id } or just postId string
-      const postId = payload?.postId?.toString?.() ?? payload?.toString?.() ?? payload;
-      console.log('🗑️ [SocketContext] Post deleted event received:', { payload, postId });
+      let postId = null;
+      
+      if (payload) {
+        if (typeof payload === 'string') {
+          postId = payload;
+        } else if (payload.postId) {
+          // Handle both string and ObjectId formats
+          if (typeof payload.postId === 'string') {
+            postId = payload.postId;
+          } else if (payload.postId?.toString) {
+            postId = payload.postId.toString();
+          } else {
+            postId = String(payload.postId);
+          }
+        } else if (payload.toString) {
+          postId = payload.toString();
+        } else {
+          postId = String(payload);
+        }
+      }
+      
+      // Normalize to string and trim
+      if (postId && typeof postId !== 'string') {
+        postId = postId.toString();
+      }
+      if (postId) {
+        postId = postId.trim();
+      }
+      
+      console.log('🗑️ [SocketContext] Post deleted event received:', { 
+        payload, 
+        postId,
+        payloadType: typeof payload,
+        postIdType: typeof postId,
+        postIdLength: postId?.length
+      });
+      
       if (postId) {
         console.log('✅ [SocketContext] Removing post from feed:', postId);
-        deletePost(postId);
+        try {
+          deletePost(postId);
+          console.log('✅ [SocketContext] Successfully called deletePost for:', postId);
+        } catch (error) {
+          console.error('❌ [SocketContext] Error removing post from feed:', error, { postId });
+        }
       } else {
         console.warn('⚠️ [SocketContext] Post deletion event received but postId is missing:', payload);
       }

@@ -59,7 +59,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   const { roomId, opponentId, isSpectator } = route.params || {};
   const { user } = useUser();
   const { socket } = useSocket();
-  const { deletePost } = usePost();
+  const { deletePost, posts } = usePost();
   const showToast = useShowToast();
 
   // Only log on actual roomId changes, not every render
@@ -534,6 +534,8 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         setGameOver(true);
         setGameResult(data.message || 'Game Over');
         showToast('Game Over', data.message, 'info');
+        // Remove own card game post from feed immediately (frontend only)
+        // Backend will also delete and broadcast to followers
         if (!isSpectator) {
           removeOwnCardPost();
         }
@@ -549,6 +551,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       if (activeRoomId === currentRoomId) {
         setGameOver(true);
         setGameLive(false);
+        // Remove own card game post from feed immediately (frontend only)
+        if (!isSpectator) {
+          removeOwnCardPost();
+        }
         showToast('Game Ended', 'Game was canceled or ended', 'info');
         setTimeout(() => {
           navigation.goBack();
@@ -639,8 +645,15 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   }, [socket, roomId, opponentId, isMyTurn, gameOver, myHand, showToast]);
 
   const handleBack = () => {
+    // Only emit resign if user is a player (not a spectator)
+    // Spectators should just leave silently without ending the game
     if (!isSpectator && socket && roomId && opponentId) {
       socket.emit('resignCard', { roomId, to: opponentId });
+      // Remove own card game post immediately (frontend only)
+      // Backend will also delete and broadcast to followers
+      removeOwnCardPost();
+    } else if (isSpectator) {
+      console.log('👁️ [CardGameScreen] Spectator leaving - not emitting any game end events');
     }
     navigation.goBack();
   };
@@ -669,16 +682,59 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   const removeOwnCardPost = () => {
     // Remove card game post from feed (frontend only)
     // Backend will handle actual deletion
-    if (gameState?.roomId) {
-      console.log('🗑️ [CardGameScreen] Removing card game post');
+    if (!roomId) {
+      console.log('⚠️ [CardGameScreen] No roomId to remove post');
+      return;
+    }
+    
+    // Find and delete all posts with matching roomId in cardGameData
+    const postsToDelete: string[] = [];
+    posts.forEach((post: any) => {
+      if (post.cardGameData) {
+        try {
+          const cardData = typeof post.cardGameData === 'string' 
+            ? JSON.parse(post.cardGameData) 
+            : post.cardGameData;
+          if (cardData && cardData.roomId === roomId) {
+            postsToDelete.push(post._id);
+          }
+        } catch (error) {
+          console.error('❌ [CardGameScreen] Error parsing cardGameData:', error);
+        }
+      }
+    });
+    
+    // Delete all matching posts
+    postsToDelete.forEach((postId) => {
+      deletePost(postId);
+      console.log(`🗑️ [CardGameScreen] Removed card game post: ${postId}`);
+    });
+    
+    if (postsToDelete.length === 0) {
+      console.log('ℹ️ [CardGameScreen] No card game posts found to remove');
     }
   };
 
   if (!gameLive) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Waiting for game to start...</Text>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton} activeOpacity={0.7}>
+            <Text style={styles.backArrow}>←</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>
+            {isSpectator ? 'Watching Go Fish' : 'Go Fish'}
+          </Text>
+          <View style={styles.headerRight}>
+            <TouchableOpacity onPress={() => setShowHelpModal(true)} style={styles.helpButton}>
+              <Text style={styles.helpButtonText}>?</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Waiting for game to start...</Text>
+        </View>
       </View>
     );
   }
@@ -688,7 +744,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+        <TouchableOpacity onPress={handleBack} style={styles.backButton} activeOpacity={0.7}>
           <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -970,14 +1026,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.background,
     height: 50, // Fixed compact height
   },
   backButton: {
-    padding: 5,
+    padding: 8,
+    minWidth: 40,
+    minHeight: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   backArrow: {
-    fontSize: 24,
+    fontSize: 28,
     color: COLORS.text,
+    fontWeight: 'bold',
   },
   headerTitle: {
     fontSize: 16,

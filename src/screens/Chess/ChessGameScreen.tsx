@@ -28,7 +28,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const { roomId, opponentId, color, isSpectator } = route.params || {};
   const { user } = useUser();
   const { socket } = useSocket();
-  const { deletePost } = usePost();
+  const { deletePost, posts } = usePost();
   const showToast = useShowToast();
 
   console.log('♟️ [ChessGameScreen] Initializing with:', { roomId, opponentId, color, isSpectator });
@@ -629,6 +629,42 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
   }, [chess, playSound]);
 
+  const removeOwnChessPost = () => {
+    // Remove chess game post from feed (frontend only)
+    // Backend will handle actual deletion and broadcast to followers
+    if (!roomId) {
+      console.log('⚠️ [ChessGameScreen] No roomId to remove post');
+      return;
+    }
+    
+    // Find and delete all posts with matching roomId in chessGameData
+    const postsToDelete: string[] = [];
+    posts.forEach((post: any) => {
+      if (post.chessGameData) {
+        try {
+          const chessData = typeof post.chessGameData === 'string' 
+            ? JSON.parse(post.chessGameData) 
+            : post.chessGameData;
+          if (chessData && chessData.roomId === roomId) {
+            postsToDelete.push(post._id);
+          }
+        } catch (error) {
+          console.error('❌ [ChessGameScreen] Error parsing chessGameData:', error);
+        }
+      }
+    });
+    
+    // Delete all matching posts
+    postsToDelete.forEach((postId) => {
+      deletePost(postId);
+      console.log(`🗑️ [ChessGameScreen] Removed chess game post: ${postId}`);
+    });
+    
+    if (postsToDelete.length === 0) {
+      console.log('ℹ️ [ChessGameScreen] No chess game posts found to remove');
+    }
+  };
+
   const handleGameOver = (data: any) => {
     // CRITICAL: Only apply game over if roomId matches (prevent switching to other games)
     if (data?.roomId && data.roomId !== roomId) {
@@ -849,6 +885,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     // Spectators should just leave silently without ending the game
     if (!isSpectator && socket && roomId && opponentId) {
       socket.emit('resignChess', { roomId, to: opponentId });
+      // Remove own chess game post immediately (frontend only)
+      // Backend will also delete and broadcast to followers
+      removeOwnChessPost();
     } else if (isSpectator) {
       console.log('👁️ [ChessGameScreen] Spectator leaving - not emitting any game end events');
     }
