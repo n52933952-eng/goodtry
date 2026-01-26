@@ -10,6 +10,7 @@ import {
   ScrollView,
   Modal,
 } from 'react-native';
+import Sound from 'react-native-sound';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
@@ -94,6 +95,115 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   // Track current roomId to prevent processing events from old rooms
   const currentRoomIdRef = useRef<string | null>(null);
   const previousRoomIdRef = useRef<string | null>(null);
+  
+  // Track previous score and books count to detect when a book is made
+  const previousScoreRef = useRef<number>(0);
+  const previousBooksCountRef = useRef<number>(0);
+  
+  // Track if we've already played the game start sound for this room
+  const gameStartSoundPlayedRef = useRef<boolean>(false);
+  
+  // Track previous turn index to detect when turn actually switches to us (not just when we make a move)
+  const previousTurnIndexRef = useRef<number | null>(null);
+
+  // Sound effects
+  const sounds = useRef<{
+    book?: Sound; // Sound when a book (4 of a kind) is made
+    cardFlip?: Sound; // Sound for card actions (Go Fish)
+    gameStart?: Sound; // Sound when game starts
+    play?: Sound; // Sound when it's your turn
+  }>({});
+
+  // Initialize sounds
+  useEffect(() => {
+    // Enable playback in silence mode (iOS)
+    Sound.setCategory('Playback', true);
+    
+    // Load sound files
+    // For Android: files should be in android/app/src/main/res/raw/
+    // For iOS: files are bundled via require()
+    
+    // Book sound (when 4 of a kind is collected) - using cardbook.mp3
+    sounds.current.book = new Sound('cardbook.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [CardGameScreen] Failed to load book sound:', error);
+        // Fallback: try require() for iOS/bundled assets
+        try {
+          sounds.current.book = new Sound(require('../../assets/sounds/card-book.mp3'), (error2) => {
+            if (error2) console.error('❌ [CardGameScreen] Failed to load book sound (fallback):', error2);
+          });
+        } catch (e) {
+          console.error('❌ [CardGameScreen] Could not load book sound:', e);
+        }
+      }
+    });
+    
+    // Card flip/action sound - using cardflip.mp3
+    sounds.current.cardFlip = new Sound('cardflip.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [CardGameScreen] Failed to load card flip sound:', error);
+        try {
+          sounds.current.cardFlip = new Sound(require('../../assets/sounds/card-flip.mp3'), (error2) => {
+            if (error2) console.error('❌ [CardGameScreen] Failed to load card flip sound (fallback):', error2);
+          });
+        } catch (e) {
+          console.error('❌ [CardGameScreen] Could not load card flip sound:', e);
+        }
+      }
+    });
+    
+    // Game start sound - using cardstart.mp3
+    sounds.current.gameStart = new Sound('cardstart.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [CardGameScreen] Failed to load game start sound:', error);
+        try {
+          sounds.current.gameStart = new Sound(require('../../assets/sounds/card-start.mp3'), (error2) => {
+            if (error2) console.error('❌ [CardGameScreen] Failed to load game start sound (fallback):', error2);
+          });
+        } catch (e) {
+          console.error('❌ [CardGameScreen] Could not load game start sound:', e);
+        }
+      }
+    });
+    
+    // Play sound (when it's your turn) - using play.mp3
+    sounds.current.play = new Sound('play.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [CardGameScreen] Failed to load play sound:', error);
+        try {
+          sounds.current.play = new Sound(require('../../assets/sounds/play.mp3'), (error2) => {
+            if (error2) console.error('❌ [CardGameScreen] Failed to load play sound (fallback):', error2);
+          });
+        } catch (e) {
+          console.error('❌ [CardGameScreen] Could not load play sound:', e);
+        }
+      }
+    });
+    
+    return () => {
+      // Cleanup sounds on unmount
+      Object.values(sounds.current).forEach(sound => {
+        if (sound) {
+          sound.release();
+        }
+      });
+    };
+  }, []);
+
+  const playSound = useCallback((type: 'book' | 'cardFlip' | 'gameStart' | 'play') => {
+    const sound = sounds.current[type];
+    if (sound) {
+      sound.stop(() => {
+        sound.play((success) => {
+          if (!success) {
+            console.warn(`⚠️ [CardGameScreen] Failed to play ${type} sound`);
+          } else {
+            console.log(`🔊 [CardGameScreen] Played ${type} sound`);
+          }
+        });
+      });
+    }
+  }, []);
 
   // Get rank name for display
   const getRankName = (value: number): string => {
@@ -157,6 +267,11 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     setOpponent(null);
     setIsMyTurn(false);
     setLastMoveMessage('');
+    // Reset score tracking refs
+    previousScoreRef.current = 0;
+    previousBooksCountRef.current = 0;
+    gameStartSoundPlayedRef.current = false; // Reset game start sound flag
+    previousTurnIndexRef.current = null; // Reset turn tracking
 
     const currentRoomId = roomId;
     previousRoomIdRef.current = currentRoomId;
@@ -275,7 +390,22 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
             }
             
             // Always update score and books
-            setMyScore(myPlayer.score || 0);
+            const newScore = myPlayer.score || 0;
+            const newBooksCount = (myPlayer.books || []).length;
+            const previousScore = previousScoreRef.current;
+            const previousBooksCount = previousBooksCountRef.current;
+            
+            // Play book sound if we made a new book (score increased or books count increased)
+            if (newScore > previousScore || newBooksCount > previousBooksCount) {
+              console.log(`🎉 [CardGameScreen] New book detected! Score: ${previousScore} -> ${newScore}, Books: ${previousBooksCount} -> ${newBooksCount}`);
+              playSound('book');
+            }
+            
+            // Update refs for next comparison
+            previousScoreRef.current = newScore;
+            previousBooksCountRef.current = newBooksCount;
+            
+            setMyScore(newScore);
             setMyBooks(myPlayer.books || []);
           } else {
             console.error(`❌ [CardGameScreen] Could not find my player in game state`, {
@@ -303,19 +433,64 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         const myUserId = user?._id?.toString();
         return pUserId === myUserId;
       });
-      setIsMyTurn(data.turn === myPlayerIndex);
+      const newIsMyTurn = data.turn === myPlayerIndex;
+      const currentTurnIndex = data.turn;
       
-      // Update last move message
+      // Play sound ONLY when turn switches from opponent to us
+      // Conditions:
+      // 1. Game is live
+      // 2. It's now our turn
+      // 3. We have a previous turn index to compare
+      // 4. The turn index actually changed
+      // 5. The previous turn was NOT ours (it was opponent's)
+      const turnSwitchedToUs = gameLive && 
+          newIsMyTurn && 
+          previousTurnIndexRef.current !== null && 
+          previousTurnIndexRef.current !== currentTurnIndex &&
+          previousTurnIndexRef.current !== myPlayerIndex;
+      
+      if (turnSwitchedToUs) {
+        // Turn switched from opponent to us - play sound
+        console.log('🔔 [CardGameScreen] Turn switched to us, playing sound', {
+          previousTurn: previousTurnIndexRef.current,
+          currentTurn: currentTurnIndex,
+          myPlayerIndex
+        });
+        playSound('play');
+      }
+      
+      // Always update the turn index ref (even if it's still our turn after our move)
+      // This ensures we track the actual game state from the server
+      previousTurnIndexRef.current = currentTurnIndex;
+      setIsMyTurn(newIsMyTurn);
+      
+      // Update last move message and play sounds
       if (data.lastMove) {
         const move = data.lastMove;
         if (move.action === 'ask') {
           const rankName = getRankName(move.rank || 0);
+          
+          // Play book sound if a book was made (4 of a kind)
+          if (move.newBooks && move.newBooks > 0) {
+            console.log(`🎉 [CardGameScreen] Book made! Playing book sound...`);
+            playSound('book');
+          }
+          
           if (move.gotCards) {
             setLastMoveMessage(`${move.cardsReceived} ${rankName}${move.cardsReceived! > 1 ? 's' : ''} received! ${move.newBooks! > 0 ? `Made ${move.newBooks} book${move.newBooks! > 1 ? 's' : ''}!` : ''}`);
           } else {
             setLastMoveMessage(`Go Fish! ${move.drewMatchingCard ? 'Got it!' : ''}`);
+            // Play card flip sound for Go Fish action (when opponent doesn't have the card)
+            // This happens whenever gotCards is false, regardless of deck status
+            playSound('cardFlip');
           }
         }
+      }
+      
+      // Play game start sound when game first becomes live (only once per game)
+      if (data.gameStatus === 'playing' && !gameStartSoundPlayedRef.current) {
+        playSound('gameStart');
+        gameStartSoundPlayedRef.current = true; // Mark as played
       }
       
       // Set gameLive based on gameStatus
@@ -551,17 +726,19 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         <Text style={styles.playerName}>
           {opponent?.name || 'Opponent'} ({opponentHandCount} cards)
         </Text>
-        {!isMyTurn && !gameOver && (
-          <Text style={styles.turnIndicator}>Their Turn</Text>
-        )}
+        <View style={styles.turnIndicatorContainer}>
+          {!isMyTurn && !gameOver && (
+            <Text style={styles.turnIndicator}>Their Turn</Text>
+          )}
+        </View>
       </View>
 
       {/* Last Move Message */}
-      {lastMoveMessage ? (
-        <View style={styles.lastMoveContainer}>
+      <View style={styles.lastMoveContainer}>
+        {lastMoveMessage ? (
           <Text style={styles.lastMoveText}>{lastMoveMessage}</Text>
-        </View>
-      ) : null}
+        ) : null}
+      </View>
 
       {/* Deck Count */}
       <View style={styles.deckInfo}>
@@ -572,14 +749,16 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       <View style={styles.handArea}>
         <View style={styles.handHeader}>
           <Text style={styles.handTitle}>Your Hand ({myHand.length} cards)</Text>
-          {isMyTurn && !gameOver && availableRanks.length > 0 && (
-            <TouchableOpacity 
-              onPress={() => setShowRankModal(true)} 
-              style={styles.askButton}
-            >
-              <Text style={styles.askButtonText}>Ask for Rank</Text>
-            </TouchableOpacity>
-          )}
+          <View style={styles.askButtonContainer}>
+            {isMyTurn && !gameOver && availableRanks.length > 0 && (
+              <TouchableOpacity 
+                onPress={() => setShowRankModal(true)} 
+                style={styles.askButton}
+              >
+                <Text style={styles.askButtonText}>Ask for Rank</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
         <ScrollView 
           style={styles.handScrollContainer}
@@ -608,28 +787,30 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
           )}
         </ScrollView>
         
-        {/* Turn Instructions */}
-        {isMyTurn && !gameOver && availableRanks.length > 0 && (
-          <View style={styles.turnActionContainer}>
-            <Text style={styles.yourTurn}>Your Turn - Tap a card to ask for that rank!</Text>
-            <Text style={styles.helpHint}>💡 Tip: Tap any card you have to ask your opponent for that rank</Text>
-          </View>
-        )}
-        {isMyTurn && !gameOver && availableRanks.length === 0 && myHand.length === 0 && (
-          <View style={styles.turnActionContainer}>
-            <Text style={styles.yourTurnWarning}>⚠️ Your Turn - But you have no cards! Game may be stuck.</Text>
-            <Text style={styles.helpText}>Please wait or contact support if this persists.</Text>
-          </View>
-        )}
-        {isMyTurn && !gameOver && availableRanks.length === 0 && myHand.length > 0 && (
-          <View style={styles.turnActionContainer}>
-            <Text style={styles.yourTurnWarning}>⚠️ Your Turn - But you have no valid ranks to ask for!</Text>
-            <Text style={styles.helpText}>This shouldn't happen. Please wait or contact support.</Text>
-          </View>
-        )}
-        {!isMyTurn && !gameOver && (
-          <Text style={styles.waitingText}>Waiting for {opponent?.name || 'opponent'}'s turn...</Text>
-        )}
+        {/* Turn Instructions - Fixed height container to prevent layout shift */}
+        <View style={styles.turnActionContainer}>
+          {isMyTurn && !gameOver && availableRanks.length > 0 && (
+            <>
+              <Text style={styles.yourTurn}>Your Turn - Tap a card to ask for that rank!</Text>
+              <Text style={styles.helpHint}>💡 Tip: Tap any card you have to ask your opponent for that rank</Text>
+            </>
+          )}
+          {isMyTurn && !gameOver && availableRanks.length === 0 && myHand.length === 0 && (
+            <>
+              <Text style={styles.yourTurnWarning}>⚠️ Your Turn - But you have no cards! Game may be stuck.</Text>
+              <Text style={styles.helpText}>Please wait or contact support if this persists.</Text>
+            </>
+          )}
+          {isMyTurn && !gameOver && availableRanks.length === 0 && myHand.length > 0 && (
+            <>
+              <Text style={styles.yourTurnWarning}>⚠️ Your Turn - But you have no valid ranks to ask for!</Text>
+              <Text style={styles.helpText}>This shouldn't happen. Please wait or contact support.</Text>
+            </>
+          )}
+          {!isMyTurn && !gameOver && (
+            <Text style={styles.waitingText}>Waiting for {opponent?.name || 'opponent'}'s turn...</Text>
+          )}
+        </View>
       </View>
 
       {/* My Books */}
@@ -691,9 +872,17 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
               </View>
 
               <View style={styles.helpSection}>
-                <Text style={styles.helpSectionTitle}>🏆 Winning</Text>
+                <Text style={styles.helpSectionTitle}>🏆 Winning & Game End</Text>
                 <Text style={styles.helpText}>
+                  The game ends when:
+                </Text>
+                <Text style={styles.helpStep}>• Both players run out of cards, OR</Text>
+                <Text style={styles.helpStep}>• The deck is empty and both players have no cards left</Text>
+                <Text style={styles.helpText} style={{ marginTop: 10 }}>
                   The player with the most books (4 of a kind) wins the game!
+                </Text>
+                <Text style={styles.helpText}>
+                  If both players have the same number of books, it's a tie.
                 </Text>
               </View>
             </ScrollView>
@@ -777,11 +966,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 15,
+    paddingVertical: 8,
+    paddingHorizontal: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    height: 50, // Fixed compact height
   },
   backButton: {
     padding: 5,
@@ -791,7 +980,7 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 'bold',
     color: COLORS.text,
     flex: 1,
@@ -826,64 +1015,80 @@ const styles = StyleSheet.create({
   scoresContainer: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    padding: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
     backgroundColor: COLORS.backgroundLight,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    height: 50, // Reduced from 70 to give more space to cards
   },
   scoreBox: {
     alignItems: 'center',
     flex: 1,
+    justifyContent: 'center',
   },
   scoreLabel: {
-    fontSize: 12,
+    fontSize: 10,
     color: COLORS.textGray,
-    marginBottom: 2,
+    marginBottom: 1,
   },
   scoreValue: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
     color: COLORS.primary,
   },
   booksText: {
-    fontSize: 10,
+    fontSize: 9,
     color: COLORS.textGray,
-    marginTop: 2,
+    marginTop: 1,
   },
   playerInfo: {
-    padding: 15,
+    paddingVertical: 6,
+    paddingHorizontal: 15,
     alignItems: 'center',
+    height: 50, // Reduced from 70 to give more space to cards
+    justifyContent: 'center',
   },
   playerName: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: COLORS.text,
   },
-  turnIndicator: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    marginTop: 4,
-  },
-  lastMoveContainer: {
-    padding: 10,
-    backgroundColor: COLORS.backgroundLight,
-    marginHorizontal: 15,
-    marginBottom: 10,
-    borderRadius: 8,
+  turnIndicatorContainer: {
+    height: 18, // Reduced from 22
+    marginTop: 2,
+    justifyContent: 'center',
     alignItems: 'center',
   },
+  turnIndicator: {
+    fontSize: 12,
+    color: COLORS.textGray,
+  },
+  lastMoveContainer: {
+    height: 30, // Reduced from 40 to give more space to cards
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.backgroundLight,
+    marginHorizontal: 15,
+    marginBottom: 6,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   lastMoveText: {
-    fontSize: 14,
+    fontSize: 12,
     color: COLORS.primary,
     fontWeight: '600',
   },
   deckInfo: {
     paddingHorizontal: 15,
-    paddingBottom: 10,
+    paddingVertical: 4,
     alignItems: 'center',
+    height: 28, // Reduced from 35 to give more space to cards
+    justifyContent: 'center',
   },
   deckText: {
-    fontSize: 14,
+    fontSize: 12,
     color: COLORS.textGray,
   },
   handArea: {
@@ -898,11 +1103,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
+    height: 40, // Fixed height to prevent layout shift when button appears/disappears
   },
   handTitle: {
     fontSize: 16,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  askButtonContainer: {
+    width: 120, // Fixed width to reserve space for button (prevents layout shift)
+    alignItems: 'flex-end',
   },
   askButton: {
     backgroundColor: COLORS.primary,
@@ -918,6 +1128,8 @@ const styles = StyleSheet.create({
   turnActionContainer: {
     marginTop: 15,
     alignItems: 'center',
+    height: 70, // Fixed height to prevent layout shift when turn messages appear/disappear (not minHeight)
+    justifyContent: 'center',
   },
   askButtonLarge: {
     backgroundColor: COLORS.primary,
@@ -952,8 +1164,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   handScrollContainer: {
-    maxHeight: 800, // Increased height for more cards visibility
-    flex: 1, // Take available space
+    flex: 1, // Take available space - but parent handArea has flex:1 so this is constrained
   },
   handContainer: {
     flexDirection: 'row',
@@ -995,6 +1206,8 @@ const styles = StyleSheet.create({
   turnActionContainer: {
     marginTop: 15,
     alignItems: 'center',
+    height: 70, // Fixed height to prevent layout shift when turn messages appear/disappear (not minHeight)
+    justifyContent: 'center',
   },
   yourTurn: {
     color: COLORS.primary,
