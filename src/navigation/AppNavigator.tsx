@@ -399,14 +399,37 @@ const MessagesIcon = ({ color }: { color: string }) => (
 // Main App Navigator
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
-  const { call, pendingCancel } = useWebRTC();
+  const { call, pendingCancel, callEnded, isCalling, callAccepted, setIncomingCallFromNotification, getIncomingCallFromNotificationCallerId } = useWebRTC();
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
   const navigationRef = useRef<any>(null);
+  const navReadyRef = useRef(false);
+  const [navReady, setNavReady] = useState(false);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
+  const lastNavigateToCallRef = useRef<{ callerId: string; ts: number } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x)
+  const lastSetUpForCallerRef = useRef<string | null>(null); // P0: Avoid calling setIncomingCallFromNotification twice (listener + effect)
+  const cancelGuardRef = useRef({
+    pendingCancel: false,
+    hasPendingCancelFromPrefs: false,
+    callEnded: false,
+  });
 
   // State to track pending cancel from SharedPreferences (checked on mount)
   const [hasPendingCancelFromPrefs, setHasPendingCancelFromPrefs] = useState(false);
   const [isInitialMount, setIsInitialMount] = useState(true);
+
+  // Keep latest cancel/end state for native event handlers (which run with stable [] deps).
+  useEffect(() => {
+    cancelGuardRef.current = {
+      pendingCancel,
+      hasPendingCancelFromPrefs,
+      callEnded,
+    };
+  }, [pendingCancel, hasPendingCancelFromPrefs, callEnded]);
+
+  // Clear lastSetUpForCallerRef when call ends so next call can set up correctly
+  useEffect(() => {
+    if (callEnded) lastSetUpForCallerRef.current = null;
+  }, [callEnded]);
 
   // Check SharedPreferences for pending cancel on mount and when call state changes
   useEffect(() => {
@@ -414,8 +437,10 @@ const AppNavigator = () => {
       try {
         const pendingData = await getPendingCallData();
         const hasCancel = !!(pendingData?.hasPendingCancel || pendingData?.shouldCancelCall);
-        setHasPendingCancelFromPrefs(hasCancel);
-        if (hasCancel) {
+        // Same caller has new pending call (declined first, answered second) – don't block
+        const sameCallerNewCall = !!(pendingData?.hasPendingCall && pendingData?.callerId && pendingData?.callerIdToCancel && pendingData.callerId === pendingData.callerIdToCancel);
+        setHasPendingCancelFromPrefs(hasCancel && !sameCallerNewCall);
+        if (hasCancel && !sameCallerNewCall) {
           console.log('⏸️ [AppNavigator] Pending cancel detected in SharedPreferences - will prevent navigation');
         }
       } catch (error) {
@@ -436,15 +461,33 @@ const AppNavigator = () => {
     }
   }, [call.isReceivingCall, isInitialMount]); // Re-check when call state changes
 
+  // When cancel guard state is cleared (pendingCancel/callEnded false), re-check SharedPreferences
+  // so we pick up cleared prefs after WebRTCContext treats a pending cancel as stale and clears it
+  useEffect(() => {
+    if (pendingCancel || callEnded) return;
+    const recheck = async () => {
+      try {
+        const pendingData = await getPendingCallData();
+        const hasCancel = !!(pendingData?.hasPendingCancel || pendingData?.shouldCancelCall);
+        const sameCallerNewCall = !!(pendingData?.hasPendingCall && pendingData?.callerId && pendingData?.callerIdToCancel && pendingData.callerId === pendingData.callerIdToCancel);
+        setHasPendingCancelFromPrefs(hasCancel && !sameCallerNewCall);
+      } catch {
+        setHasPendingCancelFromPrefs(false);
+      }
+    };
+    recheck();
+  }, [pendingCancel, callEnded]);
+
   // Navigate to CallScreen when receiving an incoming call from socket
   // BUT: Don't navigate if there's a pending NavigateToCallScreen event (from MainActivity with shouldAutoAnswer)
   useEffect(() => {
     // CRITICAL: Check BOTH pendingCancel state AND SharedPreferences
     // This prevents navigation when Decline button is pressed and MainActivity launches
-    if (pendingCancel || hasPendingCancelFromPrefs) {
-      console.log('⏸️ [AppNavigator] Skipping navigation - cancel is in progress', {
+    if (pendingCancel || hasPendingCancelFromPrefs || callEnded) {
+      console.log('⏸️ [AppNavigator] Skipping navigation - cancel/ended guard active', {
         pendingCancel,
-        hasPendingCancelFromPrefs
+        hasPendingCancelFromPrefs,
+        callEnded,
       });
       return;
     }
@@ -459,7 +502,7 @@ const AppNavigator = () => {
       }
       
       // Check if we're already on CallScreen (to avoid duplicate navigation)
-      const currentRoute = navigationRef.current.getCurrentRoute();
+      const currentRoute = navigationRef.current.getCurrentRoute?.();
       if (currentRoute?.name === 'CallScreen') {
         console.log('⏸️ [AppNavigator] Already on CallScreen - skipping navigation');
         return;
@@ -468,31 +511,86 @@ const AppNavigator = () => {
       console.log('📞 [AppNavigator] Incoming call detected from socket, navigating to CallScreen...');
       console.log('📞 [AppNavigator] Caller:', call.name, '(', call.from, ')');
       console.log('📞 [AppNavigator] Call type:', call.callType);
-      
-      // Navigate to CallScreen for incoming call from socket (normal flow)
+      // If user already pressed Answer on native UI for THIS call, pass notification params so CallScreen auto-answers.
+      // Use getter (ref) so we see cleared value immediately after CallCanceled – no wait for React state.
+      const notificationCallerId = getIncomingCallFromNotificationCallerId?.() ?? null;
+      const fromNotificationAnswer = notificationCallerId != null && notificationCallerId === call.from;
       navigationRef.current.navigate('CallScreen', {
         userName: call.name,
         userId: call.from,
         callType: call.callType || 'video',
-        isFromNotification: false, // This is from socket, not push notification
-        shouldAutoAnswer: false, // User needs to manually answer
+        isFromNotification: fromNotificationAnswer,
+        shouldAutoAnswer: fromNotificationAnswer,
+        fromSocketIncoming: true, // Call state already set by callUser handler - do NOT overwrite with setIncomingCallFromNotification
       });
-      console.log('✅ [AppNavigator] Navigated to CallScreen for incoming call (from socket)');
+      // CRITICAL: Set lastNavigateToCallRef so later NavigateToCallScreen events are treated as duplicates.
+      // Otherwise they call setIncomingCallFromNotification again and reset processingCallUserRef, isAnsweringRef, etc.
+      if (call.from) lastNavigateToCallRef.current = { callerId: call.from, ts: Date.now() };
+      console.log('✅ [AppNavigator] Navigated to CallScreen for incoming call (from socket)', { fromNotificationAnswer });
     }
-  }, [call.isReceivingCall, call.from, call.name, call.callType, pendingCancel, hasPendingCancelFromPrefs]);
+  }, [call.isReceivingCall, call.from, call.name, call.callType, pendingCancel, hasPendingCancelFromPrefs, getIncomingCallFromNotificationCallerId]);
+
+  // FIRM: If call ended/canceled while app was backgrounded, CallScreen may remain visible.
+  // Force-dismiss ONLY on explicit end/cancel signals (NOT merely because state hasn't flipped yet on outgoing setup).
+  useEffect(() => {
+    if (!navigationRef.current) return;
+
+    const currentRoute = navigationRef.current.getCurrentRoute?.();
+    if (currentRoute?.name !== 'CallScreen') return;
+
+    const shouldDismiss = pendingCancel || hasPendingCancelFromPrefs || callEnded;
+    if (!shouldDismiss) return;
+
+    console.log('📴 [AppNavigator] Forcing CallScreen dismiss (stale/ended call)', {
+      pendingCancel,
+      hasPendingCancelFromPrefs,
+      callEnded,
+    });
+
+    // Prefer reset to a known-safe route to avoid GO_BACK not handled issues.
+    navigationRef.current.reset({
+      index: 0,
+      routes: [{ name: 'MainTabs' }],
+    });
+  }, [pendingCancel, hasPendingCancelFromPrefs, callEnded, call.isReceivingCall, isCalling, callAccepted]);
 
   // Set up navigation refs for FCM and OneSignal when navigation is ready
   useEffect(() => {
-    if (navigationRef.current) {
-      console.log('✅ [AppNavigator] Setting up navigation refs...');
-      
-      // Set OneSignal navigation ref for notification navigation
-      oneSignalService.setNavigationRef(navigationRef.current);
-      
-      // Process pending NavigateToCallScreen event if any
-      if (pendingNavigationEvent.current) {
+    if (!navReady || !navigationRef.current) return;
+
+    console.log('✅ [AppNavigator] Setting up navigation refs...');
+    oneSignalService.setNavigationRef(navigationRef.current);
+
+    const guard = cancelGuardRef.current;
+    const pendingHasAnswer = pendingNavigationEvent.current?.shouldAutoAnswer === true;
+    if (guard.pendingCancel || guard.hasPendingCancelFromPrefs) {
+      console.log('⏸️ [AppNavigator] Skipping pending-call processing - cancel guard active', guard);
+      pendingNavigationEvent.current = null;
+      return;
+    }
+    if (!pendingHasAnswer && guard.callEnded) {
+      console.log('⏸️ [AppNavigator] Skipping pending-call processing - call ended', guard);
+      pendingNavigationEvent.current = null;
+      return;
+    }
+
+    // Process pending NavigateToCallScreen event if any (e.g. user pressed Answer, nav wasn't ready)
+    if (pendingNavigationEvent.current) {
+      const data = pendingNavigationEvent.current;
+      const callType = data.callType === 'video' ? 'video' : 'audio';
+      // Only call setIncomingCallFromNotification if not already set up (listener may have run first when nav wasn't ready)
+      const alreadySetUp = lastSetUpForCallerRef.current === data.callerId || (call.isReceivingCall && call.from === data.callerId);
+      if (pendingHasAnswer && setIncomingCallFromNotification && !alreadySetUp && data.callerId) {
+        lastSetUpForCallerRef.current = data.callerId;
+        setIncomingCallFromNotification(data.callerId || '', data.callerName || 'Unknown', callType, true);
+      }
+      const cid = data.callerId;
+      const n = lastNavigateToCallRef.current;
+      if (cid && n && n.callerId === cid && Date.now() - n.ts < 15000) {
+        console.log('📞 [AppNavigator] P0: Skip pending - already navigated for this call');
+        pendingNavigationEvent.current = null;
+      } else {
         console.log('📞 [AppNavigator] Processing pending NavigateToCallScreen event...');
-        const data = pendingNavigationEvent.current;
         navigationRef.current.navigate('CallScreen', {
           userName: data.callerName,
           userId: data.callerId,
@@ -501,73 +599,81 @@ const AppNavigator = () => {
           shouldAutoAnswer: data.shouldAutoAnswer === true,
           shouldDecline: data.shouldDecline || false,
         });
-        console.log('✅ [AppNavigator] Processed pending navigation to CallScreen');
+        if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
         pendingNavigationEvent.current = null;
+        console.log('✅ [AppNavigator] Processed pending navigation to CallScreen');
       }
-      
+    }
+
+    if (user) {
       // Check SharedPreferences for pending call data (backup when intent doesn't reach MainActivity)
-      if (user) {
-        getPendingCallData().then((callData) => {
-          if (callData && callData.hasPendingCall && navigationRef.current) {
-            console.log('📞 [AppNavigator] Found pending call in SharedPreferences:', callData);
-            console.log('📞 [AppNavigator] Navigating to CallScreen from SharedPreferences...');
-            
-            navigationRef.current.navigate('CallScreen', {
-              userName: callData.callerName,
-              userId: callData.callerId,
-              callType: callData.callType || 'audio',
-              isFromNotification: true,
-              shouldAutoAnswer: callData.shouldAutoAnswer === true,
-            });
-            
-            // Clear SharedPreferences after reading
+      getPendingCallData()
+        .then((callData) => {
+          if (!callData?.hasPendingCall || !navigationRef.current) return;
+          const g = cancelGuardRef.current;
+          if (g.pendingCancel || g.hasPendingCancelFromPrefs || g.callEnded) {
+            console.log('⏸️ [AppNavigator] Skip SharedPreferences nav - cancel/ended guard active', g);
             clearCallData();
-            console.log('✅ [AppNavigator] Navigated to CallScreen from SharedPreferences');
+            return;
           }
-        }).catch((error) => {
+
+          const cid = callData.callerId;
+          const n = lastNavigateToCallRef.current;
+          if (cid && n && n.callerId === cid && Date.now() - n.ts < 15000) {
+            console.log('📞 [AppNavigator] P0: Skip SharedPreferences nav - already navigated for this call');
+            clearCallData();
+            return;
+          }
+          console.log('📞 [AppNavigator] Found pending call in SharedPreferences:', callData);
+          navigationRef.current.navigate('CallScreen', {
+            userName: callData.callerName,
+            userId: callData.callerId,
+            callType: callData.callType || 'audio',
+            isFromNotification: true,
+            shouldAutoAnswer: callData.shouldAutoAnswer === true,
+            shouldDecline: callData.shouldDecline === true,
+          });
+          if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
+          clearCallData();
+          console.log('✅ [AppNavigator] Navigated to CallScreen from SharedPreferences');
+        })
+        .catch((error) => {
           console.error('[AppNavigator] Error checking SharedPreferences:', error);
         });
 
-        // Check SharedPreferences for pending OneSignal action button clicks
-        getPendingOneSignalAction().then((actionData) => {
+      // Check SharedPreferences for pending OneSignal action button clicks
+      getPendingOneSignalAction()
+        .then((actionData) => {
           if (actionData && navigationRef.current) {
             console.log('🔘 [AppNavigator] Found pending OneSignal action in SharedPreferences:', actionData);
-            
-            // Handle action based on type
+
             if (actionData.action === 'com.compnay.ONESIGNAL_VIEW_POST' && actionData.postId) {
               console.log('🔘 [AppNavigator] Navigating to PostDetail from OneSignal action');
               navigationRef.current.navigate('Feed', {
                 screen: 'PostDetail',
-                params: { postId: actionData.postId }
+                params: { postId: actionData.postId },
               });
             } else if (actionData.action === 'com.compnay.ONESIGNAL_VIEW_PROFILE' && actionData.userId) {
               console.log('🔘 [AppNavigator] Navigating to UserProfile from OneSignal action');
               navigationRef.current.navigate('Profile', {
                 screen: 'UserProfile',
-                params: { userId: actionData.userId }
+                params: { userId: actionData.userId },
               });
             } else if (actionData.action === 'com.compnay.ONESIGNAL_MARK_READ') {
               console.log('🔘 [AppNavigator] Mark as read action - handled by OneSignal service');
-              // OneSignal service will handle mark as read via API
             }
-            
-            // Clear SharedPreferences after reading
+
             clearOneSignalAction();
             console.log('✅ [AppNavigator] Processed OneSignal action from SharedPreferences');
           }
-        }).catch((error) => {
+        })
+        .catch((error) => {
           console.error('[AppNavigator] Error checking OneSignal action SharedPreferences:', error);
         });
-      }
-      
-      if (user) {
-        // Native IncomingCallActivity handles answer/decline from notification
-        // When user presses Answer, MainActivity receives shouldAutoAnswer=true
-        // MainActivity emits NavigateToCallScreen event which this listener handles
-        console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
-      }
+
+      console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
     }
-  }, [navigationRef.current, user]);
+  }, [navReady, user, setIncomingCallFromNotification]);
 
   // Listen for navigation events from native code (e.g., from IncomingCallActivity via MainActivity)
   useEffect(() => {
@@ -579,30 +685,66 @@ const AppNavigator = () => {
         console.log('📞 [AppNavigator] Event data:', JSON.stringify(data));
         console.log('📞 [AppNavigator] Navigation ref available:', !!navigationRef.current);
         console.log('📞 [AppNavigator] Should auto-answer:', data?.shouldAutoAnswer);
+
+        const guard = cancelGuardRef.current;
+        const isAnswerFromNative = data?.shouldAutoAnswer === true;
+        const callerId = data?.callerId;
+
+        // CRITICAL: Skip duplicate events FIRST – do NOT call setIncomingCallFromNotification on duplicates.
+        // Each call resets hasReceivedSignalForCallerRef, processingCallUserRef, etc., which interrupts
+        // signal processing and auto-answer when callUser arrives.
+        const nav = lastNavigateToCallRef.current;
+        const isDuplicate = callerId && nav && nav.callerId === callerId && Date.now() - nav.ts < 15000;
+        if (isDuplicate) {
+          console.log('📞 [AppNavigator] P0: Skip duplicate NavigateToCallScreen (already set up for this call)');
+          return;
+        }
+
+        if (guard.pendingCancel || guard.hasPendingCancelFromPrefs) {
+          console.log('⏸️ [AppNavigator] Ignoring NavigateToCallScreen - cancel guard active', guard);
+          return;
+        }
+        if (!isAnswerFromNative && guard.callEnded) {
+          console.log('⏸️ [AppNavigator] Ignoring NavigateToCallScreen - call ended (not Answer)', guard);
+          return;
+        }
+
+        // When user pressed Answer on native UI – set up call state and request signal (only once per call).
+        // CRITICAL: Do NOT call setIncomingCallFromNotification if callUser already set up the call (has signal).
+        // Overwriting with signal: null would break auto-answer and cause connection to fail.
+        const callType = data?.callType === 'video' ? 'video' : 'audio';
+        const currentRouteForSetup = navigationRef.current?.getCurrentRoute?.();
+        const alreadyHasSignalFromCallUser = currentRouteForSetup?.name === 'CallScreen' && call.from === callerId && !!call.signal;
+        if (isAnswerFromNative && setIncomingCallFromNotification && callerId && !alreadyHasSignalFromCallUser) {
+          lastSetUpForCallerRef.current = callerId;
+          setIncomingCallFromNotification(
+            data.callerId || '',
+            data.callerName || 'Unknown',
+            callType,
+            true
+          );
+        }
         
         if (navigationRef.current && data) {
           // Check if we're already on CallScreen
-          const currentRoute = navigationRef.current.getCurrentRoute();
+          const currentRoute = navigationRef.current.getCurrentRoute?.();
           const isAlreadyOnCallScreen = currentRoute?.name === 'CallScreen';
           
           if (isAlreadyOnCallScreen && data.shouldAutoAnswer === true) {
             // If already on CallScreen and shouldAutoAnswer=true, we need to trigger auto-answer
             // This can happen if socket event navigated first
             console.log('⚠️ [AppNavigator] Already on CallScreen - triggering auto-answer via WebRTCContext');
-            // The route params won't update, so we'll rely on WebRTCContext's shouldAutoAnswerRef
-            // We can emit a CallAnswered event or just navigate with replace
             navigationRef.current.navigate('CallScreen', {
               userName: data.callerName,
               userId: data.callerId,
               callType: data.callType,
               isFromNotification: data.isFromNotification !== false,
-              shouldAutoAnswer: true, // Force shouldAutoAnswer=true
+              shouldAutoAnswer: true,
               shouldDecline: data.shouldDecline || false,
             });
+            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
             console.log('✅ [AppNavigator] Updated CallScreen route params with shouldAutoAnswer=true');
           } else {
-            // Navigate immediately to CallScreen
-            // If shouldAutoAnswer is true, CallScreen will auto-answer
             console.log('📞 [AppNavigator] Navigating to CallScreen with params:', {
               userName: data.callerName,
               userId: data.callerId,
@@ -610,15 +752,15 @@ const AppNavigator = () => {
               isFromNotification: data.isFromNotification !== false,
               shouldAutoAnswer: data.shouldAutoAnswer === true,
             });
-            
             navigationRef.current.navigate('CallScreen', {
               userName: data.callerName,
               userId: data.callerId,
               callType: data.callType,
-              isFromNotification: data.isFromNotification !== false, // Default to true
-              shouldAutoAnswer: data.shouldAutoAnswer === true, // Only true if explicitly set
+              isFromNotification: data.isFromNotification !== false,
+              shouldAutoAnswer: data.shouldAutoAnswer === true,
               shouldDecline: data.shouldDecline || false,
             });
+            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
             console.log('✅ [AppNavigator] Navigated to CallScreen - shouldAutoAnswer:', data.shouldAutoAnswer === true);
           }
         } else {
@@ -631,22 +773,28 @@ const AppNavigator = () => {
             console.log('📋 [AppNavigator] Navigation ref not ready - storing event for later');
             pendingNavigationEvent.current = data;
             
-            // Also retry after a short delay
             setTimeout(() => {
-              if (navigationRef.current && pendingNavigationEvent.current) {
-                console.log('📞 [AppNavigator] Retry - Navigating to CallScreen...');
-                const storedData = pendingNavigationEvent.current;
-                navigationRef.current.navigate('CallScreen', {
-                  userName: storedData.callerName,
-                  userId: storedData.callerId,
-                  callType: storedData.callType,
-                  isFromNotification: storedData.isFromNotification !== false,
-                  shouldAutoAnswer: storedData.shouldAutoAnswer === true,
-                  shouldDecline: storedData.shouldDecline || false,
-                });
-                console.log('✅ [AppNavigator] Retry - Navigated to CallScreen');
+              if (!navigationRef.current || !pendingNavigationEvent.current) return;
+              const storedData = pendingNavigationEvent.current;
+              const sid = storedData.callerId;
+              const n = lastNavigateToCallRef.current;
+              if (sid && n && n.callerId === sid && Date.now() - n.ts < 15000) {
+                console.log('📞 [AppNavigator] P0: Retry skip - already navigated for this call');
                 pendingNavigationEvent.current = null;
+                return;
               }
+              console.log('📞 [AppNavigator] Retry - Navigating to CallScreen...');
+              navigationRef.current.navigate('CallScreen', {
+                userName: storedData.callerName,
+                userId: storedData.callerId,
+                callType: storedData.callType,
+                isFromNotification: storedData.isFromNotification !== false,
+                shouldAutoAnswer: storedData.shouldAutoAnswer === true,
+                shouldDecline: storedData.shouldDecline || false,
+              });
+              if (sid) lastNavigateToCallRef.current = { callerId: sid, ts: Date.now() };
+              pendingNavigationEvent.current = null;
+              console.log('✅ [AppNavigator] Retry - Navigated to CallScreen');
             }, 500);
           }
         }
@@ -677,7 +825,7 @@ const AppNavigator = () => {
             console.log('📞 [AppNavigator] Found pending call in SharedPreferences (polling):', callData);
             
             // Check if already on CallScreen
-            const currentRoute = navigationRef.current.getCurrentRoute();
+            const currentRoute = navigationRef.current.getCurrentRoute?.();
             if (currentRoute?.name === 'CallScreen') {
               console.log('⏸️ [AppNavigator] Already on CallScreen - clearing SharedPreferences');
               clearCallData();
@@ -691,6 +839,7 @@ const AppNavigator = () => {
               callType: callData.callType || 'audio',
               isFromNotification: true,
               shouldAutoAnswer: callData.shouldAutoAnswer === true,
+              shouldDecline: callData.shouldDecline === true,
             });
 
             clearCallData();
@@ -734,7 +883,9 @@ const AppNavigator = () => {
       if (stopTimeout) clearTimeout(stopTimeout);
       subscription.remove();
     };
-  }, [user, navigationRef.current]);
+    // CRITICAL: Don't include navigationRef.current in dependencies - causes infinite loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   if (isLoading) {
     return null; // You can add a splash screen here
@@ -755,12 +906,15 @@ const AppNavigator = () => {
     <NavigationContainer 
       theme={navTheme}
       ref={(ref) => {
+        // IMPORTANT: this callback can run multiple times; make it idempotent.
+        if (!ref) return;
+        if (navigationRef.current === ref && navReadyRef.current) return;
         navigationRef.current = ref;
-        // Set OneSignal navigation ref immediately when NavigationContainer is ready
-        if (ref) {
-          console.log('✅ [AppNavigator] NavigationContainer ref ready - setting OneSignal ref');
-          oneSignalService.setNavigationRef(ref);
+        if (!navReadyRef.current) {
+          navReadyRef.current = true;
+          setNavReady(true);
         }
+        console.log('✅ [AppNavigator] NavigationContainer ref ready');
       }}
     >
       <View style={{ flex: 1 }}>

@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
 import socketService from '../services/socket';
@@ -80,19 +81,36 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
-  // Connect socket and link push notification services when user is available
+  // Connect socket and link push notification services when user is available.
+  // Only connect when app is active (foreground). When backgrounded we disconnect so user is
+  // offline and backend uses FCM for call notifications.
   useEffect(() => {
     if (user?._id) {
-      socketService.connect(user._id);
-      // Link user to OneSignal for targeted notifications
       oneSignalService.setUserId(user._id);
       // FCM is initialized in App.tsx, token is automatically sent
+      if (AppState.currentState === 'active') {
+        socketService.connect(user._id);
+      }
     } else {
       socketService.disconnect();
-      // Unlink user from OneSignal on logout
       oneSignalService.removeUserId();
     }
   }, [user]);
+
+  // Background/inactive → disconnect immediately (offline, FCM for calls). Active → reconnect (online).
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        socketService.disconnect();
+        console.log('📴 [UserContext] App backgrounded/inactive – socket disconnected (offline, FCM for calls)');
+      } else if (nextState === 'active' && user?._id) {
+        socketService.connect(user._id);
+        console.log('📱 [UserContext] App active – socket reconnected (online)');
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [user?._id]);
 
   const loadUserFromStorage = async () => {
     try {

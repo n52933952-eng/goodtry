@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  Alert,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
@@ -25,15 +26,16 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser } = route.params || {};
-  
-  console.log('💬 [ChatScreen] Component render', { 
-    conversationId, 
-    userId, 
-    otherUser: otherUser?._id,
-    hasParams: !!route.params 
-  });
+  const lastLogKeyRef = useRef<string | null>(null);
+  if (__DEV__) {
+    const logKey = `${conversationId ?? 'new'}-${otherUser?._id ?? userId ?? ''}`;
+    if (lastLogKeyRef.current !== logKey) {
+      lastLogKeyRef.current = logKey;
+      console.log('💬 [ChatScreen] Mount/conversation:', logKey);
+    }
+  }
   const { user } = useUser();
-  const { socket, onlineUsers, setSelectedConversationId } = useSocket();
+  const { socket, onlineUsers, setSelectedConversationId, setSelectedConversationPartnerId } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
   const { colors } = useTheme();
   const { t } = useLanguage();
@@ -46,11 +48,18 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [reactionTargetId, setReactionTargetId] = useState<string | null>(null);
   const [actionTarget, setActionTarget] = useState<any | null>(null);
   const [replyingTo, setReplyingTo] = useState<any | null>(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const messagesEndRef = useRef<FlatList>(null);
   const isCallInProgressRef = useRef(false); // Prevent duplicate calls
+  const initiatedCallAtRef = useRef<number>(0); // When we set ref true (avoid reset during 300ms delay)
   const shouldAutoScrollRef = useRef(true);
   const isSendingRef = useRef(false);
   const hasMarkedSeenRef = useRef(false); // Prevent duplicate markmessageasSeen emits
+  const lastScrollOffsetRef = useRef(0);
+  const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
+  const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
+  const estimatedMessageHeight = 72; // For scroll position after prepending (same as web pagination)
 
   const currentUserIdStr = useMemo(() => (user?._id?.toString?.() ?? String(user?._id ?? '')), [user?._id]);
   
@@ -118,24 +127,56 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
   }, [user?._id, userId]);
 
+  // Real-time: reaction on a message – backend emits messageReactionUpdated with { conversationId, messageId } (same as web)
+  const handleMessageReactionUpdated = useCallback(async (data: { conversationId?: string; messageId?: string }) => {
+    const convId = data?.conversationId?.toString?.() ?? data?.conversationId;
+    const currentConvId = currentConversationIdRef.current?.toString?.() ?? currentConversationIdRef.current;
+    if (!convId || convId !== currentConvId) return;
+
+    // Backend only sends conversationId + messageId; refetch messages to get updated reactions (same as web)
+    try {
+      const otherUserId = otherUser?._id ?? userId;
+      if (!otherUserId) return;
+      const url = `${ENDPOINTS.GET_MESSAGES}/${typeof otherUserId === 'string' ? otherUserId : (otherUserId as any)?._id ?? otherUserId}`;
+      const response = await apiService.get(url);
+      const messagesData = response?.messages ?? (Array.isArray(response) ? response : []);
+      setMessages(messagesData);
+    } catch (e) {
+      console.warn('❌ [ChatScreen] messageReactionUpdated refetch failed:', e);
+    }
+  }, [otherUser?._id, userId]);
+
+  // Real-time: message deleted – backend emits messageDeleted with { conversationId, messageId } (same as web)
+  const handleMessageDeleted = useCallback((data: { conversationId?: string; messageId?: string }) => {
+    const convId = data?.conversationId?.toString?.() ?? data?.conversationId;
+    const currentConvId = currentConversationIdRef.current?.toString?.() ?? currentConversationIdRef.current;
+    if (!convId || convId !== currentConvId) return;
+
+    const messageId = (data?.messageId ?? (data as any)?._id)?.toString?.();
+    if (!messageId) return;
+
+    setMessages((prev) => prev.filter((m) => (m._id?.toString?.() ?? String(m._id)) !== messageId));
+  }, []);
+
   // Update current conversation ID ref whenever it changes
   useEffect(() => {
     currentConversationIdRef.current = currentConversationId || conversationId || null;
   }, [currentConversationId, conversationId]);
 
-  // Set up socket listener ONCE (like web version) - persistent listener
+  // Set up socket listeners: newMessage, messageReactionUpdated, messageDeleted (match backend + web)
   useEffect(() => {
     if (!socket || !user?._id) return;
-    
-    console.log('✅ [ChatScreen] Setting up newMessage socket listener (persistent)');
-    
+
     socket.on('newMessage', handleNewMessage);
-    
+    socket.on('messageReactionUpdated', handleMessageReactionUpdated);
+    socket.on('messageDeleted', handleMessageDeleted);
+
     return () => {
-      console.log('🔌 [ChatScreen] Removing newMessage socket listener');
       socket.off('newMessage', handleNewMessage);
+      socket.off('messageReactionUpdated', handleMessageReactionUpdated);
+      socket.off('messageDeleted', handleMessageDeleted);
     };
-  }, [socket, user?._id, handleNewMessage]);
+  }, [socket, user?._id, handleNewMessage, handleMessageReactionUpdated, handleMessageDeleted]);
 
   useEffect(() => {
     console.log('💬 [ChatScreen] useEffect: Mount/Update', { 
@@ -147,8 +188,9 @@ const ChatScreen = ({ route, navigation }: any) => {
       user: !!user?._id
     });
     
-    // Reset mark seen flag when conversation changes
+    // Reset mark seen flag and scroll ref when conversation changes (avoid auto load-more in new chat)
     hasMarkedSeenRef.current = false;
+    previousScrollYRef.current = 0;
     
     // If we have userId but no conversationId, we're starting a new conversation
     // The conversation will be created when we send the first message
@@ -179,106 +221,124 @@ const ChatScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const id = (currentConversationId || conversationId || null)?.toString?.() ?? (currentConversationId || conversationId || null);
     setSelectedConversationId(id);
-    return () => setSelectedConversationId(null);
-  }, [setSelectedConversationId, currentConversationId, conversationId]);
+    const partnerId = otherUser?._id != null ? String(otherUser._id) : null;
+    setSelectedConversationPartnerId(partnerId);
+    return () => {
+      setSelectedConversationId(null);
+      setSelectedConversationPartnerId(null);
+    };
+  }, [setSelectedConversationId, setSelectedConversationPartnerId, currentConversationId, conversationId, otherUser?._id]);
   
   // Reset call in progress flag when call ends or is canceled
   useEffect(() => {
-    // OPTIMIZATION: Reset immediately when call ends for smooth re-calling
-    // This ensures users can call again immediately after cancel/decline (critical for 1M+ users)
     if (callEnded) {
       isCallInProgressRef.current = false;
+      initiatedCallAtRef.current = 0;
       console.log('✅ [ChatScreen] Call ended - isCallInProgressRef reset immediately');
       return;
     }
-    
-    // If not calling anymore and call not accepted, reset immediately (no delay)
-    // This allows immediate re-calling after cancel/decline
     if (!isCalling && !callAccepted) {
+      const now = Date.now();
+      const elapsed = now - initiatedCallAtRef.current;
+      if (initiatedCallAtRef.current && elapsed < 600) {
+        return;
+      }
       isCallInProgressRef.current = false;
+      initiatedCallAtRef.current = 0;
       console.log('✅ [ChatScreen] Not calling - isCallInProgressRef reset immediately');
     }
   }, [isCalling, callAccepted, callEnded]);
 
-  const fetchMessages = useCallback(async () => {
-    // Backend expects otherUserId, not conversationId (same as web version)
-    // Try to get otherUserId from multiple sources
+  // Page size for messages (same as web – avoids server load)
+  const MESSAGE_PAGE_SIZE = 12;
+
+  const fetchMessages = useCallback(async (loadMore = false, beforeId: string | null = null) => {
     const otherUserId = otherUser?._id || userId || (route.params?.otherUser?._id) || (route.params?.userId);
-    
-    console.log('💬 [ChatScreen] fetchMessages: Called', { 
-      otherUserId, 
-      conversationId, 
-      currentConversationId,
-      otherUser: otherUser?._id,
-      userId,
-      routeParams: route.params
-    });
-    
     if (!otherUserId) {
-      console.error('❌ [ChatScreen] fetchMessages: No otherUserId found!', {
-        otherUser,
-        userId,
-        routeParams: route.params
-      });
-      setLoading(false);
+      if (!loadMore) setLoading(false);
       return;
     }
-    
-    setLoading(true);
-    console.log('💬 [ChatScreen] fetchMessages: Starting API call', { otherUserId });
-    
+
+    const otherUserIdStr = typeof otherUserId === 'string' ? otherUserId : String((otherUserId as any)?._id ?? otherUserId);
+
+    if (loadMore) {
+      loadingMoreRef.current = true;
+      setLoadingMoreMessages(true);
+    } else {
+      setLoading(true);
+    }
+
     try {
-      const url = `${ENDPOINTS.GET_MESSAGES}/${otherUserId}`;
-      console.log('💬 [ChatScreen] fetchMessages: Calling', url);
+      let url = `${ENDPOINTS.GET_MESSAGES}/${otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
+      if (beforeId) url += `&beforeId=${beforeId}`;
+
       const response = await apiService.get(url);
-      console.log('💬 [ChatScreen] fetchMessages: API response received', { 
-        response,
-        messagesCount: response.messages?.length, 
-        hasMore: response.hasMore,
-        isArray: Array.isArray(response)
-      });
-      
-      // Backend returns { messages: [], hasMore: false } (same as web version)
-      const messagesData = response.messages || (Array.isArray(response) ? response : []);
-      console.log('💬 [ChatScreen] fetchMessages: Setting messages', { count: messagesData.length });
+      const messagesData = response?.messages ?? (Array.isArray(response) ? response : []);
+      const hasMore = response?.hasMore === true;
+
+      if (loadMore && beforeId) {
+        loadingMoreRef.current = false;
+        setHasMoreMessages(hasMore);
+        setLoadingMoreMessages(false);
+        if (messagesData.length > 0) {
+          setMessages((prev) => {
+            const combined = [...messagesData, ...prev];
+            if (combined.length > 200) return combined.slice(0, 200);
+            return combined;
+          });
+          const prependedCount = messagesData.length;
+          setTimeout(() => {
+            messagesEndRef.current?.scrollToOffset({
+              offset: lastScrollOffsetRef.current + prependedCount * estimatedMessageHeight,
+              animated: false,
+            });
+          }, 80);
+        }
+        return;
+      }
+
       setMessages(messagesData);
-      
-      // Mark messages as seen via socket (ONCE per conversation open, prevent infinite loop)
+      setHasMoreMessages(hasMore);
+
       const convId = currentConversationId || conversationId;
       if (socket && convId && otherUser?._id && user?._id && !hasMarkedSeenRef.current) {
-        console.log('💬 [ChatScreen] fetchMessages: Marking messages as seen', { 
-          conversationId: convId, 
-          userId: otherUser._id 
-        });
         hasMarkedSeenRef.current = true;
-        socket.emit('markmessageasSeen', {
-          conversationId: convId,
-          userId: otherUser._id
-        });
+        socket.emit('markmessageasSeen', { conversationId: convId, userId: otherUser._id });
       }
-      
-      // Auto-scroll to bottom after messages load
+
       setTimeout(() => {
         if (shouldAutoScrollRef.current) {
           messagesEndRef.current?.scrollToEnd({ animated: false });
         }
       }, 100);
     } catch (error: any) {
-      console.error('❌ [ChatScreen] fetchMessages: Error', error);
-      console.error('❌ [ChatScreen] fetchMessages: Error message', error?.message);
-      console.error('❌ [ChatScreen] fetchMessages: Error stack', error?.stack);
-      setMessages([]);
-    } finally {
-      console.log('💬 [ChatScreen] fetchMessages: Setting loading to false');
+      if (!loadMore) setMessages([]);
+      loadingMoreRef.current = false;
+      setLoadingMoreMessages(false);
       setLoading(false);
+      return;
+    } finally {
+      if (!loadMore) setLoading(false);
     }
   }, [otherUser?._id, userId, conversationId, currentConversationId, socket, user?._id]);
 
-  const handleSend = async () => {
+  const loadOlderMessages = useCallback(() => {
+    if (!hasMoreMessages || loadingMoreMessages || loadingMoreRef.current || messages.length === 0) return;
+    const oldest = messages[0];
+    const beforeId = oldest?._id?.toString?.() ?? (oldest ? String(oldest._id) : null);
+    if (!beforeId) return;
+    fetchMessages(true, beforeId);
+  }, [hasMoreMessages, loadingMoreMessages, messages, fetchMessages]);
+
+  // Message send timeout (e.g. backend cold start); same as web expectations
+  const SEND_MESSAGE_TIMEOUT_MS = 20000;
+
+  const handleSend = async (attempt = 0) => {
     if (!newMessage.trim() && !pendingMedia) return;
 
-    const recipientId = otherUser?._id || userId;
-    if (!recipientId) return;
+    const recipientIdRaw = otherUser?._id ?? userId;
+    const recipientId = recipientIdRaw != null ? String(recipientIdRaw) : '';
+    if (!recipientId.trim()) return;
 
     setSending(true);
     isSendingRef.current = true;
@@ -286,13 +346,12 @@ const ChatScreen = ({ route, navigation }: any) => {
     try {
       let response: any = null;
 
-      // If media selected, send multipart (backend supports upload.single('file'))
       if (pendingMedia) {
         const formData = new FormData();
         formData.append('recipientId', recipientId);
         formData.append('message', newMessage.trim());
         if (replyingTo?._id) {
-          formData.append('replyTo', replyingTo._id);
+          formData.append('replyTo', String(replyingTo._id));
         }
 
         const uri = pendingMedia.uri;
@@ -302,17 +361,19 @@ const ChatScreen = ({ route, navigation }: any) => {
         // @ts-ignore - RN FormData file shape
         formData.append('file', { uri, name, type });
 
-        response = await apiService.upload(ENDPOINTS.SEND_MESSAGE, formData);
+        response = await apiService.upload(ENDPOINTS.SEND_MESSAGE, formData, 'POST', { timeout: SEND_MESSAGE_TIMEOUT_MS });
       } else {
-        // Text-only message
-        response = await apiService.post(ENDPOINTS.SEND_MESSAGE, {
-          recipientId: recipientId,
-          message: newMessage.trim(),
-          replyTo: replyingTo?._id || null,
-        });
+        response = await apiService.post(
+          ENDPOINTS.SEND_MESSAGE,
+          {
+            recipientId,
+            message: newMessage.trim(),
+            replyTo: replyingTo?._id != null ? String(replyingTo._id) : null,
+          },
+          { timeout: SEND_MESSAGE_TIMEOUT_MS }
+        );
       }
 
-      // Handle successful send (same as web version's handleMessageSent)
       if (response) {
         const messageWithSender = {
           ...response,
@@ -324,17 +385,12 @@ const ChatScreen = ({ route, navigation }: any) => {
           }
         };
         
-        // Add message to local state immediately
         setMessages((prev) => {
           const updated = [...prev, messageWithSender];
-          // Limit to 200 messages max (same as web version)
-          if (updated.length > 200) {
-            return updated.slice(-200);
-          }
+          if (updated.length > 200) return updated.slice(-200);
           return updated;
         });
         
-        // Update conversationId if this was a new conversation
         if (!currentConversationId && response.conversationId) {
           setCurrentConversationId(response.conversationId);
         }
@@ -342,11 +398,23 @@ const ChatScreen = ({ route, navigation }: any) => {
         setNewMessage('');
         setPendingMedia(null);
         setReplyingTo(null);
-        // Scroll after layout settles (esp. for images/videos)
         setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 120);
       }
     } catch (error) {
+      const maxAttempts = 3;
+      if (attempt < maxAttempts - 1) {
+        const delayMs = attempt === 0 ? 800 : 1500;
+        try {
+          await new Promise((r) => setTimeout(r, delayMs));
+          await handleSend(attempt + 1);
+          return;
+        } catch (_) {}
+      }
       console.error('❌ [ChatScreen] handleSend: Error', error);
+      Alert.alert(
+        t('error') || 'Error',
+        t('messageSendFailed') || 'Message could not be sent. Please try again.'
+      );
     } finally {
       setSending(false);
       isSendingRef.current = false;
@@ -403,6 +471,14 @@ const ChatScreen = ({ route, navigation }: any) => {
     const isCallActive = isCallInProgressRef.current || isCalling || (callAccepted && !callEnded);
     
     if (isCallActive) {
+      // FIRM: If only callAccepted is true but we're not calling (user came back from failed/dismissed call),
+      // reset WebRTC state once. Do NOT retry from here (setTimeout would close over stale state and cause infinite loop).
+      // User can tap Call again after state is cleared.
+      if (!isCallInProgressRef.current && !isCalling && callAccepted && !callEnded) {
+        console.log('✅ [ChatScreen] Stale call state (callAccepted, not calling) – resetting; tap Call again to start new call');
+        leaveCall();
+        return;
+      }
       console.warn('⚠️ [ChatScreen] Call already in progress - ignoring duplicate call request', {
         isCallInProgress: isCallInProgressRef.current,
         isCalling,
@@ -422,25 +498,37 @@ const ChatScreen = ({ route, navigation }: any) => {
       });
     }
     
-    // Mark that we're initiating a call
+    // Resolve target user: otherUser can be object, string (id), or null when from list with unpopulated participants
+    const targetId = (typeof otherUser === 'string' ? otherUser : otherUser?._id) || userId;
+    const targetName = (typeof otherUser === 'object' && otherUser !== null)
+      ? (otherUser.name || otherUser.username || 'User')
+      : 'User';
+    const targetProfilePic = (typeof otherUser === 'object' && otherUser !== null) ? otherUser.profilePic : null;
+    if (!targetId) {
+      console.warn('⚠️ [ChatScreen] Cannot call - no target user (otherUser/userId missing). Open chat from a conversation with participant info.');
+      return;
+    }
+
+    // Mark that we're initiating a call (and when - avoid reset during 300ms delay before callUser)
     isCallInProgressRef.current = true;
+    initiatedCallAtRef.current = Date.now();
     
     try {
       const callType = type === 'voice' ? 'audio' : 'video';
-      const userName = otherUser.name || otherUser.username;
       
       console.log('═══════════════════════════════════════════════════════');
       console.log(`📞 [ChatScreen] ========== INITIATING CALL ==========`);
       console.log(`📞 [ChatScreen] Type: ${callType}`);
-      console.log(`📞 [ChatScreen] Target user: ${userName} (${otherUser._id})`);
+      console.log(`📞 [ChatScreen] Target user: ${targetName} (${targetId})`);
       console.log(`📞 [ChatScreen] Current user: ${user?._id}`);
       
       // Navigate to CallScreen first, then initiate call
       // This ensures CallScreen is ready to show the calling state
       console.log(`📞 [ChatScreen] Navigating to CallScreen...`);
       navigation.navigate('CallScreen', { 
-        userName: userName,
-        userId: otherUser._id,
+        userName: targetName,
+        userId: targetId,
+        userProfilePic: targetProfilePic,
         callType: callType,
         isOutgoingCall: true, // Flag to indicate we're making the call
       });
@@ -452,8 +540,8 @@ const ChatScreen = ({ route, navigation }: any) => {
         try {
           console.log(`📞 [ChatScreen] Calling callUser function...`);
           await callUser(
-            otherUser._id,
-            userName,
+            targetId,
+            targetName,
             callType
           );
           console.log('✅ [ChatScreen] Call initiated successfully');
@@ -464,15 +552,15 @@ const ChatScreen = ({ route, navigation }: any) => {
           console.error('❌ [ChatScreen] Error message:', error?.message);
           console.error('❌ [ChatScreen] Error stack:', error?.stack);
           console.error('═══════════════════════════════════════════════════════');
-          // Reset flag on error so user can retry
           isCallInProgressRef.current = false;
+          initiatedCallAtRef.current = 0;
         }
       }, 300);
     } catch (error: any) {
       console.error('❌ [ChatScreen] ========== HANDLE CALL PRESS ERROR ==========');
       console.error('❌ [ChatScreen] Call failed:', error);
-      // Reset flag on error so user can retry
       isCallInProgressRef.current = false;
+      initiatedCallAtRef.current = 0;
       console.error('❌ [ChatScreen] Error message:', error?.message);
       console.error('❌ [ChatScreen] Error stack:', error?.stack);
       console.error('═══════════════════════════════════════════════════════');
@@ -692,16 +780,33 @@ const ChatScreen = ({ route, navigation }: any) => {
         renderItem={renderMessage}
         keyExtractor={(item, index) => item._id || index.toString()}
         contentContainerStyle={styles.messagesList}
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y;
+          lastScrollOffsetRef.current = y;
+          // Only load older when user actually scrolls UP into the top zone (previous position was below threshold)
+          const wasScrolledDown = previousScrollYRef.current > 80;
+          const nowNearTop = y <= 50;
+          if (wasScrolledDown && nowNearTop && hasMoreMessages && !loadingMoreMessages && messages.length > 0) {
+            loadOlderMessages();
+          }
+          previousScrollYRef.current = y;
+        }}
+        scrollEventThrottle={100}
         onScrollBeginDrag={() => {
-          // User is browsing older messages; don't force-scroll
           shouldAutoScrollRef.current = false;
         }}
         onContentSizeChange={() => {
-          // Only auto-scroll if we just sent/received OR user is already at bottom
           if (shouldAutoScrollRef.current || isSendingRef.current) {
             setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 60);
           }
         }}
+        ListHeaderComponent={
+          loadingMoreMessages ? (
+            <View style={styles.loadMoreIndicator}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : null
+        }
       />
 
       {/* Reaction picker (minimal) */}
@@ -809,6 +914,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  loadMoreIndicator: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   header: {
     flexDirection: 'row',

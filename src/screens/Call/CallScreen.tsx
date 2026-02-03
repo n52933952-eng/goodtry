@@ -1,35 +1,43 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
-  StatusBar,
+  ActivityIndicator,
+  Platform,
+  Image,
 } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { useWebRTC } from '../../context/WebRTCContext';
-import { COLORS } from '../../utils/constants';
+import { useTheme } from '../../context/ThemeContext';
+import { useUser } from '../../context/UserContext';
 
-const { width, height } = Dimensions.get('window');
+/**
+ * Call flow (best practice):
+ * - User A calls User B → A goes to CallScreen first (from ChatScreen), then callUser() runs.
+ * - User A sees: Avatar + name + "Ringing…" + Cancel (WhatsApp style).
+ * - User B receives socket "callUser" → AppNavigator opens CallScreen.
+ * - User B sees: "Incoming call from {A name}" + Decline + Answer.
+ * - When User B is OFF the app and gets the call on NATIVE UI, then presses Answer there:
+ *   → App opens, navigates to CallScreen with shouldAutoAnswer=true.
+ *   → Call auto-starts (answerCall runs when signal is available). User B does NOT press Answer again.
+ */
 
-interface CallScreenProps {
-  navigation: any;
-  route: any;
-}
-
-const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
-  // Use ref to prevent duplicate navigation
-  const hasNavigatedRef = useRef(false);
-  
+const CallScreen = () => {
+  const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  const { colors } = useTheme();
+  const { user } = useUser();
   const {
     localStream,
     remoteStream,
+    call,
     callAccepted,
     callEnded,
     isCalling,
     callType,
-    call,
     answerCall,
     leaveCall,
     toggleMute,
@@ -39,434 +47,424 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
     isMuted,
     isCameraOff,
     isSpeakerOn,
-    connectionState,
-    iceConnectionState,
     callDuration,
+    callStartTimeRef,
+    displayConnectedFromPeer,
+    connectionState,
     setIncomingCallFromNotification,
+    callBusyReason,
   } = useWebRTC();
 
-  const { userName, userId, callType: routeCallType, isFromNotification, shouldAutoAnswer } = route.params || {};
+  const params = route.params || {};
+  const { userName, userId, userProfilePic, callType: paramCallType, shouldAutoAnswer, shouldDecline, isOutgoingCall, fromSocketIncoming } = params;
+  const hasTriggeredNotificationRef = useRef(false);
+  const hasDeclinedRef = useRef(false);
+  const hasAutoAnsweredRef = useRef(false);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Set up call from notification (when navigated with userId/userName) and optionally auto-answer
+  // Only for INCOMING calls from NOTIFICATION — NOT when: we're the caller (isOutgoingCall) OR we came from socket (fromSocketIncoming)
+  // When fromSocketIncoming, callUser handler already set state with signal - do NOT overwrite (would clear signal → Answer fails)
   useEffect(() => {
-    console.log('📞 [CallScreen] ========== CALLSCREEN MOUNTED ==========');
-    console.log('📞 [CallScreen] Route params:', JSON.stringify(route.params || {}));
-    console.log('📞 [CallScreen] isFromNotification:', isFromNotification);
-    console.log('📞 [CallScreen] shouldAutoAnswer:', shouldAutoAnswer);
-  }, []);
+    if (isOutgoingCall || fromSocketIncoming || !userId || !userName || hasTriggeredNotificationRef.current) return;
+    const type = paramCallType === 'audio' ? 'audio' : 'video';
+    hasTriggeredNotificationRef.current = true;
+    setIncomingCallFromNotification(userId, userName, type, !!shouldAutoAnswer);
+  }, [isOutgoingCall, fromSocketIncoming, userId, userName, paramCallType, shouldAutoAnswer, setIncomingCallFromNotification]);
 
-  // Handle notification-triggered calls OR shouldAutoAnswer from route params
-  // This must happen BEFORE socket callUser event arrives to set shouldAutoAnswerRef
-  const hasSetCallFromNotification = useRef(false); // Prevent duplicate calls
+  // When user B answered from NATIVE UI (Answer button): auto-start the call so they don't press Answer again.
+  // WebRTCContext may auto-answer when callUser (with signal) arrives; this is a fallback when signal is already in state.
   useEffect(() => {
-    // Only set up once - prevent infinite loop
-    if (hasSetCallFromNotification.current) {
-      return;
-    }
-    
-    // If shouldAutoAnswer=true in route params (from MainActivity NavigateToCallScreen event)
-    // OR if isFromNotification=true, set up the call state
-    if ((shouldAutoAnswer || isFromNotification) && userId && userName && routeCallType) {
-      console.log('🔥🔥🔥 [CallScreen] Setting up call from notification/auto-answer');
-      console.log('📞 [CallScreen] shouldAutoAnswer from route:', shouldAutoAnswer);
-      console.log('📞 [CallScreen] isFromNotification:', isFromNotification);
-      
-      // Mark that we've set this up to prevent duplicate calls
-      hasSetCallFromNotification.current = true;
-      
-      // Always use shouldAutoAnswer value from route params
-      // This ensures shouldAutoAnswerRef is set if shouldAutoAnswer=true
-      setIncomingCallFromNotification(userId, userName, routeCallType, shouldAutoAnswer || false);
-      console.log('✅ [CallScreen] Call state set up with shouldAutoAnswer:', shouldAutoAnswer || false);
-    }
-  }, [shouldAutoAnswer, isFromNotification, userId, userName, routeCallType, setIncomingCallFromNotification]);
-
-  // Auto-answer if user clicked Answer button from notification (shouldAutoAnswer from route params)
-  // This handles the case when socket event hasn't arrived yet or when signal is ready
-  const hasAttemptedAnswerRef = useRef(false); // Prevent duplicate answer attempts
-  useEffect(() => {
-    // CRITICAL: Guard at the start - if already accepted or already attempted, return immediately
-    if (callAccepted) {
-      hasAttemptedAnswerRef.current = false; // Reset when call ends/accepts
-      return;
-    }
-    
-    // CRITICAL: If already attempted, don't try again
-    if (hasAttemptedAnswerRef.current) {
-      return;
-    }
-    
-    // Only proceed if shouldAutoAnswer is true
-    if (!shouldAutoAnswer) {
-      return;
-    }
-    
-    // CRITICAL: Prevent infinite loops - check guards BEFORE any processing
-    if (callAccepted || hasAttemptedAnswerRef.current) {
-      // Already answered or attempting - do nothing
-      return;
-    }
-    
-    console.log('📞 [CallScreen] ========== AUTO-ANSWER CHECK ==========');
-    console.log('📞 [CallScreen] shouldAutoAnswer=true in route params');
-    console.log('📞 [CallScreen] Call state:', { 
-      isReceivingCall: call.isReceivingCall, 
-      hasSignal: !!call.signal, 
-      from: call.from, 
-      userId,
-      callAccepted,
-      callType: call.callType,
-      hasAttempted: hasAttemptedAnswerRef.current
-    });
-    
-    // If call state is set and signal is available, answer immediately
-    if (call.signal && call.from === userId) {
-      console.log('✅✅✅ [CallScreen] Signal available AND call.from matches - auto-answering NOW...');
-      hasAttemptedAnswerRef.current = true; // Mark as attempted IMMEDIATELY (BEFORE async call)
-      setTimeout(() => {
-        answerCall().catch(err => {
-          console.error('❌ [CallScreen] Error answering call:', err);
-          hasAttemptedAnswerRef.current = false; // Allow retry on error
-        });
-      }, 300);
-      return;
-    }
-    
-    // If call state is set but no signal yet, wait for signal (only once)
-    if (call.isReceivingCall && call.from === userId && !call.signal) {
-        console.log('⏳ [CallScreen] Call state set, waiting for signal to arrive...');
-        hasAttemptedAnswerRef.current = true; // Mark as attempted to prevent duplicate intervals
-        let attempts = 0;
-        const maxAttempts = 100; // 10 seconds (increased timeout)
-        
-        const checkSignal = setInterval(() => {
-          attempts++;
-          
-          // Use latest values from context, not closure
-          // Once signal arrives, answer (only if not already accepted)
-          if (call.signal && call.from === userId && !callAccepted) {
-            console.log('✅✅✅ [CallScreen] Signal arrived - auto-answering NOW...');
-            answerCall().catch(err => {
-              console.error('❌ [CallScreen] Error answering call:', err);
-              hasAttemptedAnswerRef.current = false; // Allow retry on error
-            });
-            clearInterval(checkSignal);
-          } else if (attempts >= maxAttempts) {
-            console.error('❌ [CallScreen] Timeout waiting for call signal after', maxAttempts * 100, 'ms');
-            hasAttemptedAnswerRef.current = false; // Reset on timeout
-            clearInterval(checkSignal);
-          }
-        }, 100);
-        
-        return () => {
-          clearInterval(checkSignal);
-        };
-    }
-    
-    // If call state not set yet, wait for it to be set (only once)
-    if (!call.isReceivingCall || call.from !== userId) {
-        console.log('⏳ [CallScreen] Waiting for call state to be set...');
-        console.log('⏳ [CallScreen] shouldAutoAnswerRef should be set, WebRTCContext will auto-answer when callUser event arrives');
-        hasAttemptedAnswerRef.current = true; // Mark as attempted to prevent duplicate intervals
-        
-        // Also set up a check to auto-answer once call state is set
-        let attempts = 0;
-        const maxAttempts = 100;
-        
-        const checkCallState = setInterval(() => {
-          attempts++;
-          
-          // Use latest values from context, not closure
-          // Once call state is set with signal, answer immediately (only if not already accepted)
-          if (call.isReceivingCall && call.from === userId && call.signal && !callAccepted) {
-            console.log('✅✅✅ [CallScreen] Call state set with signal - auto-answering NOW...');
-            answerCall().catch(err => {
-              console.error('❌ [CallScreen] Error answering call:', err);
-              hasAttemptedAnswerRef.current = false; // Allow retry on error
-            });
-            clearInterval(checkCallState);
-          } else if (attempts >= maxAttempts) {
-            console.error('❌ [CallScreen] Timeout waiting for call state');
-            hasAttemptedAnswerRef.current = false; // Reset on timeout
-            clearInterval(checkCallState);
-          }
-        }, 100);
-        
-        return () => {
-          clearInterval(checkCallState);
-        };
+    if (!shouldAutoAnswer || callAccepted || hasAutoAnsweredRef.current) return;
+    const receiving = call.isReceivingCall && !callAccepted;
+    if (!receiving || !call.signal || !call.from) return;
+    hasAutoAnsweredRef.current = true;
+    const t = setTimeout(async () => {
+      try {
+        console.log('📞 [CallScreen] Auto-answering (native Answer → no second tap)');
+        await answerCall(call.signal, call.from);
+        console.log('✅ [CallScreen] Auto-answer completed');
+      } catch (e) {
+        console.warn('⚠️ [CallScreen] Auto-answer error:', e);
+        hasAutoAnsweredRef.current = false;
       }
-    // Only depend on values that should trigger the effect, NOT answerCall (which is stable)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldAutoAnswer, call.isReceivingCall, call.signal, call.from, call.callType, callAccepted, userId]);
+    }, 0);
+    return () => clearTimeout(t);
+  }, [shouldAutoAnswer, callAccepted, call.isReceivingCall, call.signal, call.from, answerCall]);
 
+  // Decline on mount if requested
   useEffect(() => {
-    // Navigate back immediately when call ends or is canceled
-    // OPTIMIZATION: Navigate immediately to avoid showing "Call ended" status
-    if (callEnded && !hasNavigatedRef.current) {
-      console.log('📴 [CallScreen] Call ended - navigating back immediately', { 
-        callEnded, 
-        isCalling, 
-        callAccepted, 
-        isReceivingCall: call.isReceivingCall,
-        connectionState,
-        iceConnectionState
-      });
-      hasNavigatedRef.current = true;
-      // Navigate immediately - no delay to avoid showing "Call ended"
-      navigation.goBack();
+    if (shouldDecline && !hasDeclinedRef.current) {
+      hasDeclinedRef.current = true;
+      leaveCall();
+      if (navigation.canGoBack()) navigation.goBack();
     }
-    
-    // Reset navigation flag when call starts again
-    if (!callEnded && hasNavigatedRef.current) {
-      hasNavigatedRef.current = false;
+  }, [shouldDecline, leaveCall, navigation]);
+
+  // Duration ticker when call is connected (receiver: use connectionState when answered from native)
+  useEffect(() => {
+    const connected = displayConnectedFromPeer || (!!shouldAutoAnswer && connectionState === 'connected');
+    if (!callAccepted || !connected) return;
+    const update = () => {
+      const startMs = callStartTimeRef.current;
+      if (!startMs) return;
+      setDurationSeconds(Math.floor((Date.now() - startMs) / 1000));
+    };
+    setDurationSeconds(0);
+    update();
+    durationIntervalRef.current = setInterval(update, 1000);
+    return () => {
+      if (durationIntervalRef.current) clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    };
+  }, [callAccepted, displayConnectedFromPeer, shouldAutoAnswer, connectionState, callStartTimeRef]);
+
+  // Navigate back when call ends
+  useEffect(() => {
+    if (callEnded && navigation.canGoBack()) {
+      navigation.goBack();
     }
   }, [callEnded, navigation]);
 
-  const handleLeaveCall = () => {
+  // FIRM: Receiver (answered from notification) stuck on "Connecting" – end call after 12s if no connection
+  const connectionFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!answeredFromNative || isConnected) {
+      if (connectionFailsafeRef.current) {
+        clearTimeout(connectionFailsafeRef.current);
+        connectionFailsafeRef.current = null;
+      }
+      return;
+    }
+    connectionFailsafeRef.current = setTimeout(() => {
+      connectionFailsafeRef.current = null;
+      console.warn('⚠️ [CallScreen] Connection failsafe – no connection after 12s, ending call');
+      leaveCall();
+      if (navigation.canGoBack()) navigation.goBack();
+    }, 12000);
+    return () => {
+      if (connectionFailsafeRef.current) {
+        clearTimeout(connectionFailsafeRef.current);
+        connectionFailsafeRef.current = null;
+      }
+    };
+  }, [answeredFromNative, isConnected, leaveCall, navigation]);
+
+  const handleAnswer = async () => {
+    try {
+      await answerCall();
+    } catch (e) {
+      console.warn('Answer call error:', e);
+    }
+  };
+
+  const handleLeave = () => {
     leaveCall();
-    navigation.goBack();
+    if (navigation.canGoBack()) navigation.goBack();
   };
 
-  // Format call duration (seconds to MM:SS)
-  const formatCallDuration = (seconds: number): string => {
-    if (seconds === 0) return '';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  const formatDuration = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Get connection status text
-  const getConnectionStatus = (): string => {
-    // CRITICAL: Check callEnded first - if call ended, show "Call ended" briefly
-    // But if navigation already triggered, minimize status updates
-    if (callEnded) {
-      // If navigation already triggered, return minimal status (navigation will happen soon)
-      if (hasNavigatedRef.current) {
-        return 'Call ended';
-      }
-      console.log('📴 [CallScreen] getConnectionStatus: callEnded=true, returning "Call ended"');
-      return 'Call ended';
-    }
-    
-    // CRITICAL: If not calling, not receiving call, and not accepted, the call is inactive/ended
-    // Check this BEFORE checking if callAccepted is false (to avoid showing "Connecting..." for inactive calls)
-    const isCallInactive = !isCalling && !call.isReceivingCall && !callAccepted;
-    if (isCallInactive) {
-      console.log('📴 [CallScreen] getConnectionStatus: call inactive, returning "Call ended"', {
-        isCalling,
-        isReceivingCall: call.isReceivingCall,
-        callAccepted,
-        hasNavigated: hasNavigatedRef.current
-      });
-      return 'Call ended';
-    }
-    
-    // Only show "Connecting..." if we're actively in a call state (isCalling must be true)
-    if (!callAccepted) {
-      if (call.isReceivingCall) {
-        return 'Incoming call...';
-      }
-      // Only show "Connecting..." if we're actually calling (isCalling should be true)
-      if (isCalling) {
-        console.log('📴 [CallScreen] getConnectionStatus: not accepted but calling, returning "Connecting..."', {
-          isCalling,
-          isReceivingCall: call.isReceivingCall,
-          callAccepted
-        });
-        return 'Connecting...';
-      }
-      // If not calling and not accepted, call is inactive (fallback check)
-      console.log('📴 [CallScreen] getConnectionStatus: not accepted and not calling, returning "Call ended"', {
-        isCalling,
-        isReceivingCall: call.isReceivingCall,
-        callAccepted
-      });
-      return 'Call ended';
-    }
-    
-    if (connectionState === 'connected' && iceConnectionState === 'connected') {
-      return callDuration > 0 ? formatCallDuration(callDuration) : 'Connected';
-    }
-    
-    if (connectionState === 'connecting' || iceConnectionState === 'checking') {
-      return 'Connecting...';
-    }
-    
-    if (connectionState === 'failed' || iceConnectionState === 'failed') {
-      return 'Connection failed';
-    }
-    
-    if (iceConnectionState === 'disconnected') {
-      return 'Reconnecting...';
-    }
-    
-    return 'Connected';
-  };
+  const isReceiving = call.isReceivingCall && !callAccepted;
+  const isVideo = (paramCallType || callType || call.callType) === 'video';
+  // When user answered from NATIVE UI (app was off), don't show in-app Answer/Decline — show Connecting until call is up.
+  const answeredFromNative = !!shouldAutoAnswer;
+  // Receiver (answered from notification): use connectionState so we show video + Connected when peer connects
+  const isConnected = displayConnectedFromPeer || (answeredFromNative && connectionState === 'connected');
+
+  // ——— User B (receiver): incoming call — show Decline + Answer (only when NOT already answered from native) ———
+  if (isReceiving && !answeredFromNative) {
+    const callerName = call.name || userName || 'Unknown';
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>
+          Incoming call from
+        </Text>
+        <Text style={[styles.callerName, { color: colors.text }]}>
+          {callerName}
+        </Text>
+        <Text style={[styles.callStatus, { color: colors.textGray }]}>
+          {callBusyReason === 'offline'
+            ? 'User is offline'
+            : callBusyReason === 'busy'
+              ? 'User is busy'
+              : isVideo
+                ? 'Video call'
+                : 'Audio call'}
+        </Text>
+        <View style={styles.incomingActions}>
+          <TouchableOpacity
+            style={[styles.declineBtn, { backgroundColor: colors.error }]}
+            onPress={handleLeave}
+          >
+            <Text style={styles.btnLabel}>Decline</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.answerBtn, { backgroundColor: colors.success }]}
+            onPress={handleAnswer}
+          >
+            <Text style={styles.btnLabel}>Answer</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // ——— User B answered from native UI (app was off): show avatars + Connecting… until connected, then fall through to video UI ———
+  if (isReceiving && answeredFromNative && !isConnected) {
+    const callerName = call.name || userName || 'Unknown';
+    const callerAvatar = userProfilePic || call.profilePic;
+    const myName = user?.name || user?.username || 'You';
+    const myAvatar = user?.profilePic;
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.dualAvatarRow}>
+          <View style={styles.connectedAvatarWrap}>
+            {callerAvatar ? (
+              <Image source={{ uri: callerAvatar }} style={styles.connectedAvatar} />
+            ) : (
+              <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                  {callerName.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+              {callerName}
+            </Text>
+          </View>
+          <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
+          <View style={styles.connectedAvatarWrap}>
+            {myAvatar ? (
+              <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
+            ) : (
+              <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                  {myName.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+              {myName}
+            </Text>
+          </View>
+        </View>
+        <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
+        <Text style={[styles.connectingText, { color: colors.text }]}>Connecting…</Text>
+        <TouchableOpacity style={[styles.hangUpBtn, { backgroundColor: colors.error, marginTop: 24 }]} onPress={handleLeave}>
+          <Text style={styles.btnLabel}>End call</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // ——— User A (caller): outgoing call — WhatsApp style: avatar + Ringing + Cancel ———
+  // Show immediately when isOutgoingCall (before callUser runs at 300ms) to avoid old UI flash
+  const isOutgoingRinging = (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
+  if (isOutgoingRinging) {
+    const calleeName = call.name || userName || '...';
+    const avatarUri = userProfilePic || call.profilePic;
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        {/* Avatar - large, centered like WhatsApp */}
+        <View style={styles.outgoingAvatarWrap}>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.outgoingAvatar} />
+          ) : (
+            <View style={[styles.outgoingAvatar, styles.outgoingAvatarPlaceholder, { backgroundColor: colors.border }]}>
+              <Text style={[styles.outgoingAvatarText, { color: colors.textGray }]}>
+                {calleeName.charAt(0).toUpperCase()}
+              </Text>
+            </View>
+          )}
+        </View>
+        <Text style={[styles.calleeName, { color: colors.text }]}>
+          {calleeName}
+        </Text>
+        <Text style={[styles.ringingText, { color: colors.primary }]}>
+          Ringing…
+        </Text>
+        <TouchableOpacity style={[styles.hangUpBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
+          <Text style={styles.btnLabel}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // In-call: video/audio UI
+  const otherName = call.name || userName || 'User';
+  const otherAvatar = userProfilePic || call.profilePic;
+  const myName = user?.name || user?.username || 'You';
+  const myAvatar = user?.profilePic;
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
-
-      {/* Remote Video (Full Screen) */}
-      {callAccepted && remoteStream && callType === 'video' ? (
+    <View style={[styles.container, { backgroundColor: '#000' }]}>
+      {/* Remote video (full screen) - video call only */}
+      {isVideo && remoteStream && (
         <RTCView
           streamURL={remoteStream.toURL()}
           style={styles.remoteVideo}
           objectFit="cover"
-          zOrder={0}
         />
-      ) : (
-          <View style={styles.placeholderContainer}>
-          <View style={styles.avatarLarge}>
-            <Text style={styles.avatarTextLarge}>
-              {(call.isReceivingCall ? call.name : userName)?.[0]?.toUpperCase() || '?'}
-            </Text>
+      )}
+      {isVideo && !remoteStream && (
+        <View style={[styles.remoteVideo, styles.placeholder]}>
+          <View style={styles.dualAvatarRow}>
+            <View style={styles.connectedAvatarWrap}>
+              {otherAvatar ? (
+                <Image source={{ uri: otherAvatar }} style={styles.connectedAvatar} />
+              ) : (
+                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                    {otherName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+                {otherName}
+              </Text>
+            </View>
+            <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
+            <View style={styles.connectedAvatarWrap}>
+              {myAvatar ? (
+                <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
+              ) : (
+                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                    {myName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+                {myName}
+              </Text>
+            </View>
           </View>
-          <Text style={styles.userName}>
-            {call.isReceivingCall ? call.name : userName || 'User'}
-          </Text>
-          {/* Show status in center ONLY when NOT fully connected - hide completely when connected */}
-          {!(callAccepted && connectionState === 'connected' && iceConnectionState === 'connected') ? (
-            <Text key="center-status" style={styles.statusText}>
-              {getConnectionStatus()}
-            </Text>
-          ) : null}
+          {isConnected ? (
+            <>
+              <Text style={[styles.connectedLabel, { color: colors.success }]}>Connected</Text>
+              <Text style={styles.durationLarge}>{formatDuration(durationSeconds)}</Text>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
+              <Text style={[styles.connectingText, { color: colors.text }]}>Connecting...</Text>
+            </>
+          )}
         </View>
       )}
 
-      {/* Local Video (Picture in Picture) */}
-      {localStream && callType === 'video' && !isCameraOff && (
-        <View style={styles.localVideoContainer}>
+      {/* Local video (pip) - video call only */}
+      {isVideo && localStream && (
+        <View style={styles.localVideoWrap}>
           <RTCView
             streamURL={localStream.toURL()}
             style={styles.localVideo}
             objectFit="cover"
-            zOrder={1}
             mirror={true}
           />
         </View>
       )}
 
-      {/* Call Controls */}
-      <View style={styles.controlsContainer}>
-        <View style={styles.controls}>
-          {/* Show Answer/Decline buttons for incoming calls */}
-          {call.isReceivingCall && !callAccepted ? (
+      {/* Audio call: center content - always show avatars; Connecting or Connected + timer */}
+      {!isVideo && (
+        <View style={styles.connectedContent}>
+          {/* Both avatars - always visible */}
+          <View style={styles.dualAvatarRow}>
+            <View style={styles.connectedAvatarWrap}>
+              {otherAvatar ? (
+                <Image source={{ uri: otherAvatar }} style={styles.connectedAvatar} />
+              ) : (
+                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                    {otherName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+                {otherName}
+              </Text>
+            </View>
+            <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
+            <View style={styles.connectedAvatarWrap}>
+              {myAvatar ? (
+                <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
+              ) : (
+                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
+                    {myName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
+                {myName}
+              </Text>
+            </View>
+          </View>
+          {isConnected ? (
             <>
-              <TouchableOpacity
-                style={[styles.controlButton, styles.answerButton]}
-                onPress={() => {
-                  console.log('✅ [CallScreen] Answer button pressed');
-                  answerCall().catch(err => {
-                    console.error('❌ [CallScreen] Error answering call:', err);
-                  });
-                }}
-              >
-                <Text style={styles.controlIcon}>✅</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.controlButton, styles.declineButton]}
-                onPress={handleLeaveCall}
-              >
-                <Text style={styles.controlIcon}>❌</Text>
-              </TouchableOpacity>
+              <Text style={[styles.connectedLabel, { color: colors.success }]}>Connected</Text>
+              <Text style={styles.durationLarge}>{formatDuration(durationSeconds)}</Text>
             </>
           ) : (
             <>
-              {/* Regular call controls (mute, speaker, camera, etc.) */}
-              <TouchableOpacity
-                style={[styles.controlButton, isMuted && styles.controlButtonActive]}
-                onPress={toggleMute}
-              >
-                <View style={styles.controlIconContainer}>
-                  <Text style={styles.controlIconLarge}>
-                    {isMuted ? '🔇' : '🎤'}
-                  </Text>
-                  <Text style={styles.controlLabel}>
-                    {isMuted ? 'Unmute' : 'Mute'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              {/* Speaker toggle - available for both audio and video calls */}
-              <TouchableOpacity
-                style={[
-                  styles.controlButton, 
-                  isSpeakerOn && styles.speakerActiveButton
-                ]}
-                onPress={toggleSpeaker}
-              >
-                <View style={styles.controlIconContainer}>
-                  <Text style={styles.controlIconLarge}>
-                    {isSpeakerOn ? '🔊' : '🎧'}
-                  </Text>
-                  <Text style={styles.controlLabel}>
-                    {isSpeakerOn ? 'Speaker' : 'Earpiece'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              {callType === 'video' && (
-                <>
-                  <TouchableOpacity
-                    style={[styles.controlButton, isCameraOff && styles.controlButtonActive]}
-                    onPress={toggleCamera}
-                  >
-                    <View style={styles.controlIconContainer}>
-                      <Text style={styles.controlIconLarge}>
-                        {isCameraOff ? '📷' : '📹'}
-                      </Text>
-                      <Text style={styles.controlLabel}>Camera</Text>
-                    </View>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.controlButton}
-                    onPress={switchCamera}
-                  >
-                    <View style={styles.controlIconContainer}>
-                      <Text style={styles.controlIconLarge}>🔄</Text>
-                      <Text style={styles.controlLabel}>Flip</Text>
-                    </View>
-                  </TouchableOpacity>
-                </>
-              )}
-
-              <TouchableOpacity
-                style={[styles.controlButton, styles.endCallButton]}
-                onPress={handleLeaveCall}
-              >
-                <View style={styles.controlIconContainer}>
-                  <Text style={styles.controlIconLarge}>📞</Text>
-                  <Text style={styles.controlLabel}>End</Text>
-                </View>
-              </TouchableOpacity>
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
+              <Text style={[styles.connectingText, { color: colors.text }]}>Connecting...</Text>
             </>
           )}
         </View>
-      </View>
+      )}
 
-      {/* Call Info Overlay */}
-      <View style={styles.topOverlay}>
-        <Text style={styles.callTypeText}>
-          {callType === 'video' ? '📹 Video Call' : '📞 Voice Call'}
-        </Text>
-        {/* Show timer or "Connected" in top overlay - same for both caller and receiver */}
-        {callAccepted && connectionState === 'connected' && iceConnectionState === 'connected' ? (
-          <Text key="call-status" style={styles.durationText}>
-            {callDuration > 0 ? formatCallDuration(callDuration) : 'Connected'}
+      {/* Top bar: duration (video only; audio shows in center) */}
+      {isVideo && (
+        <View style={styles.topBar}>
+          <Text style={styles.durationText}>
+            {isConnected ? formatDuration(durationSeconds) : 'Connecting...'}
           </Text>
-        ) : (
-          <Text key="call-status-connecting" style={styles.durationText}>
-            {getConnectionStatus()}
-          </Text>
+        </View>
+      )}
+
+      {/* Bottom controls */}
+      <View style={styles.controls}>
+        <TouchableOpacity
+          style={[styles.controlBtn, { backgroundColor: isMuted ? colors.error : colors.backgroundLight }]}
+          onPress={toggleMute}
+        >
+          <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
+        </TouchableOpacity>
+
+        {isVideo && (
+          <>
+            <TouchableOpacity
+              style={[styles.controlBtn, { backgroundColor: isCameraOff ? colors.error : colors.backgroundLight }]}
+              onPress={toggleCamera}
+            >
+              <Text style={styles.controlLabel}>{isCameraOff ? 'Camera On' : 'Camera Off'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.controlBtn, { backgroundColor: colors.backgroundLight }]}
+              onPress={switchCamera}
+            >
+              <Text style={styles.controlLabel}>Flip</Text>
+            </TouchableOpacity>
+          </>
         )}
-        {(connectionState === 'failed' || iceConnectionState === 'failed') && (
-          <Text style={styles.errorText}>
-            Connection issue - trying to reconnect...
-          </Text>
-        )}
+
+        <TouchableOpacity
+          style={[styles.controlBtn, { backgroundColor: isSpeakerOn ? colors.primary : colors.backgroundLight }]}
+          onPress={toggleSpeaker}
+        >
+          <Text style={styles.controlLabel}>Speaker</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.hangUpControlBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
+          <Text style={styles.btnLabel}>End</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -475,148 +473,190 @@ const CallScreen: React.FC<CallScreenProps> = ({ navigation, route }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
-  },
-  remoteVideo: {
-    width: width,
-    height: height,
-  },
-  placeholderContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
   },
-  avatarLarge: {
+  incomingTitle: {
+    fontSize: 16,
+    color: '#8B98A5',
+    marginTop: 24,
+  },
+  callerName: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginTop: 8,
+  },
+  callStatus: {
+    fontSize: 16,
+    marginTop: 8,
+  },
+  incomingActions: {
+    flexDirection: 'row',
+    marginTop: 32,
+    gap: 24,
+  },
+  declineBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+  },
+  answerBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+  },
+  hangUpBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    marginTop: 32,
+  },
+  outgoingAvatarWrap: {
+    marginBottom: 24,
+  },
+  outgoingAvatar: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: COLORS.primary,
+  },
+  outgoingAvatarPlaceholder: {
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 20,
   },
-  avatarTextLarge: {
+  outgoingAvatarText: {
     fontSize: 48,
-    color: '#FFFFFF',
-    fontWeight: 'bold',
+    fontWeight: '600',
   },
-  userName: {
-    fontSize: 28,
+  calleeName: {
+    fontSize: 24,
     fontWeight: 'bold',
-    color: COLORS.text,
     marginBottom: 8,
   },
-  statusText: {
-    fontSize: 16,
-    color: COLORS.textGray,
+  ringingText: {
+    fontSize: 18,
+    fontWeight: '500',
   },
-  localVideoContainer: {
+  btnLabel: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  remoteVideo: {
     position: 'absolute',
-    top: 60,
-    right: 20,
-    width: 120,
-    height: 160,
-    borderRadius: 12,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+  },
+  placeholder: {
+    backgroundColor: '#1a1a1a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    color: '#888',
+    fontSize: 16,
+  },
+  localVideoWrap: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 56 : 48,
+    right: 16,
+    width: 100,
+    height: 140,
+    borderRadius: 8,
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
   },
   localVideo: {
     width: '100%',
     height: '100%',
   },
-  controlsContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingBottom: 40,
-    paddingHorizontal: 20,
+  connectedContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  controls: {
+  dualAvatarRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    alignItems: 'center',
+    marginBottom: 24,
+    gap: 20,
+  },
+  connectedAvatarWrap: {
     alignItems: 'center',
   },
-  controlButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  connectedAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  connectedAvatarPlaceholder: {
     justifyContent: 'center',
     alignItems: 'center',
   },
-  controlButtonActive: {
-    backgroundColor: COLORS.error,
-  },
-  speakerActiveButton: {
-    backgroundColor: COLORS.primary,
-  },
-  endCallButton: {
-    backgroundColor: COLORS.error,
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-  },
-  controlIconContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  controlIconLarge: {
-    fontSize: 24,
-  },
-  controlLabel: {
-    fontSize: 8,
-    color: COLORS.text,
-    marginTop: 2,
+  connectedAvatarText: {
+    fontSize: 32,
     fontWeight: '600',
   },
-  answerButton: {
-    backgroundColor: COLORS.success,
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+  connectedAvatarLabel: {
+    fontSize: 12,
+    marginTop: 6,
+    maxWidth: 90,
   },
-  declineButton: {
-    backgroundColor: COLORS.error,
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+  connectedVs: {
+    fontSize: 20,
   },
-  controlIcon: {
+  connectedLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  durationLarge: {
+    color: '#FFF',
     fontSize: 28,
+    fontWeight: '600',
   },
-  topOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    paddingTop: 50,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    alignItems: 'center',
-  },
-  callTypeText: {
+  connectingText: {
     fontSize: 18,
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-    marginBottom: 4,
+    marginTop: 16,
+  },
+  topBar: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 56 : 48,
+    left: 16,
   },
   durationText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '600',
   },
-  errorText: {
+  controls: {
+    position: 'absolute',
+    bottom: Platform.OS === 'ios' ? 40 : 24,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingHorizontal: 16,
+  },
+  controlBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+  },
+  controlLabel: {
+    color: '#FFF',
     fontSize: 12,
-    color: COLORS.error,
-    marginTop: 4,
+    fontWeight: '600',
+  },
+  hangUpControlBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 28,
   },
 });
 

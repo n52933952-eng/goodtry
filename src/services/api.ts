@@ -80,15 +80,13 @@ export const apiService = {
     }
   },
 
-  upload: async (url: string, formData: FormData, method: 'POST' | 'PUT' = 'POST') => {
+  upload: async (url: string, formData: FormData, method: 'POST' | 'PUT' = 'POST', config?: AxiosRequestConfig) => {
     try {
-      const res = method === 'PUT' 
-        ? await client.put(url, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          })
-        : await client.post(url, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          });
+      const headers = { 'Content-Type': 'multipart/form-data' };
+      const mergedConfig = config ? { ...config, headers: { ...headers, ...config.headers } } : { headers };
+      const res = method === 'PUT'
+        ? await client.put(url, formData, mergedConfig)
+        : await client.post(url, formData, mergedConfig);
       return res.data;
     } catch (e) {
       throw new Error(getErrorMessage(e));

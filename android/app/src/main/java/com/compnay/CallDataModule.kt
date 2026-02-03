@@ -28,6 +28,7 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                         putString("callerName", prefs.getString("callerName", null))
                         putString("callType", prefs.getString("callType", "audio"))
                         putBoolean("shouldAutoAnswer", prefs.getBoolean("shouldAutoAnswer", false))
+                        putBoolean("shouldDecline", prefs.getBoolean("shouldDecline", false))
                         putBoolean("hasPendingCall", true)
                     }
                     if (hasPendingCancel) {
@@ -54,6 +55,11 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                 .remove("shouldCancelCall")
                 .remove("hasPendingCancel")
                 .remove("callerIdToCancel")
+                .remove("callerId")
+                .remove("callerName")
+                .remove("callType")
+                .remove("shouldAutoAnswer")
+                .remove("shouldDecline")
                 .apply()
             promise.resolve(true)
         } catch (e: Exception) {

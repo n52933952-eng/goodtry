@@ -5,6 +5,14 @@ class SocketService {
   private socket: Socket | null = null;
   private isConnected: boolean = false;
   private pendingListeners: Array<{ event: string; callback: (data: any) => void }> = [];
+  private connectListeners: Array<() => void> = [];
+
+  addConnectListener(fn: () => void): () => void {
+    this.connectListeners.push(fn);
+    return () => {
+      this.connectListeners = this.connectListeners.filter((f) => f !== fn);
+    };
+  }
 
   connect(userId: string) {
     // If socket already exists and is connected or connecting, don't create a new one
@@ -23,14 +31,14 @@ class SocketService {
     console.log('🔌 Connecting to socket...', SOCKET_URL);
     
     this.socket = io(SOCKET_URL, {
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'], // Polling fallback when websocket times out (e.g. slow network / cold start)
       query: { userId },
       reconnection: true,
-      reconnectionDelay: 500, // Faster reconnection
-      reconnectionDelayMax: 3000,
-      reconnectionAttempts: 10,
-      timeout: 5000, // Connection timeout
-      forceNew: true, // Force new connection to avoid duplicates
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 15,
+      timeout: 15000, // Longer timeout for slow networks / backend cold start (e.g. Render)
+      forceNew: true,
     });
 
     // Apply any pending listeners that were added before connection
@@ -52,6 +60,13 @@ class SocketService {
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket?.id);
       this.isConnected = true;
+      this.connectListeners.forEach((f) => {
+        try {
+          f();
+        } catch (e) {
+          console.warn('[Socket] Connect listener error:', e);
+        }
+      });
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -60,7 +75,12 @@ class SocketService {
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
+      const isTimeout = error?.message?.toLowerCase?.().includes('timeout');
+      if (isTimeout) {
+        console.warn('⚠️ [Socket] Connection timeout – will retry. If backend is cold-starting, this is normal.');
+      } else {
+        console.warn('⚠️ [Socket] Connection error:', error?.message || error);
+      }
     });
 
     this.socket.on('error', (error) => {

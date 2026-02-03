@@ -6,7 +6,7 @@
  */
 
 import messaging from '@react-native-firebase/messaging';
-import { Platform, AppState } from 'react-native';
+import { Platform, AppState, DeviceEventEmitter } from 'react-native';
 import { apiService } from './api';
 
 class FCMService {
@@ -114,6 +114,12 @@ class FCMService {
         console.log('📞 [FCM] Caller ID:', data.callerId);
         console.log('📞 [FCM] Call Type:', data.callType);
         console.log('✅ [FCM] Socket.io will handle this - WebRTCContext will receive callUser event');
+      } else if (data?.type === 'call_ended' || data?.type === 'call_canceled' || data?.type === 'call_cancelled') {
+        // IMPORTANT: When receiver is in-app (foreground), we still may receive "call ended" pushes.
+        // If we ignore these, the receiver can get stuck on "Incoming call..." UI after caller cancels.
+        const callerId = (data?.callerId || data?.sender || data?.from || '').toString();
+        console.log('📴 [FCM] Call ended/canceled notification in foreground', { callerId, action: data?.action });
+        DeviceEventEmitter.emit('CallEndedFromFCM', { callerId, data });
       } else {
         console.log('⚠️ [FCM] Not a call notification, type:', data?.type);
       }

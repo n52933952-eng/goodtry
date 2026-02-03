@@ -7,6 +7,7 @@ interface CallData {
   callerName?: string;
   callType?: string;
   shouldAutoAnswer?: boolean;
+  shouldDecline?: boolean;
   hasPendingCall?: boolean;
   shouldCancelCall?: boolean;
   hasPendingCancel?: boolean;

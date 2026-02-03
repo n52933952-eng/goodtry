@@ -101,6 +101,9 @@ export const SOCKET_EVENTS = {
   CARD_CHALLENGE: 'cardChallenge',
   CARD_MOVE: 'cardMove',
   NOTIFICATION: 'notification',
+  // Messages (real-time reaction + delete – match backend thredtrain)
+  MESSAGE_REACTION_UPDATED: 'messageReactionUpdated',
+  MESSAGE_DELETED: 'messageDeleted',
 };
 
 // Storage Keys
@@ -126,29 +129,21 @@ export const COLORS = {
 };
 
 // WebRTC Configuration
-// Using STUN servers only (works for most cases)
-// TURN servers are optional - only needed if users are behind restrictive firewalls/NATs
+// STUN for NAT discovery; TURN as fallback when direct connection fails (ICE disconnect/fail)
 export const WEBRTC_CONFIG = {
-  // STUN servers (free, for NAT discovery - sufficient for most use cases)
+  // STUN servers (free, for NAT discovery)
   STUN_SERVERS: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
   ],
-  // TURN servers (optional - add only if needed for restrictive networks)
-  // Most calls will work fine with STUN only
-  // Uncomment and configure if you encounter connection issues:
-  TURN_SERVERS: [
-    // {
-    //   urls: 'turn:your-turn-server.com:3478',
-    //   username: 'your-username',
-    //   credential: 'your-password',
-    // },
-  ],
+  // TURN optional – add if you run your own TURN server or use a paid service (Twilio, Metered, etc.)
+  // STUN-only works for most home/office networks
+  TURN_SERVERS: [],
   // ICE candidate gathering timeout (ms)
   ICE_GATHERING_TIMEOUT: 10000,
-  // Connection timeout (ms)
-  CONNECTION_TIMEOUT: 30000,
+  // Connection timeout (ms) – end call if not connected; 20s to avoid stuck "Connecting" UI
+  CONNECTION_TIMEOUT: 20000,
   // Max reconnection attempts
   MAX_RECONNECTION_ATTEMPTS: 3,
 };
