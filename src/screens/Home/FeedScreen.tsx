@@ -52,6 +52,8 @@ const FeedScreen = ({ navigation }: any) => {
   const [showChannelsModal, setShowChannelsModal] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
   const isFetchingRef = useRef(false);
+  const lastLoadMoreTimeRef = useRef<number>(0);
+  const LOAD_MORE_DEBOUNCE_MS = 2000;
 
   // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
   useFocusEffect(
@@ -186,6 +188,12 @@ const FeedScreen = ({ navigation }: any) => {
       return;
     }
 
+    // Load more with 0 posts causes infinite loop (onEndReached fires on empty list)
+    if (loadMore && posts.length === 0) {
+      console.log('⏭️ [FeedScreen] fetchFeed: Skipping loadMore (no posts yet, use refresh instead)');
+      return;
+    }
+
     isFetchingRef.current = true;
 
     try {
@@ -249,7 +257,14 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const handleLoadMore = () => {
+    // Guard: Don't load more when no posts (causes infinite loop - onEndReached fires on empty list)
+    if (posts.length === 0) return;
     if (!loadingMore && hasMore && !isFetchingRef.current) {
+      const now = Date.now();
+      if (now - lastLoadMoreTimeRef.current < LOAD_MORE_DEBOUNCE_MS) {
+        return; // Debounce rapid onEndReached fires
+      }
+      lastLoadMoreTimeRef.current = now;
       setLoadingMore(true);
       fetchFeed(true);
     }

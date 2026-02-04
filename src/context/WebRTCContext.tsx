@@ -60,26 +60,14 @@ interface WebRTCContextType {
 
 const WebRTCContext = createContext<WebRTCContextType | undefined>(undefined);
 
-// ICE servers configuration (STUN-only by default, TURN optional)
-// STUN servers are sufficient for most use cases
-// TURN servers are optional - only added if configured in constants.ts
-const getIceServers = () => {
-  const servers = [...WEBRTC_CONFIG.STUN_SERVERS];
-  
-  // Add TURN servers only if configured (optional)
-  if (WEBRTC_CONFIG.TURN_SERVERS.length > 0) {
-    servers.push(...WEBRTC_CONFIG.TURN_SERVERS);
-  }
-  
-  return { iceServers: servers };
-};
-
 export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { socket } = useSocket();
   const { user } = useUser();
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const [call, setCall] = useState<Call>({});
   const [callAccepted, setCallAccepted] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
@@ -107,6 +95,12 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => {
     callStateSnapshotRef.current = { call, callAccepted, isCalling };
   }, [call, callAccepted, isCalling]);
+
+  // Keep stream refs in sync so cleanupPeer always sees latest (avoids stale closures in resetAllCallState/leaveCall)
+  useEffect(() => {
+    localStreamRef.current = localStream;
+    remoteStreamRef.current = remoteStream;
+  }, [localStream, remoteStream]);
 
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   /** Merged remote stream for current call – collect all ontrack events so B sees A's video when answering from off-app (audio/video can arrive as separate tracks) */
@@ -144,11 +138,49 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const preFetchedStreamRef = useRef<MediaStream | null>(null); // Pre-fetched stream for faster answer (notification flow)
   const preFetchedStreamTypeRef = useRef<'audio' | 'video' | null>(null);
   const preFetchAbortedRef = useRef<boolean>(false); // When answerCall uses getMediaStream, abort pre-fetch so it releases device
+  const preAcquiredStreamRef = useRef<MediaStream | null>(null); // Madechess-style: stream ready for next call (in-app)
+  const preAcquiredStreamTypeRef = useRef<'audio' | 'video' | null>(null);
+  const callUserInProgressRef = useRef(false); // User is making outgoing call – skip preAcquireStream
+  const getUserMediaInProgressRef = useRef<boolean>(false); // Mutex: only one getUserMedia at a time (Android can hang with concurrent)
+  const mediaWarmupTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Debounced post-call media warmup
+  const lastCallEndedAtRef = useRef<number>(0); // When call/cleanup last ran – Android needs time to release camera
+  const lastCallTypeRef = useRef<'audio' | 'video'>('video'); // Track last call type for warmup
+  const iceServersConfigRef = useRef<Array<{ urls: string; username?: string; credential?: string }> | null>(null); // Fetched from backend (TURN credentials server-side)
 
   // Update user ID ref when user changes (for reliable checks in socket handlers)
   useEffect(() => {
     userIdRef.current = user?._id;
   }, [user?._id]);
+
+  // Fetch ICE servers from backend (TURN credentials stay server-side)
+  useEffect(() => {
+    if (!user?._id) return;
+    apiService
+      .get('/api/call/ice-servers')
+      .then((data: { iceServers?: Array<{ urls: string; username?: string; credential?: string }> }) => {
+        if (data?.iceServers?.length) {
+          iceServersConfigRef.current = data.iceServers;
+          console.log('✅ [WebRTC] ICE servers loaded from backend (STUN + TURN)');
+        }
+      })
+      .catch((err) => {
+        console.warn('⚠️ [WebRTC] Could not fetch ICE servers, using STUN only:', (err as Error)?.message ?? err);
+        iceServersConfigRef.current = null;
+      });
+  }, [user?._id]);
+
+  useEffect(() => {
+    lastCallTypeRef.current = callType;
+  }, [callType]);
+
+  useEffect(() => {
+    return () => {
+      if (mediaWarmupTimeoutRef.current) {
+        clearTimeout(mediaWarmupTimeoutRef.current);
+        mediaWarmupTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   // Re-attach listeners on every connect (incl. reconnect). After background→Answer, we get a new socket;
   // without this we'd never receive callUser. Do NOT emit requestCallSignal here – listener effect will
@@ -166,7 +198,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [socket, user]);
 
   // Request permissions for camera and microphone (Android)
-  const requestPermissions = async (requireCamera: boolean = true) => {
+  const requestPermissions = useCallback(async (requireCamera: boolean = true) => {
     if (Platform.OS === 'android') {
       try {
         const permissions: string[] = [
@@ -203,17 +235,45 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     }
     return true;
-  };
+  }, []);
 
-  // Initialize media stream
-  const getMediaStream = async (type: 'audio' | 'video') => {
+  const acquireGetUserMediaLock = useCallback(async (label: string, maxWaitMs: number = 4000): Promise<(() => void) | null> => {
+    const start = Date.now();
+    while (getUserMediaInProgressRef.current) {
+      if (Date.now() - start > maxWaitMs) {
+        console.warn(`⚠️ [WebRTC] ${label}: Timed out waiting for getUserMedia lock`);
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    getUserMediaInProgressRef.current = true;
+    return () => {
+      getUserMediaInProgressRef.current = false;
+    };
+  }, []);
+
+  // Initialize media stream. skipLock=true for outgoing calls only (avoids lock blocking callback flow).
+  const getMediaStream = async (type: 'audio' | 'video', skipLock: boolean = false) => {
+    let releaseLock: (() => void) | null = null;
+    if (!skipLock) {
+      const lock = await acquireGetUserMediaLock(`getMediaStream:${type}`);
+      if (!lock) {
+        getUserMediaInProgressRef.current = false;
+        await new Promise((r) => setTimeout(r, 300));
+        const retry = await acquireGetUserMediaLock(`getMediaStream:${type}:retry`);
+        if (!retry) throw new Error('Camera/microphone still resetting. Please retry.');
+        releaseLock = retry;
+      } else {
+        releaseLock = lock;
+      }
+    }
     try {
       // Request permissions based on call type (only camera for video calls)
       const requireCamera = type === 'video';
       const hasPermissions = await requestPermissions(requireCamera);
       if (!hasPermissions) {
-        const missingPermissions = requireCamera 
-          ? 'Camera and microphone permissions are required' 
+        const missingPermissions = requireCamera
+          ? 'Camera and microphone permissions are required'
           : 'Microphone permission is required';
         throw new Error(missingPermissions);
       }
@@ -246,11 +306,13 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch (error) {
       console.error('Error getting media stream:', error);
       throw error;
+    } finally {
+      if (releaseLock) releaseLock();
     }
   };
 
   // Pre-fetch media stream for faster connection when answering from notification
-  const preFetchMediaStreamForAnswer = useCallback((type: 'audio' | 'video') => {
+  const preFetchMediaStreamForAnswer = useCallback(async (type: 'audio' | 'video') => {
     preFetchAbortedRef.current = false;
     if (preFetchedStreamRef.current) {
       preFetchedStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -258,31 +320,32 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       preFetchedStreamTypeRef.current = null;
     }
     const requireCamera = type === 'video';
-    requestPermissions(requireCamera).then((ok) => {
-      if (!ok) return;
+    const hasPermissions = await requestPermissions(requireCamera);
+    if (!hasPermissions) return;
+    const releaseLock = await acquireGetUserMediaLock(`prefetch:${type}`, 2500);
+    if (!releaseLock) return;
+    try {
       const constraints = {
         audio: true,
         video: type === 'video' ? { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } : false,
       };
-      mediaDevices.getUserMedia(constraints).then((stream) => {
-        if (preFetchAbortedRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        if (preFetchedStreamRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        if (!shouldAutoAnswerRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        preFetchedStreamRef.current = stream;
-        preFetchedStreamTypeRef.current = type;
-        console.log('✅ [NotificationCall] Pre-fetched media stream for faster answer');
-      }).catch((e) => console.warn('⚠️ [NotificationCall] Pre-fetch media failed:', e?.message));
-    });
-  }, []);
+      const stream = await mediaDevices.getUserMedia(constraints);
+      if (preFetchAbortedRef.current || preFetchedStreamRef.current || !shouldAutoAnswerRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      stream.getAudioTracks().forEach((track) => {
+        if (!track.enabled) track.enabled = true;
+      });
+      preFetchedStreamRef.current = stream;
+      preFetchedStreamTypeRef.current = type;
+      console.log('✅ [NotificationCall] Pre-fetched media stream for faster answer');
+    } catch (e) {
+      console.warn('⚠️ [NotificationCall] Pre-fetch media failed:', (e as Error)?.message ?? e);
+    } finally {
+      releaseLock();
+    }
+  }, [acquireGetUserMediaLock, requestPermissions]);
 
   const clearPreFetchedStream = useCallback(() => {
     preFetchAbortedRef.current = true;
@@ -294,9 +357,94 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
+  /** Madechess-style: Pre-acquire stream when app is ready so callUser/answerCall (in-app) reuse it.
+   *  Off-app incoming calls still use preFetchedStreamRef or getMediaStream. */
+  const preAcquireStream = useCallback(async (reason: string = 'post-reset') => {
+    if (!user?._id) return;
+    const sock = socket?.getSocket?.();
+    if (!sock?.connected) return;
+    if (shouldAutoAnswerRef.current) return;
+    if (isAnsweringRef.current) return;
+    if (callUserInProgressRef.current) return;
+    if (peerConnection.current || localStreamRef.current) return;
+    const releaseLock = await acquireGetUserMediaLock(`preAcquire:${reason}`, 2500);
+    if (!releaseLock) return;
+    try {
+      const type = lastCallTypeRef.current || 'video';
+      const requireCamera = type === 'video';
+      const hasPermissions = await requestPermissions(requireCamera);
+      if (!hasPermissions) return;
+      if (isAnsweringRef.current || callUserInProgressRef.current) {
+        releaseLock();
+        return;
+      }
+      if (preAcquiredStreamRef.current) {
+        preAcquiredStreamRef.current.getTracks().forEach((t) => t.stop());
+        preAcquiredStreamRef.current = null;
+        preAcquiredStreamTypeRef.current = null;
+      }
+      const constraints = {
+        audio: true,
+        video: type === 'video' ? { facingMode: 'user' as const, width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      };
+      const stream = await mediaDevices.getUserMedia(constraints);
+      stream.getAudioTracks().forEach((track) => {
+        if (!track.enabled) track.enabled = true;
+      });
+      preAcquiredStreamRef.current = stream;
+      preAcquiredStreamTypeRef.current = type;
+      console.log('✅ [WebRTC] Pre-acquired stream (madechess-style) ready for next call', { type, reason });
+    } catch (e) {
+      console.warn('⚠️ [WebRTC] Pre-acquire stream failed:', (e as Error)?.message ?? e);
+    } finally {
+      releaseLock();
+    }
+  }, [acquireGetUserMediaLock, requestPermissions, user?._id, socket]);
+
+  const scheduleMediaWarmup = useCallback((reason: string = 'post-reset') => {
+    if (mediaWarmupTimeoutRef.current) {
+      clearTimeout(mediaWarmupTimeoutRef.current);
+      mediaWarmupTimeoutRef.current = null;
+    }
+    mediaWarmupTimeoutRef.current = setTimeout(async () => {
+      const preferredType = lastCallTypeRef.current || 'video';
+      console.log('🔄 [WebRTC] Priming media devices for next call', { reason, preferredType });
+      const releaseLock = await acquireGetUserMediaLock(`warmup:${reason}`, 2000);
+      if (!releaseLock) {
+        console.log('⚠️ [WebRTC] Skipping media warmup – lock busy');
+        return;
+      }
+      try {
+        const requireCamera = preferredType === 'video';
+        const hasPermissions = await requestPermissions(requireCamera);
+        if (!hasPermissions) return;
+        const constraints = {
+          audio: true,
+          video: requireCamera
+            ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+            : false,
+        };
+        const warmupStream = await mediaDevices.getUserMedia(constraints);
+        warmupStream.getAudioTracks().forEach((track) => {
+          if (!track.enabled) track.enabled = true;
+        });
+        warmupStream.getTracks().forEach((t) => t.stop());
+        console.log('✅ [WebRTC] Media devices primed for the next call');
+      } catch (error) {
+        console.warn('⚠️ [WebRTC] Media warmup failed:', (error as Error)?.message ?? error);
+      } finally {
+        releaseLock();
+      }
+    }, 600);
+  }, [acquireGetUserMediaLock, requestPermissions]);
+
+  // DISABLED: Pre-acquire on socket connect – camera stayed on when entering app (WhatsApp doesn't do this)
+  // useEffect(() => { ... preAcquireStream('socket-connect'); }, [...]);
+
   // Create peer connection with enhanced monitoring
   const createPeerConnection = (stream: MediaStream) => {
-    const configuration = getIceServers();
+    const servers = iceServersConfigRef.current ?? [...WEBRTC_CONFIG.STUN_SERVERS];
+    const configuration = { iceServers: servers };
     const pc = new RTCPeerConnection(configuration);
 
     stream.getTracks().forEach(track => {
@@ -669,9 +817,13 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const cleanupPeer = () => {
     console.log('🧹 [WebRTC] Cleaning up peer connection...');
     
-    // Stop InCallManager
-    InCallManager.stop();
-    console.log('📞 [WebRTC] InCallManager stopped');
+    // Stop InCallManager (audio routing) – must run so mic/speaker are released
+    try {
+      InCallManager.stop();
+      console.log('📞 [WebRTC] InCallManager stopped');
+    } catch (e) {
+      console.warn('⚠️ [WebRTC] InCallManager.stop error (continuing cleanup):', (e as Error)?.message);
+    }
     
     setDisplayConnectedFromPeer(false);
     // Clear timers
@@ -705,51 +857,69 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       iceDisconnectedDebounceRef.current = null;
     }
     
-    // Close peer connection
+    // 2. Peer connection cleanup (react-native-webrtc: removeTrack then close)
     if (peerConnection.current) {
+      const pc = peerConnection.current;
       try {
-        // Remove all tracks before closing
-        peerConnection.current.getSenders().forEach(sender => {
-          if (sender.track) {
-            sender.track.stop();
-          }
+        pc.onicecandidate = null;
+        pc.ontrack = null;
+        pc.onconnectionstatechange = null;
+        pc.oniceconnectionstatechange = null;
+        const senders = pc.getSenders();
+        senders.forEach(sender => {
+          try {
+            if (sender.track) pc.removeTrack(sender);
+          } catch (_) {}
         });
-        peerConnection.current.getReceivers().forEach(receiver => {
-          if (receiver.track) {
-            receiver.track.stop();
-          }
+        pc.getTransceivers?.().forEach((tr: any) => {
+          try {
+            if (tr.stop && !tr.stopped) tr.stop();
+          } catch (_) {}
         });
-        peerConnection.current.close();
+        pc.close();
       } catch (error) {
         console.error('❌ [WebRTC] Error closing peer connection:', error);
       }
       peerConnection.current = null;
     }
     
-    // Stop and cleanup local stream
-    if (localStream) {
-      localStream.getTracks().forEach(track => {
-        track.stop();
+    // 3. Stop local stream tracks (must stop on BOTH sides – camera/mic release)
+    const local = localStreamRef.current;
+    if (local) {
+      local.getTracks().forEach(track => {
         track.enabled = false;
+        track.stop();
       });
+      localStreamRef.current = null;
       setLocalStream(null);
     }
     
-    // Stop and cleanup remote stream
-    if (remoteStream) {
-      remoteStream.getTracks().forEach(track => {
-        track.stop();
+    // 4. Stop and cleanup remote stream
+    const remote = remoteStreamRef.current;
+    if (remote) {
+      remote.getTracks().forEach(track => {
         track.enabled = false;
+        track.stop();
       });
+      remoteStreamRef.current = null;
       setRemoteStream(null);
     }
     mergedRemoteStreamRef.current = null;
     
+    // CRITICAL: Release getUserMedia lock so next call can get camera/mic (fixes stuck lock after answer/cancel)
+    getUserMediaInProgressRef.current = false;
+    lastCallEndedAtRef.current = Date.now(); // Android needs cooldown before camera is released
     // Clear pre-fetched stream (notification flow)
+    preFetchAbortedRef.current = true;
     if (preFetchedStreamRef.current) {
-      preFetchedStreamRef.current.getTracks().forEach((t) => t.stop());
+      preFetchedStreamRef.current.getTracks().forEach(t => { t.enabled = false; t.stop(); });
       preFetchedStreamRef.current = null;
       preFetchedStreamTypeRef.current = null;
+    }
+    if (preAcquiredStreamRef.current) {
+      preAcquiredStreamRef.current.getTracks().forEach(t => { t.enabled = false; t.stop(); });
+      preAcquiredStreamRef.current = null;
+      preAcquiredStreamTypeRef.current = null;
     }
     // Reset state (persistentCallerIdRef cleared in resetAllCallState / leaveCall)
     remoteUserIdRef.current = null;
@@ -817,7 +987,13 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     isAnsweringRef.current = false;
     remoteUserIdRef.current = null;
     persistentCallerIdRef.current = null;
+    lastCanceledCallRef.current = null; // FIRM: clear so new callback/recall is never blocked
+    preFetchAbortedRef.current = false; // FIRM: reset for next call's pre-fetch (e.g. off-app answer)
     reconnectionAttempts.current = 0;
+    // CRITICAL: Release getUserMedia lock so callback/recall can get camera/mic (fixes "Camera still resetting" after cancel)
+    getUserMediaInProgressRef.current = false;
+    callUserInProgressRef.current = false;
+    lastCallEndedAtRef.current = Date.now(); // Android needs cooldown before camera is released
     // 4. Reset all call state
     setCall({ isReceivingCall: false, from: undefined, userToCall: undefined, name: undefined, signal: undefined, callType: 'audio' });
     setCallEnded(true);
@@ -834,12 +1010,14 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setTimeout(() => {
       setCallEnded(false);
       processingCallCanceledRef.current = false;
+      // 500ms delay so camera/mic can release (Android). No preAcquireStream here – it raced with next callUser.
       console.log('✅ [WebRTC] resetAllCallState – ready for new calls');
-    }, 250);
+    }, 500);
   }, []);
 
   // Call user
   const callUser = async (userId: string, userName: string, type: 'audio' | 'video') => {
+    callUserInProgressRef.current = true;
     try {
       console.log('═══════════════════════════════════════════════════════');
       console.log(`📞 [CallUser] ========== STARTING CALL ==========`);
@@ -876,17 +1054,29 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         requestSignalTimeoutRef.current = null;
       }
       
+      // Cancel any pending media warmup so it doesn't compete for getUserMedia lock
+      if (mediaWarmupTimeoutRef.current) {
+        clearTimeout(mediaWarmupTimeoutRef.current);
+        mediaWarmupTimeoutRef.current = null;
+      }
+      // Ensure lock is released from any previous call (belt-and-suspenders for callback flow)
+      getUserMediaInProgressRef.current = false;
+
       // Clean up any existing media/peer state BEFORE creating a new one
-      // This ensures we start fresh for the new call (camera/mic released).
       const hasStaleMedia = !!peerConnection.current || !!localStream || !!remoteStream || !!preFetchedStreamRef.current;
       if (hasStaleMedia) {
         console.log('🧹 [CallUser] Cleaning up existing call media before creating new one...');
         cleanupPeer();
+        await new Promise((r) => setTimeout(r, 500));
+      } else {
+        const sinceLastEnd = Date.now() - lastCallEndedAtRef.current;
+        if (sinceLastEnd < 500 && lastCallEndedAtRef.current > 0) {
+          console.log(`📞 [CallUser] Waiting 500ms for previous call to fully close (${Math.round(sinceLastEnd)}ms since end)...`);
+          await new Promise((r) => setTimeout(r, 500 - sinceLastEnd));
+        }
       }
       
-      // Clear any pending answer from previous call
       pendingAnswerRef.current = null;
-      
       console.log('✅ [CallUser] Call state reset - ready for new call');
       
       // Check actual socket connection status (not just if socket exists)
@@ -900,8 +1090,27 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
       
       if (!isConnected) {
-        console.error('❌ [CallUser] Socket not connected! Cannot make call.');
-        throw new Error('Socket not connected. Please wait for connection.');
+        const uid = user?._id || userIdRef.current;
+        if (uid && typeof (socket as any)?.connect === 'function') {
+          console.log('🔄 [CallUser] Socket disconnected – reconnecting...');
+          (socket as any).connect(uid);
+          const sock = socket?.getSocket?.();
+          if (sock?.connected) {
+            console.log('✅ [CallUser] Socket already connected');
+          } else if (sock) {
+            await new Promise<void>((resolve, reject) => {
+              const done = () => { clearTimeout(t); resolve(); };
+              const t = setTimeout(() => reject(new Error('Reconnect timeout')), 3000);
+              sock.once('connect', done);
+            }).catch(() => {});
+          }
+          const nowConnected = socket?.getSocket?.()?.connected === true;
+          if (!nowConnected) {
+            throw new Error('Socket not connected. Please wait for connection.');
+          }
+        } else {
+          throw new Error('Socket not connected. Please wait for connection.');
+        }
       }
       
       remoteUserIdRef.current = userId;
@@ -909,8 +1118,29 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setIsCalling(true);
       setCallEnded(false);
       
-      console.log(`📞 [CallUser] Step 1: Getting media stream...`);
-      const stream = await getMediaStream(type);
+      console.log(`📞 [CallUser] Step 1: Getting media stream (madechess-style: prefer pre-acquired)...`);
+      let stream: MediaStream;
+      const preAcquired = preAcquiredStreamRef.current;
+      const preAcquiredType = preAcquiredStreamTypeRef.current;
+      const preAcquiredValid = preAcquired && preAcquired.getTracks().every((t) => t.readyState === 'live');
+      const typeCompatible = preAcquiredType === type || (preAcquiredType === 'video' && type === 'audio');
+      if (preAcquiredValid && typeCompatible) {
+        stream = preAcquired;
+        preAcquiredStreamRef.current = null;
+        preAcquiredStreamTypeRef.current = null;
+        setLocalStream(stream);
+        const media = type === 'video' ? 'video' : 'audio';
+        InCallManager.start({ media, auto: type === 'video', ringback: '' });
+        setIsSpeakerOn(type === 'video');
+        console.log(`✅ [CallUser] Using pre-acquired stream (madechess-style)`);
+      } else {
+        if (preAcquired && !preAcquiredValid) {
+          preAcquired.getTracks().forEach((t) => t.stop());
+          preAcquiredStreamRef.current = null;
+          preAcquiredStreamTypeRef.current = null;
+        }
+        stream = await getMediaStream(type, true);
+      }
       console.log(`✅ [CallUser] Media stream obtained:`, {
         audioTracks: stream.getAudioTracks().length,
         videoTracks: stream.getVideoTracks().length,
@@ -922,6 +1152,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         connectionState: pc.connectionState,
         iceConnectionState: pc.iceConnectionState,
         signalingState: pc.signalingState,
+      });
+      console.log('📞 [CallUser] CALLBACK_CHECK: Fresh PC created', {
+        signalingState: pc.signalingState,
+        note: 'Should be "stable" for new offer',
       });
       
       // CRITICAL: If there's a pending answer (race condition - answer arrived before peer connection was created)
@@ -982,6 +1216,11 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         callType: callData.callType,
         hasSignal: !!callData.signalData,
       });
+      console.log('📤 [CallUser] CALLBACK_SCENARIO: B is calling A back', {
+        caller: callData.from,
+        receiver: callData.userToCall,
+        note: 'If A was off-app in previous call, backend must have cleared inCall for both',
+      });
       socket.emit('callUser', callData);
       console.log('✅ [CallUser] Socket event emitted with offer');
       
@@ -1008,6 +1247,8 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setIsCalling(false);
       remoteUserIdRef.current = null;
       throw error;
+    } finally {
+      callUserInProgressRef.current = false;
     }
   };
 
@@ -1091,7 +1332,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         // Non-fatal - notification will be dismissed when call ends or by IncomingCallActivity
       }
       
-      console.log(`📞 [AnswerCall] Step 1: Getting media stream...`);
+      console.log(`📞 [AnswerCall] Step 1: Getting media stream (madechess-style: prefer pre-fetched → pre-acquired → getMediaStream)...`);
       let stream: MediaStream;
       const callTypeForStream = call.callType || 'video';
       if (preFetchedStreamRef.current && preFetchedStreamTypeRef.current === callTypeForStream) {
@@ -1103,22 +1344,56 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (needsVideo && !hasVideo) {
           prefetched.getTracks().forEach((t) => t.stop());
           clearPreFetchedStream();
-          stream = await getMediaStream(callTypeForStream);
+          stream = await getMediaStream(callTypeForStream, true);
         } else {
           stream = prefetched;
           setLocalStream(stream);
           const media = callTypeForStream === 'video' ? 'video' : 'audio';
           InCallManager.start({ media, auto: callTypeForStream === 'video', ringback: '' });
           setIsSpeakerOn(callTypeForStream === 'video');
-          console.log(`✅ [AnswerCall] Used pre-fetched stream:`, {
+          console.log(`✅ [AnswerCall] Used pre-fetched stream (notification flow):`, {
             audioTracks: stream.getAudioTracks().length,
             videoTracks: stream.getVideoTracks().length,
           });
         }
+      } else if (preAcquiredStreamRef.current) {
+        preFetchAbortedRef.current = true;
+        clearPreFetchedStream();
+        const preAcquired = preAcquiredStreamRef.current;
+        const preAcquiredType = preAcquiredStreamTypeRef.current;
+        const preAcquiredValid = preAcquired.getTracks().every((t) => t.readyState === 'live');
+        const typeCompatible = preAcquiredType === callTypeForStream || (preAcquiredType === 'video' && callTypeForStream === 'audio');
+        if (preAcquiredValid && typeCompatible) {
+          stream = preAcquired;
+          preAcquiredStreamRef.current = null;
+          preAcquiredStreamTypeRef.current = null;
+          setLocalStream(stream);
+          const media = callTypeForStream === 'video' ? 'video' : 'audio';
+          InCallManager.start({ media, auto: callTypeForStream === 'video', ringback: '' });
+          setIsSpeakerOn(callTypeForStream === 'video');
+          console.log(`✅ [AnswerCall] Used pre-acquired stream (madechess-style, in-app):`, {
+            audioTracks: stream.getAudioTracks().length,
+            videoTracks: stream.getVideoTracks().length,
+          });
+        } else {
+          if (preAcquired) {
+            preAcquired.getTracks().forEach((t) => t.stop());
+            preAcquiredStreamRef.current = null;
+            preAcquiredStreamTypeRef.current = null;
+          }
+          await new Promise((r) => setTimeout(r, 350));
+          stream = await getMediaStream(callTypeForStream, true);
+          console.log(`✅ [AnswerCall] Media stream obtained:`, {
+            audioTracks: stream.getAudioTracks().length,
+            videoTracks: stream.getVideoTracks().length,
+          });
+        }
+        preFetchAbortedRef.current = false;
       } else {
         preFetchAbortedRef.current = true;
         clearPreFetchedStream();
-        stream = await getMediaStream(callTypeForStream);
+        await new Promise((r) => setTimeout(r, 350));
+        stream = await getMediaStream(callTypeForStream, true);
         preFetchAbortedRef.current = false;
         console.log(`✅ [AnswerCall] Media stream obtained:`, {
           audioTracks: stream.getAudioTracks().length,
@@ -1251,6 +1526,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const leaveCall = () => {
     console.log('📴 [LeaveCall] Leaving call...');
     
+    // Capture otherUserId BEFORE cleanupPeer (cleanupPeer clears refs)
     // Determine other user ID - prioritize persistentCallerIdRef (survives cleanup), then isCalling state and remoteUserIdRef
     // If we're calling (outgoing), use call.userToCall or remoteUserIdRef
     // If we're receiving (incoming), use call.from or persistentCallerIdRef
@@ -1279,6 +1555,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Only use call.from when we're the receiver; never when caller (call.from would be self)
       otherUserId = call.from;
     }
+    
+    // CRITICAL: Release mic/camera immediately – ensures devices are freed for next call
+    // Must run before resetAllCallState so tracks are stopped while we still have stream refs
+    cleanupPeer();
     
     // CRITICAL: Always emit cancelCall if there's an active call attempt
     // Check: isCalling, callAccepted, isReceivingCall, OR if remoteUserIdRef has a value (call was initiated)
@@ -1311,7 +1591,15 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         socket.emit('cancelCall', cancelData);
         console.log('✅ [LeaveCall] cancelCall event emitted to backend');
       } else {
-        console.error('❌ [LeaveCall] Socket not connected - cannot emit cancelCall');
+        // FIRM: Fallback to HTTP when socket disconnected (e.g. off-app answer → cancel during reconnect)
+        // Ensures backend clears inCall/activeCall so recall works
+        console.warn('⚠️ [LeaveCall] Socket not connected - using HTTP cancel fallback');
+        apiService
+          .post('/api/call/cancel', { conversationId: otherUserId, sender: currentUserId })
+          .then(() => console.log('✅ [LeaveCall] HTTP cancelCall succeeded'))
+          .catch((err: unknown) =>
+            console.error('❌ [LeaveCall] HTTP cancelCall failed:', (err as { response?: unknown })?.response ?? err)
+          );
       }
     } else {
       console.warn('⚠️ [LeaveCall] Cannot emit cancelCall - missing requirements:', {
@@ -1591,14 +1879,15 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const isExpectedNotificationCall = shouldAutoAnswerRef.current === data.from && !!data.signal;
       
       if (!isExpectedNotificationCall && (hasStaleState || isNewCallFromDifferentCaller)) {
-        console.warn('⚠️ [IncomingCall] Detected stale call state - clearing before processing new call', {
+        console.warn('⚠️ [IncomingCall] Detected stale call state - cleaning up before processing new call', {
           hasStaleState,
           isNewCallFromDifferentCaller,
           oldCaller: call.from,
           newCaller: data.from,
         });
-        // CRITICAL: Set flag BEFORE clearing state (React state updates are async)
         justClearedStaleStateRef.current = true;
+        cleanupPeer();
+        await new Promise((r) => setTimeout(r, 300));
         
         setCall({
           isReceivingCall: false,
@@ -1640,17 +1929,16 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.log('✅ [IncomingCall] Stale state cleared - ready to process new call');
       }
       
-      // CRITICAL: Ignore stale callUser that arrives after we received CallCanceled (network delay)
-      // IMPORTANT: Only match by callId – same from+userToCall can be a NEW callback, which must NOT be ignored
+      // CRITICAL: Only ignore stale callUser (same callId, very recent) – never block legitimate callbacks
       const canceled = lastCanceledCallRef.current;
       if (canceled) {
         const age = Date.now() - canceled.at;
         const sameCallId = data.callId && canceled.callId && data.callId === canceled.callId;
-        if (sameCallId && age < 8000) {
-          console.log('⚠️ [IncomingCall] Ignoring stale callUser – same call was canceled', { age, callId: data.callId });
+        if (sameCallId && age < 2000) {
+          console.log('⚠️ [IncomingCall] Ignoring stale callUser – same call was canceled < 2s ago', { age, callId: data.callId });
           return;
         }
-        if (age >= 8000) lastCanceledCallRef.current = null; // Expire after 8s
+        if (age >= 2000) lastCanceledCallRef.current = null; // Expire after 2s – allow callbacks
       }
       
       // CRITICAL: Ignore if this is our own call being echoed back from the server
@@ -2230,17 +2518,16 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       processingCallCanceledRef.current = true;
       callWasCanceledRef.current = true; // Mark that call was canceled to ignore stale answers
       
-      // Store canceled call info so we ignore stale callUser events that arrive after cancel
-      const canceledFrom = call.from || remoteUserIdRef.current || '';
-      const canceledTo = call.userToCall || remoteUserIdRef.current || '';
-      if (canceledFrom || canceledTo) {
+      // Store canceled call info – only use callId for matching (from/userToCall can be wrong if state cleared)
+      const storedCallId = activeCallIdRef.current || undefined;
+      if (storedCallId) {
         lastCanceledCallRef.current = {
-          from: canceledFrom,
-          userToCall: canceledTo,
-          callId: activeCallIdRef.current || undefined,
+          from: call.from || '',
+          userToCall: call.userToCall || '',
+          callId: storedCallId,
           at: Date.now(),
         };
-        console.log('📴 [WebRTC] Stored lastCanceledCall for stale callUser ignore:', lastCanceledCallRef.current);
+        console.log('📴 [WebRTC] Stored lastCanceledCall (2s window):', lastCanceledCallRef.current);
       }
       
       console.log('📴 [WebRTC] ========== CALL CANCELED RECEIVED ==========');
@@ -2274,6 +2561,12 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return;
       }
       const reason = data.reason || 'busy';
+      console.log('❌ [WebRTC] CALLBACK_BLOCKED: callBusyError received – backend rejected the call!', {
+        reason,
+        busyUserId: data.busyUserId,
+        message: data.message,
+        scenario: 'B_calls_A_after_cancel - A or B still marked busy in Redis',
+      });
       console.log('📴 [WebRTC] callBusyError –', reason, ', will full reset after message shown');
       setCallBusyReason(reason);
       setCallEnded(true);
@@ -2887,6 +3180,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setTimeout(() => {
           checkAndHandlePendingCancel();
         }, 100); // Small delay to ensure everything is ready
+        // DISABLED: Pre-acquire on app active – camera stayed on when entering app (WhatsApp doesn't do this)
 
         // FIRM: Always try to dismiss any native incoming-call UI when we have no active call state.
         // This handles cases where IncomingCallActivity/notification UI stayed visible after background/foreground.

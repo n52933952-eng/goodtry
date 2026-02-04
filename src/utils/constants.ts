@@ -129,7 +129,7 @@ export const COLORS = {
 };
 
 // WebRTC Configuration
-// STUN for NAT discovery; TURN as fallback when direct connection fails (ICE disconnect/fail)
+// STUN for NAT discovery; TURN as fallback when direct connection fails (off-app, restrictive networks)
 export const WEBRTC_CONFIG = {
   // STUN servers (free, for NAT discovery)
   STUN_SERVERS: [
@@ -137,9 +137,8 @@ export const WEBRTC_CONFIG = {
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
   ],
-  // TURN optional – add if you run your own TURN server or use a paid service (Twilio, Metered, etc.)
-  // STUN-only works for most home/office networks
-  TURN_SERVERS: [],
+  // TURN – fetched from backend /api/call/ice-servers (credentials in backend .env)
+  TURN_SERVERS: [] as { urls: string; username?: string; credential?: string }[],
   // ICE candidate gathering timeout (ms)
   ICE_GATHERING_TIMEOUT: 10000,
   // Connection timeout (ms) – end call if not connected; 20s to avoid stuck "Connecting" UI
