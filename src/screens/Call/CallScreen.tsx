@@ -59,7 +59,6 @@ const CallScreen = () => {
   const { userName, userId, userProfilePic, callType: paramCallType, shouldAutoAnswer, shouldDecline, isOutgoingCall, fromSocketIncoming } = params;
   const hasTriggeredNotificationRef = useRef(false);
   const hasDeclinedRef = useRef(false);
-  const hasAutoAnsweredRef = useRef(false);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -73,25 +72,9 @@ const CallScreen = () => {
     setIncomingCallFromNotification(userId, userName, type, !!shouldAutoAnswer);
   }, [isOutgoingCall, fromSocketIncoming, userId, userName, paramCallType, shouldAutoAnswer, setIncomingCallFromNotification]);
 
-  // When user B answered from NATIVE UI (Answer button): auto-start the call so they don't press Answer again.
-  // WebRTCContext may auto-answer when callUser (with signal) arrives; this is a fallback when signal is already in state.
-  useEffect(() => {
-    if (!shouldAutoAnswer || callAccepted || hasAutoAnsweredRef.current) return;
-    const receiving = call.isReceivingCall && !callAccepted;
-    if (!receiving || !call.signal || !call.from) return;
-    hasAutoAnsweredRef.current = true;
-    const t = setTimeout(async () => {
-      try {
-        console.log('📞 [CallScreen] Auto-answering (native Answer → no second tap)');
-        await answerCall(call.signal, call.from);
-        console.log('✅ [CallScreen] Auto-answer completed');
-      } catch (e) {
-        console.warn('⚠️ [CallScreen] Auto-answer error:', e);
-        hasAutoAnsweredRef.current = false;
-      }
-    }, 0);
-    return () => clearTimeout(t);
-  }, [shouldAutoAnswer, callAccepted, call.isReceivingCall, call.signal, call.from, answerCall]);
+  // Auto-answer after native "Answer" is handled ONLY in WebRTCContext (callUser handler → answerCall(sig, from)).
+  // Do not call answerCall here: parallel setTimeout(0) races Incoming's auto-answer → duplicate guard, wrong
+  // "Auto-answer completed" timing, and flaky callee/caller video.
 
   // Decline on mount if requested
   useEffect(() => {

@@ -46,10 +46,6 @@
       android:supportsRtl="true"
       android:hardwareAccelerated="true">
       
-      <!-- OneSignal Default Notification Icon -->
-      <meta-data
-        android:name="com.onesignal.default_notification_icon"
-        android:resource="@drawable/ic_stat_ic_launcher" />
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
@@ -82,21 +78,10 @@
         android:name=".CallActionReceiver"
         android:exported="false">
         <intent-filter>
-          <action android:name="com.compnay.CALL_ANSWERED" />
-          <action android:name="com.compnay.CALL_DECLINED" />
-          <action android:name="com.compnay.NOTIFICATION_ANSWER" />
-          <action android:name="com.compnay.NOTIFICATION_DECLINE" />
-        </intent-filter>
-      </receiver>
-
-      <!-- OneSignal Action Receiver - Handles action buttons from OneSignal notifications -->
-      <receiver
-        android:name=".OneSignalActionReceiver"
-        android:exported="false">
-        <intent-filter>
-          <action android:name="com.compnay.ONESIGNAL_VIEW_POST" />
-          <action android:name="com.compnay.ONESIGNAL_VIEW_PROFILE" />
-          <action android:name="com.compnay.ONESIGNAL_MARK_READ" />
+          <action android:name="com.playsocial.CALL_ANSWERED" />
+          <action android:name="com.playsocial.CALL_DECLINED" />
+          <action android:name="com.playsocial.NOTIFICATION_ANSWER" />
+          <action android:name="com.playsocial.NOTIFICATION_DECLINE" />
         </intent-filter>
       </receiver>
 

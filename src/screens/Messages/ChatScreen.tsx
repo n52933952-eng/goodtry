@@ -229,23 +229,21 @@ const ChatScreen = ({ route, navigation }: any) => {
     };
   }, [setSelectedConversationId, setSelectedConversationPartnerId, currentConversationId, conversationId, otherUser?._id]);
   
-  // Reset call in progress flag when call ends or is canceled
+  // Reset call in progress flag when call ends or is canceled so user can call again
   useEffect(() => {
     if (callEnded) {
       isCallInProgressRef.current = false;
       initiatedCallAtRef.current = 0;
-      console.log('✅ [ChatScreen] Call ended - isCallInProgressRef reset immediately');
+      console.log('✅ [ChatScreen] Call ended - isCallInProgressRef reset (ready to call again)');
       return;
     }
-    if (!isCalling && !callAccepted) {
-      const now = Date.now();
-      const elapsed = now - initiatedCallAtRef.current;
-      if (initiatedCallAtRef.current && elapsed < 600) {
-        return;
-      }
+    // Not in an active call: reset after short delay so we don't clear during the 300ms before callUser
+    if (!isCalling && !callAccepted && initiatedCallAtRef.current) {
+      const elapsed = Date.now() - initiatedCallAtRef.current;
+      if (elapsed < 400) return;
       isCallInProgressRef.current = false;
       initiatedCallAtRef.current = 0;
-      console.log('✅ [ChatScreen] Not calling - isCallInProgressRef reset immediately');
+      console.log('✅ [ChatScreen] Idle (not calling/accepted) - isCallInProgressRef reset (ready to call again)');
     }
   }, [isCalling, callAccepted, callEnded]);
 

@@ -10,11 +10,12 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { GoogleSignin } from '../../config/googleSignIn';
 import { useUser } from '../../context/UserContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import { apiService } from '../../services/api';
-import { ENDPOINTS, COLORS } from '../../utils/constants';
+import { ENDPOINTS, COLORS, GOOGLE_WEB_CLIENT_ID } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 
 const LoginScreen = ({ navigation }: any) => {
@@ -67,6 +68,56 @@ const LoginScreen = ({ navigation }: any) => {
         error.message || t('failedToLogin'),
         'error'
       );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    if (!GOOGLE_WEB_CLIENT_ID?.trim()) {
+      showToast(
+        t('error'),
+        'Set GOOGLE_WEB_CLIENT_ID in constants (Firebase → Auth → Google → Web client ID).',
+        'error',
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await logout();
+      if (Platform.OS === 'android') {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      }
+      // Clear Google session for this app so the account picker shows (otherwise Android reuses last account).
+      try {
+        await GoogleSignin.signOut();
+      } catch {
+        /* not signed in yet — ignore */
+      }
+      await GoogleSignin.signIn();
+      const tokens = await GoogleSignin.getTokens();
+      const idToken = tokens.idToken;
+      if (!idToken) {
+        showToast(t('error'), 'Could not get Google token. Try again.', 'error');
+        return;
+      }
+
+      const response = await apiService.post(ENDPOINTS.GOOGLE_LOGIN, { idToken });
+      if (response?.error) {
+        showToast(t('error'), response.error, 'error');
+        return;
+      }
+
+      await login(response);
+      showToast(t('success'), t('loggedInSuccessfully'), 'success');
+    } catch (error: any) {
+      const code = error?.code;
+      if (code === 'SIGN_IN_CANCELLED' || code === '12501') {
+        return;
+      }
+      console.error('Google login error:', error);
+      showToast(t('error'), error?.message || t('failedToLogin'), 'error');
     } finally {
       setLoading(false);
     }
@@ -135,6 +186,14 @@ const LoginScreen = ({ navigation }: any) => {
               ) : (
                 <Text style={[styles.buttonText, { color: colors.buttonText || '#FFFFFF' }]}>{t('login')}</Text>
               )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.googleButton, loading && styles.buttonDisabled, { borderColor: colors.border }]}
+              onPress={handleGoogleLogin}
+              disabled={loading}
+            >
+              <Text style={[styles.googleButtonText, { color: colors.text }]}>Continue with Google</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -214,6 +273,18 @@ const styles = StyleSheet.create({
     padding: 15,
     alignItems: 'center',
     marginTop: 10,
+  },
+  googleButton: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 14,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  googleButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.6,

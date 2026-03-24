@@ -76,10 +76,13 @@ const FeedScreen = ({ navigation }: any) => {
     if (!socket) return;
 
     const handleChessChallenge = (data: any) => {
-      if (data.to === user?._id) {
-        setIncomingChallenge(data);
-        showToast('Chess Challenge!', `${data.fromName} challenged you to chess!`, 'info');
-      }
+      const me = user?._id?.toString?.();
+      const target = data?.to?.toString?.();
+      // Backend now sends `to`; older servers omit it — if we received the event, it was routed to us.
+      if (target && me && target !== me) return;
+      if (data?.from?.toString?.() === me) return;
+      setIncomingChallenge(data);
+      showToast('Chess Challenge!', `${data.fromName} challenged you to chess!`, 'info');
     };
 
     const handleAcceptChessChallenge = (data: any) => {
@@ -104,10 +107,12 @@ const FeedScreen = ({ navigation }: any) => {
     };
 
     const handleCardChallenge = (data: any) => {
-      if (data.to === user?._id) {
-        setIncomingCardChallenge(data);
-        showToast('Card Challenge!', `${data.fromName} challenged you to Go Fish!`, 'info');
-      }
+      const me = user?._id?.toString?.();
+      const target = data?.to?.toString?.();
+      if (target && me && target !== me) return;
+      if (data?.from?.toString?.() === me) return;
+      setIncomingCardChallenge(data);
+      showToast('Card Challenge!', `${data.fromName} challenged you to Go Fish!`, 'info');
     };
 
     const handleAcceptCardChallenge = (data: any) => {
@@ -239,7 +244,6 @@ const FeedScreen = ({ navigation }: any) => {
       console.error('❌ Error fetching feed:', error);
       if (!loadMore) {
         showToast('Error', error.message || 'Failed to load feed', 'error');
-        setPosts([]);
         setLoading(false);
         setRefreshing(false);
       } else {
@@ -379,8 +383,8 @@ const FeedScreen = ({ navigation }: any) => {
 
 
   const handleSendChallenge = (opponent: AvailableUser) => {
-    if (!socket) {
-      showToast('Error', 'Not connected to server', 'error');
+    if (!socket?.isSocketConnected?.()) {
+      showToast('Error', 'Not connected — wait a moment and try again', 'error');
       return;
     }
 
@@ -430,8 +434,8 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const handleSendCardChallenge = (opponent: AvailableUser) => {
-    if (!socket) {
-      showToast('Error', 'Not connected to server', 'error');
+    if (!socket?.isSocketConnected?.()) {
+      showToast('Error', 'Not connected — wait a moment and try again', 'error');
       return;
     }
 

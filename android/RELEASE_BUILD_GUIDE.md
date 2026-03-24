@@ -89,6 +89,6 @@ versionName "1.0.1"  // Update version number
 ## Current App Info
 
 - **App Name:** PlaySocial
-- **Package Name:** com.compnay
+- **Package Name:** com.playsocial
 - **Version Code:** 1
 - **Version Name:** 1.0.0

@@ -38,6 +38,11 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [selectedConversationPartnerId, setSelectedConversationPartnerId] = useState<string | null>(null);
   const selectedConversationPartnerIdRef = useRef<string | null>(null);
   const presenceSubscribeRef = useRef<(() => void) | null>(null);
+  /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
+  const newMessageHandlerBodyRef = useRef<(data: any) => void>(() => {});
+  const onNewMessageForSocket = useCallback((data: any) => {
+    newMessageHandlerBodyRef.current?.(data);
+  }, []);
   const [isNotificationCountLoaded, setIsNotificationCountLoaded] = useState(false);
   
   // Notification sounds
@@ -203,10 +208,52 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    // CRITICAL: Remove all existing listeners first to prevent duplicates
-    // This ensures we don't accumulate listeners if useEffect runs multiple times
-    // NOTE: Do NOT remove 'newMessage' here - ChatScreen and MessagesScreen handle their own listeners
+    newMessageHandlerBodyRef.current = (messageData: any) => {
+      if (!messageData || !messageData.sender || !user?._id) return;
+
+      let messageSenderId = '';
+      if (messageData.sender?._id) {
+        messageSenderId = typeof messageData.sender._id === 'string' ? messageData.sender._id : messageData.sender._id.toString();
+      } else if (messageData.sender) {
+        messageSenderId = typeof messageData.sender === 'string' ? messageData.sender : String(messageData.sender);
+      }
+
+      let currentUserId = '';
+      if (user?._id) {
+        currentUserId = typeof user._id === 'string' ? user._id : user._id.toString();
+      }
+
+      const isFromCurrentUser = messageSenderId !== '' && currentUserId !== '' && messageSenderId === currentUserId;
+
+      const conversationId = messageData.conversationId?.toString();
+      const openId = selectedConversationIdRef.current;
+      const isFromOpenConversation =
+        !!openId &&
+        !!conversationId &&
+        openId.toString() === conversationId.toString();
+
+      const shouldPlay = !isFromCurrentUser && !isFromOpenConversation;
+
+      console.log('🔔 [SocketContext] Message notification check:', {
+        sender: messageSenderId,
+        openConversation: openId || 'none',
+        isFromMe: isFromCurrentUser,
+        isFromOpenChat: isFromOpenConversation,
+        willPlaySound: shouldPlay,
+      });
+
+      if (shouldPlay) {
+        playNotificationSound('message');
+        Vibration.vibrate(400);
+      }
+    };
+
+    // Re-bind all app-wide listeners whenever a new Socket.IO instance is created (reconnect / replace).
+    // Otherwise handlers stay on the old socket and chessChallenge / posts / etc. never fire.
+    const installCoreSocketListeners = () => {
     socketService.off('getOnlineUser');
+    socketService.off('presenceSnapshot');
+    socketService.off('presenceUpdate');
     socketService.off(SOCKET_EVENTS.NEW_POST);
     socketService.off(SOCKET_EVENTS.POST_UPDATED);
     socketService.off(SOCKET_EVENTS.POST_DELETED);
@@ -216,12 +263,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CARD_MOVE);
     socketService.off('newNotification');
-    // socketService.off('newMessage'); // <-- REMOVED: Let screens manage their own listeners
+    socketService.off('newMessage', onNewMessageForSocket);
 
-    // Set up listeners - will be queued if socket not ready yet
-    console.log('🔧 Setting up socket listeners in SocketContext');
+    console.log('🔧 [SocketContext] Installing core socket listeners');
 
-    // New: targeted presence snapshot (preferred)
     socketService.on('presenceSnapshot', (payload: any) => {
       const users = payload?.onlineUsers;
       if (!users || !Array.isArray(users)) return;
@@ -310,6 +355,17 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         // Game posts: Backend already filters to only send to followers, so always add
         const gameType = isChessPost ? 'chess' : 'card';
         console.log(`✅ [SocketContext] Adding ${gameType} game post to feed:`, post._id);
+        addPost(post);
+        return;
+      }
+
+      // Live channel posts this user added via "Watch live" (any channel username — not only AlJazeera)
+      const channelOwnerId =
+        post?.channelAddedBy?.toString?.() ?? (post?.channelAddedBy != null ? String(post.channelAddedBy) : '');
+      const myId = user?._id?.toString?.() ?? (user?._id != null ? String(user._id) : '');
+      const isMyChannelPost = !!channelOwnerId && !!myId && channelOwnerId === myId;
+      if (isMyChannelPost) {
+        console.log('✅ [SocketContext] Adding live channel post you added:', post._id);
         addPost(post);
         return;
       }
@@ -488,49 +544,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       playNotificationSound('notification');
     });
 
-    // Listen for new messages globally - play sound for unread messages
-    socketService.on('newMessage', (messageData: any) => {
-      if (!messageData || !messageData.sender || !user?._id) return;
-      
-      // Check if message is from another user (not current user)
-      let messageSenderId = '';
-      if (messageData.sender?._id) {
-        messageSenderId = typeof messageData.sender._id === 'string' ? messageData.sender._id : messageData.sender._id.toString();
-      } else if (messageData.sender) {
-        messageSenderId = typeof messageData.sender === 'string' ? messageData.sender : String(messageData.sender);
-      }
-      
-      let currentUserId = '';
-      if (user?._id) {
-        currentUserId = typeof user._id === 'string' ? user._id : user._id.toString();
-      }
-      
-      const isFromCurrentUser = messageSenderId !== '' && currentUserId !== '' && messageSenderId === currentUserId;
-      
-      // Check if message is from the currently open conversation
-      const conversationId = messageData.conversationId?.toString();
-      const openId = selectedConversationIdRef.current;
-      const isFromOpenConversation =
-        !!openId &&
-        !!conversationId &&
-        openId.toString() === conversationId.toString();
-      
-      const shouldPlay = !isFromCurrentUser && !isFromOpenConversation;
-      
-      console.log('🔔 [SocketContext] Message notification check:', {
-        sender: messageSenderId,
-        openConversation: openId || 'none',
-        isFromMe: isFromCurrentUser,
-        isFromOpenChat: isFromOpenConversation,
-        willPlaySound: shouldPlay
-      });
-      
-      // Play sound and vibrate only for unread messages from other users AND not from currently open conversation
-      if (shouldPlay) {
-        playNotificationSound('message');
-        Vibration.vibrate(400); // Vibrate for 400ms
-      }
-    });
+    socketService.on('newMessage', onNewMessageForSocket);
+    };
 
     // Subscribe to targeted presence updates (followers + following + conversation partner USER ID)
     // Backend expects userIds (user _id), not conversation doc ids. Partner = other user in chat.
@@ -561,59 +576,17 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     };
     
     presenceSubscribeRef.current = subscribeToPresence;
+    installCoreSocketListeners();
+    const removeSocketReady = socketService.addSocketReadyListener(installCoreSocketListeners);
     subscribeToPresence();
-    
-    // CRITICAL: Re-attach presence listeners on reconnect. When app goes background we disconnect
-    // and create a new socket on foreground – the new socket has NO listeners, so online status
-    // would never update. Re-attach here so presenceSnapshot/presenceUpdate getOnlineUser work.
-    const attachPresenceListeners = () => {
-      socketService.off('presenceSnapshot');
-      socketService.off('presenceUpdate');
-      socketService.off('getOnlineUser');
-      socketService.on('presenceSnapshot', (payload: any) => {
-        const users = payload?.onlineUsers;
-        if (!users || !Array.isArray(users)) return;
-        setPresenceMap(() => {
-          const next: Record<string, boolean> = {};
-          users.forEach((u: any) => {
-            const id = (typeof u === 'object' && u !== null)
-              ? (u.userId?.toString?.() ?? u._id?.toString?.() ?? u.toString?.())
-              : u?.toString?.();
-            if (id) next[id] = true;
-          });
-          return next;
-        });
-        setOnlineUsers(users);
-      });
-      socketService.on('presenceUpdate', (payload: any) => {
-        const id = payload?.userId?.toString?.() ?? payload?.userId;
-        const online = payload?.online === true;
-        if (!id) return;
-        setPresenceMap((prev) => ({ ...prev, [id]: online }));
-        setOnlineUsers((prev) => {
-          const safePrev = Array.isArray(prev) ? prev : [];
-          const filtered = safePrev.filter((x: any) => {
-            const xId = (typeof x === 'object' && x !== null)
-              ? (x.userId?.toString?.() ?? x._id?.toString?.() ?? x.toString?.())
-              : x?.toString?.();
-            return xId && xId !== id;
-          });
-          return online ? [{ userId: id }, ...filtered] : filtered;
-        });
-      });
-      socketService.on('getOnlineUser', (users: any) => {
-        setOnlineUsers(users || []);
-      });
-      console.log('🔌 [SocketContext] Presence listeners re-attached');
-    };
 
     const removeConnectListener = socketService.addConnectListener(() => {
-      console.log('🔌 [SocketContext] Socket connected - re-attaching presence listeners and subscribing');
-      attachPresenceListeners();
+      console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       subscribeToPresence();
     });
 
     return () => {
+      removeSocketReady();
       removeConnectListener();
       socketService.off('getOnlineUser');
       socketService.off('presenceSnapshot');
@@ -624,9 +597,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off(SOCKET_EVENTS.FOOTBALL_MATCH_UPDATE);
       socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);
       socketService.off(SOCKET_EVENTS.CHESS_MOVE);
+      socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
+      socketService.off(SOCKET_EVENTS.CARD_MOVE);
       socketService.off('newNotification');
+      socketService.off('newMessage', onNewMessageForSocket);
     };
-  }, [user?._id, addPost, updatePost, deletePost, playNotificationSound]);
+  }, [user?._id, addPost, updatePost, deletePost, playNotificationSound, onNewMessageForSocket]);
 
   // Re-subscribe to presence when following, followers, or conversation partner changes (no listener re-register).
   useEffect(() => {

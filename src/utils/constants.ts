@@ -5,12 +5,21 @@ export const API_URL = __DEV__
 
 export const SOCKET_URL = API_URL;
 
+/**
+ * Same value as backend `GOOGLE_WEB_CLIENT_ID`.
+ * Firebase Console → Authentication → Sign-in method → Google → Web client ID
+ * (also add your Android app SHA-1 to Firebase for release/debug builds.)
+ */
+export const GOOGLE_WEB_CLIENT_ID =
+  '931688184474-3cc8ifh10tt1ritl08iu8majbiudtncp.apps.googleusercontent.com';
+
 // API Endpoints
 export const ENDPOINTS = {
   // Auth
   LOGIN: '/api/user/login',
   SIGNUP: '/api/user/signup',
   LOGOUT: '/api/user/logout',
+  GOOGLE_LOGIN: '/api/user/google-login',
   
   // User
   GET_USER: '/api/user/profile',
@@ -141,8 +150,8 @@ export const WEBRTC_CONFIG = {
   TURN_SERVERS: [] as { urls: string; username?: string; credential?: string }[],
   // ICE candidate gathering timeout (ms)
   ICE_GATHERING_TIMEOUT: 10000,
-  // Connection timeout (ms) – end call if not connected; 20s to avoid stuck "Connecting" UI
-  CONNECTION_TIMEOUT: 20000,
+  // Connection timeout (ms) – end call if not connected. 45s so callee in background has time to open app and connect.
+  CONNECTION_TIMEOUT: 45000,
   // Max reconnection attempts
   MAX_RECONNECTION_ATTEMPTS: 3,
 };

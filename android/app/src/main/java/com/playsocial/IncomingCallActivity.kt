@@ -1,4 +1,4 @@
-package com.compnay
+package com.playsocial
 
 import android.app.Activity
 import android.app.NotificationManager
@@ -29,6 +29,10 @@ import org.json.JSONObject
  */
 class IncomingCallActivity : Activity() {
 
+    companion object {
+        const val EXTRA_ANSWER_FROM_NOTIFICATION_ACTION = "answerFromNotificationAction"
+    }
+
     private var ringtone: Ringtone? = null
     private val handler = Handler(Looper.getMainLooper())
     private var callerId: String? = null
@@ -42,7 +46,7 @@ class IncomingCallActivity : Activity() {
     // Broadcast receiver to listen for call_ended events
     private val callEndedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "com.compnay.CLOSE_INCOMING_CALL") {
+            if (intent?.action == "com.playsocial.CLOSE_INCOMING_CALL") {
                 android.util.Log.d("IncomingCallActivity", "🔕 [IncomingCallActivity] Received call_ended broadcast - closing")
                 // Stop ringtone and close activity
                 RingtoneService.stopRingtone(this@IncomingCallActivity)
@@ -88,6 +92,14 @@ class IncomingCallActivity : Activity() {
         
         android.util.Log.d("IncomingCallActivity", "Window flags set")
 
+        // User tapped Answer on the notification shade — use same answerCall() → MainActivity as the on-screen button.
+        // Opens the call-capable activity first (OEMs often block jumping straight to MainActivity from the action).
+        if (intent.getBooleanExtra(EXTRA_ANSWER_FROM_NOTIFICATION_ACTION, false) && callerId != null) {
+            android.util.Log.e("IncomingCallActivity", "⚡ Fast path: Answer from notification action → MainActivity")
+            answerCall()
+            return
+        }
+
         // Set volume to max for ringtone
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.setStreamVolume(
@@ -117,13 +129,25 @@ class IncomingCallActivity : Activity() {
         // Register broadcast receiver to listen for call_ended events
         // Wrap in try-catch to handle SecurityException when app is killed/restarting
         try {
-            registerReceiver(callEndedReceiver, IntentFilter("com.compnay.CLOSE_INCOMING_CALL"))
+            registerReceiver(callEndedReceiver, IntentFilter("com.playsocial.CLOSE_INCOMING_CALL"))
             android.util.Log.d("IncomingCallActivity", "Broadcast receiver registered for call_ended")
         } catch (e: SecurityException) {
             android.util.Log.e("IncomingCallActivity", "Failed to register broadcast receiver: ${e.message}")
             // Continue anyway - we'll still be able to handle call_ended via other means
         } catch (e: Exception) {
             android.util.Log.e("IncomingCallActivity", "Error registering broadcast receiver: ${e.message}")
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        callerId = intent.getStringExtra("callerId")
+        callerName = intent.getStringExtra("callerName") ?: "Unknown"
+        callType = intent.getStringExtra("callType") ?: "video"
+        if (intent.getBooleanExtra(EXTRA_ANSWER_FROM_NOTIFICATION_ACTION, false) && callerId != null) {
+            android.util.Log.e("IncomingCallActivity", "⚡ onNewIntent: Answer from notification action")
+            answerCall()
         }
     }
 
@@ -246,22 +270,53 @@ class IncomingCallActivity : Activity() {
             android.util.Log.w("IncomingCallActivity", "⚠️ [IncomingCallActivity] Error dismissing notification: ${e.message}")
         }
         
-        // Launch MainActivity with call data - app will open and handle the call
-        val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        // Same prefs MainActivity writes — do this FIRST so AppNavigator polling / getPendingCallData
+        // can open CallScreen even if startActivity fails on some OEMs.
+        try {
+            val prefs = getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
+            prefs.edit().apply {
+                remove("hasPendingCancel")
+                remove("shouldCancelCall")
+                remove("callerIdToCancel")
+                putString("callerId", callerId)
+                putString("callerName", callerName ?: "Unknown")
+                putString("callType", callType ?: "audio")
+                putBoolean("shouldAutoAnswer", true)
+                putBoolean("hasPendingCall", true)
+                apply()
+            }
+            android.util.Log.e("IncomingCallActivity", "✅ Pending call prefs saved (fallback for JS)")
+        } catch (e: Exception) {
+            android.util.Log.e("IncomingCallActivity", "prefs save failed", e)
+        }
+
+        val mainIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
             putExtra("shouldAutoAnswer", true)
             putExtra("callerId", callerId)
             putExtra("callerName", callerName)
             putExtra("callType", callType)
             putExtra("isFromNotification", true)
         }
-        
-        android.util.Log.e("IncomingCallActivity", "Launching MainActivity with shouldAutoAnswer=true")
-        android.util.Log.e("IncomingCallActivity", "Intent extras: callerId=$callerId, callerName=$callerName")
-        startActivity(intent)
-        android.util.Log.e("IncomingCallActivity", "MainActivity.startActivity() called")
-        finish() // Close native UI - app will handle the call
-        android.util.Log.e("IncomingCallActivity", "finish() called - activity closing")
+
+        android.util.Log.e("IncomingCallActivity", "Scheduling MainActivity (next frame) shouldAutoAnswer callerId=$callerId")
+        // Next frame: avoids some OEMs dropping the transition when finishing in the same call stack as onCreate.
+        handler.post {
+            try {
+                startActivity(mainIntent)
+                android.util.Log.e("IncomingCallActivity", "MainActivity.startActivity() OK")
+            } catch (e: Exception) {
+                android.util.Log.e("IncomingCallActivity", "❌ startActivity failed — rely on SharedPreferences + JS poll", e)
+            }
+            try {
+                if (!isFinishing) finish()
+            } catch (_: Exception) { }
+            android.util.Log.e("IncomingCallActivity", "finish() after handoff")
+        }
     }
     
 
@@ -300,7 +355,7 @@ class IncomingCallActivity : Activity() {
         }
         
         // Send broadcast to trigger MainActivity to check for pending cancel (if app is running)
-        val broadcastIntent = Intent("com.compnay.CHECK_PENDING_CANCEL").apply {
+        val broadcastIntent = Intent("com.playsocial.CHECK_PENDING_CANCEL").apply {
             setPackage(packageName)
         }
         sendBroadcast(broadcastIntent)

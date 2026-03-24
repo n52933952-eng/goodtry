@@ -78,9 +78,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.compnay"
+    namespace "com.playsocial"
     defaultConfig {
-        applicationId "com.compnay"
+        applicationId "com.playsocial"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
@@ -117,6 +117,10 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    // RN Firebase messaging uses `implementation` for FCM, so app Kotlin (MyFirebaseMessagingService) needs this on compile classpath
+    implementation platform("com.google.firebase:firebase-bom:33.1.2")
+    implementation "com.google.firebase:firebase-messaging"
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

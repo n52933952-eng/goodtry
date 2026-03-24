@@ -1,26 +1,52 @@
 {
   "project_info": {
-    "project_number": "516464094484",
-    "project_id": "mern-382a3",
-    "storage_bucket": "mern-382a3.firebasestorage.app"
+    "project_number": "931688184474",
+    "project_id": "playsocial-405d3",
+    "storage_bucket": "playsocial-405d3.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:516464094484:android:4b6efa18f41ea98005a601",
+        "mobilesdk_app_id": "1:931688184474:android:a1094cf57809ed3cedbd23",
         "android_client_info": {
-          "package_name": "com.compnay"
+          "package_name": "com.playsocial"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "931688184474-g56uubdf55bhl8tuor95f97t9387m1c0.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.playsocial",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "931688184474-oi9ifduv4cooifbm2tf11b9lbgvblb6e.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.playsocial",
+            "certificate_hash": "feb3c84e48f630c3235abd51716fa4da47da01f3"
+          }
+        },
+        {
+          "client_id": "931688184474-3cc8ifh10tt1ritl08iu8majbiudtncp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
-          "current_key": "AIzaSyASYljipJcvwUoCJxl4bDfvcqSSMegsAAQ"
+          "current_key": "AIzaSyDORweaB-hTZSX_a4zfHsVYoZkxETI6vQg"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "931688184474-3cc8ifh10tt1ritl08iu8majbiudtncp.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

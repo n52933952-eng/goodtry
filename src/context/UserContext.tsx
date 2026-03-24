@@ -4,7 +4,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
 import socketService from '../services/socket';
 import fcmService from '../services/fcmService';
-import oneSignalService from '../services/onesignal';
 import { setLogoutCallback } from '../services/api';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -62,6 +61,16 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     loadUserFromStorage();
   }, []);
 
+  // FCM token API requires jwt cookie — sync only when logged in (avoids 401 → auto-logout on cold start).
+  useEffect(() => {
+    if (user?._id) {
+      fcmService.setAllowBackendSync(true);
+      fcmService.syncTokenWithBackend().catch(() => {});
+    } else {
+      fcmService.setAllowBackendSync(false);
+    }
+  }, [user?._id]);
+
   // Also store user ID in SharedPreferences when user is loaded (in case login happened before this code was added)
   useEffect(() => {
     if (user?._id) {
@@ -86,14 +95,12 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   // offline and backend uses FCM for call notifications.
   useEffect(() => {
     if (user?._id) {
-      oneSignalService.setUserId(user._id);
       // FCM is initialized in App.tsx, token is automatically sent
       if (AppState.currentState === 'active') {
         socketService.connect(user._id);
       }
     } else {
       socketService.disconnect();
-      oneSignalService.removeUserId();
     }
   }, [user]);
 
@@ -169,8 +176,6 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
       }
       await AsyncStorage.removeItem(STORAGE_KEYS.USER);
       socketService.disconnect();
-      // Unlink user from OneSignal
-      oneSignalService.removeUserId();
       setUserState(null);
     } catch (error) {
       console.error('Error logging out:', error);

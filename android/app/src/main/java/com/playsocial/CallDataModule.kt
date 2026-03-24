@@ -1,4 +1,4 @@
-package com.compnay
+package com.playsocial
 
 import android.app.NotificationManager
 import android.content.Context
@@ -92,7 +92,7 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     }
 
     /**
-     * Generic SharedPreferences reader for small payloads (used for OneSignal action buttons).
+     * Generic SharedPreferences reader for small payloads (e.g. notification actions).
      * Returns a map of all keys/values in the given prefsName.
      */
     @ReactMethod

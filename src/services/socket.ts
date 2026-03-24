@@ -6,12 +6,32 @@ class SocketService {
   private isConnected: boolean = false;
   private pendingListeners: Array<{ event: string; callback: (data: any) => void }> = [];
   private connectListeners: Array<() => void> = [];
+  /** Re-run after each new Socket.IO instance so app listeners (chess, posts, …) attach to the current socket. */
+  private socketReadyListeners: Array<() => void> = [];
 
   addConnectListener(fn: () => void): () => void {
     this.connectListeners.push(fn);
     return () => {
       this.connectListeners = this.connectListeners.filter((f) => f !== fn);
     };
+  }
+
+  /** Register a callback to run whenever `connect()` creates a new Socket.IO instance (reconnect / new session). */
+  addSocketReadyListener(fn: () => void): () => void {
+    this.socketReadyListeners.push(fn);
+    return () => {
+      this.socketReadyListeners = this.socketReadyListeners.filter((f) => f !== fn);
+    };
+  }
+
+  private notifySocketInstanceReady() {
+    this.socketReadyListeners.forEach((fn) => {
+      try {
+        fn();
+      } catch (e) {
+        console.warn('[Socket] socketReady listener error:', e);
+      }
+    });
   }
 
   connect(userId: string) {
@@ -86,6 +106,9 @@ class SocketService {
     this.socket.on('error', (error) => {
       console.error('Socket error:', error);
     });
+
+    // Re-bind listeners registered via addSocketReadyListener (clears duplicates with off→on inside those callbacks).
+    this.notifySocketInstanceReady();
   }
 
   disconnect() {

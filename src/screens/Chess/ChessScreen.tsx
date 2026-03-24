@@ -12,8 +12,9 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { API_URL, COLORS } from '../../utils/constants';
+import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { apiService } from '../../services/api';
 
 interface ChessChallenge {
   _id: string;
@@ -115,43 +116,47 @@ const ChessScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
-      const baseUrl = API_URL;
-      
+      // 1) Fetch fresh current user profile to get latest following/followers (same as FeedScreen / web)
+      let freshUserData: any = user;
+      try {
+        freshUserData = await apiService.get(`/api/user/getUserPro/${user._id}`);
+      } catch (e) {
+        freshUserData = user;
+      }
+
+      // 2) Build connection IDs from following + followers (handle both string IDs and populated objects)
       const allConnectionIds = [
-        ...(user.following || []),
-        ...(user.followers || []),
-      ].filter((id) => {
-        const idStr = id?.toString().trim();
+        ...(freshUserData?.following || []),
+        ...(freshUserData?.followers || []),
+      ].filter((id: any) => {
+        const raw = id?._id ?? id;
+        const idStr = raw?.toString?.()?.trim() ?? String(raw).trim();
         if (!idStr || idStr.length !== 24) return false;
         return /^[0-9a-fA-F]{24}$/.test(idStr);
       });
 
-      const uniqueIds = [...new Set(allConnectionIds.map((id) => id.toString()))];
+      const uniqueIds = [...new Set(allConnectionIds.map((id: any) => (id?._id ?? id).toString()))];
 
       if (uniqueIds.length === 0) {
         setAvailableUsers([]);
+        setLoadingUsers(false);
         return;
       }
 
-      const userPromises = uniqueIds.map(async (userId) => {
+      // 3) Fetch each user profile with apiService (sends auth cookies; raw fetch does not in RN)
+      const userPromises = uniqueIds.map(async (userId: string) => {
         try {
-          const res = await fetch(`${baseUrl}/api/user/getUserPro/${userId}`, {
-            credentials: 'include',
-          });
-          if (res.ok) {
-            const userData = await res.json();
-            if (userData && userData._id) {
-              return userData;
-            }
-          }
+          const userData = await apiService.get(`/api/user/getUserPro/${userId}`);
+          if (userData && userData._id) return userData;
         } catch (err) {
-          console.warn(`⚠️ Error fetching user ${userId}:`, err);
+          console.warn(`⚠️ [Chess] Error fetching user ${userId}:`, err);
         }
         return null;
       });
 
-      const allUsers = (await Promise.all(userPromises)).filter((u) => u !== null);
+      const allUsers = (await Promise.all(userPromises)).filter((u): u is AvailableUser => u !== null);
 
+      // 4) Filter to online users only (and exclude self)
       const onlineAvailableUsers = allUsers.filter((u) => {
         if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
         const userIdStr = u._id?.toString();
@@ -173,7 +178,7 @@ const ChessScreen = ({ navigation }: any) => {
 
       setAvailableUsers(onlineAvailableUsers);
     } catch (error) {
-      console.error('Error fetching available users:', error);
+      console.error('[Chess] Error fetching available users:', error);
       showToast('Error', 'Failed to fetch users', 'error');
     } finally {
       setLoadingUsers(false);

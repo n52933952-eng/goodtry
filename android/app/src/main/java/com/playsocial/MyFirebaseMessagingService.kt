@@ -1,4 +1,4 @@
-package com.compnay
+package com.playsocial
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -98,7 +98,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 // Close IncomingCallActivity if it's open (app killed or background)
                 // Send broadcast that IncomingCallActivity listens for
                 try {
-                    sendBroadcast(Intent("com.compnay.CLOSE_INCOMING_CALL").apply {
+                    sendBroadcast(Intent("com.playsocial.CLOSE_INCOMING_CALL").apply {
                         putExtra("action", "close")
                     })
                     Log.d(TAG, "🔕 [FCM] Broadcast sent to close IncomingCallActivity")
@@ -174,20 +174,62 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 activityIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
+
+            // Answer: open IncomingCallActivity first (call UI in manifest: showWhenLocked, turnScreenOn).
+            // Many OEMs block or drop starting MainActivity directly from a notification action; this path
+            // matches the full-screen intent target, then immediately forwards to MainActivity inside answerCall().
+            val reqBase = 3100 + (callerId.hashCode() and 0x7FFF)
+            val answerActivityIntent = Intent(this, IncomingCallActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("callerId", callerId)
+                putExtra("callerName", callerName)
+                putExtra("callType", callType)
+                putExtra("answerFromNotificationAction", true)
+            }
+            val answerActionPending = PendingIntent.getActivity(
+                this,
+                reqBase,
+                answerActivityIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_DECLINE
+                putExtra("callerId", callerId)
+                putExtra("callerName", callerName)
+                putExtra("callType", callType)
+            }
+            val declineActionPending = PendingIntent.getBroadcast(
+                this,
+                reqBase + 1,
+                declineIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
             
             // Create notification channel if needed
             createNotificationChannel()
             
-            // Build notification with full-screen intent and content intent
-            // Note: Answer/Decline buttons are in IncomingCallActivity UI (not notification)
+            // Build notification with full-screen intent, tap target, and Answer/Decline actions
             val notification = NotificationCompat.Builder(this, "call_notifications")
                 .setContentTitle("Incoming Call")
                 .setContentText("$callerName is calling...")
                 .setSmallIcon(R.drawable.ic_stat_ic_launcher)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setContentIntent(contentIntent) // Handle tap on notification - opens IncomingCallActivity
                 .setFullScreenIntent(fullScreenIntent, true) // This shows IncomingCallActivity over lock screen
+                .addAction(
+                    R.drawable.ic_stat_ic_launcher,
+                    getString(R.string.notification_action_decline),
+                    declineActionPending
+                )
+                .addAction(
+                    R.drawable.ic_stat_ic_launcher,
+                    getString(R.string.notification_action_answer),
+                    answerActionPending
+                )
                 .setOngoing(true) // Keep notification persistent - activity will dismiss it
                 .setAutoCancel(false) // Don't auto-dismiss - let activity handle it
                 // Note: No setDefaults() - RingtoneService handles sound/vibration continuously

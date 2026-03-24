@@ -1,4 +1,4 @@
-package com.compnay
+package com.playsocial
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -16,8 +16,8 @@ class CallActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "CallActionReceiver"
-        const val ACTION_ANSWER = "com.compnay.NOTIFICATION_ANSWER"
-        const val ACTION_DECLINE = "com.compnay.NOTIFICATION_DECLINE"
+        const val ACTION_ANSWER = "com.playsocial.NOTIFICATION_ANSWER"
+        const val ACTION_DECLINE = "com.playsocial.NOTIFICATION_DECLINE"
         private const val API_URL = "https://media-1-aue5.onrender.com"
     }
 
@@ -43,11 +43,27 @@ class CallActionReceiver : BroadcastReceiver() {
                 } catch (e: Exception) {
                     Log.e(TAG, "❌ Error stopping ringtone: ${e.message}")
                 }
+
+                // Dismiss full-screen IncomingCallActivity if it is open
+                try {
+                    context.sendBroadcast(
+                        Intent("com.playsocial.CLOSE_INCOMING_CALL").apply {
+                            putExtra("action", "answer")
+                        }
+                    )
+                    Log.d(TAG, "✅ Sent CLOSE_INCOMING_CALL after notification Answer")
+                } catch (e: Exception) {
+                    Log.w(TAG, "CLOSE_INCOMING_CALL broadcast: ${e.message}")
+                }
                 
                 // Store call data in SharedPreferences first (same as MainActivity does)
                 try {
                     val prefs = context.getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
                     prefs.edit().apply {
+                        // Old decline flags make AppNavigator ignore NavigateToCallScreen
+                        remove("hasPendingCancel")
+                        remove("shouldCancelCall")
+                        remove("callerIdToCancel")
                         putString("callerId", callerId)
                         putString("callerName", callerName ?: "Unknown")
                         putString("callType", callType ?: "audio")
@@ -81,7 +97,7 @@ class CallActionReceiver : BroadcastReceiver() {
                     Log.e(TAG, "✅✅✅ [CallActionReceiver] MainActivity.startActivity() called successfully")
                     
                     // Also send broadcast in case startActivity is blocked (when app is running)
-                    val broadcastIntent = Intent("com.compnay.ANSWER_CALL_FROM_NOTIFICATION").apply {
+                    val broadcastIntent = Intent("com.playsocial.ANSWER_CALL_FROM_NOTIFICATION").apply {
                         putExtra("callerId", callerId)
                         putExtra("callerName", callerName)
                         putExtra("callType", callType ?: "audio")
@@ -133,14 +149,14 @@ class CallActionReceiver : BroadcastReceiver() {
                 }
 
                 // Trigger pending cancel check (if app is running)
-                val broadcastIntent = Intent("com.compnay.CHECK_PENDING_CANCEL").apply {
+                val broadcastIntent = Intent("com.playsocial.CHECK_PENDING_CANCEL").apply {
                     setPackage(context.packageName)
                 }
                 context.sendBroadcast(broadcastIntent)
                 Log.e(TAG, "✅ [CallActionReceiver] Sent CHECK_PENDING_CANCEL broadcast")
 
                 // Close IncomingCallActivity if open
-                val closeIntent = Intent("com.compnay.CLOSE_INCOMING_CALL").apply {
+                val closeIntent = Intent("com.playsocial.CLOSE_INCOMING_CALL").apply {
                     putExtra("action", "decline")
                 }
                 context.sendBroadcast(closeIntent)

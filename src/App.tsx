@@ -10,7 +10,7 @@ import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import AppNavigator from './navigation/AppNavigator';
 import fcmService from './services/fcmService';
-import oneSignalService from './services/onesignal';
+import './config/googleSignIn';
 
 const App = () => {
   useEffect(() => {
@@ -39,9 +39,6 @@ const App = () => {
       }, 2000);
     });
 
-    // Initialize OneSignal for non-call push notifications (likes, comments, follows, chess, etc.)
-    console.log('🔔 [App] Initializing OneSignal...');
-    oneSignalService.initialize();
   }, []);
 
   return (

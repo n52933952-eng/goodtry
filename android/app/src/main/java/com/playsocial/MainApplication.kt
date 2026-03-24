@@ -1,6 +1,10 @@
-package com.compnay
+package com.playsocial
 
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.media.AudioAttributes
+import android.os.Build
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -41,7 +45,24 @@ class MainApplication : Application(), ReactApplication {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
-    // Note: Notification channel for incoming calls is created by the income library
-    // when displayNotification is called. We don't create it here to avoid conflicts.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val nm = getSystemService(NotificationManager::class.java)
+      val channel = NotificationChannel(
+        "playsocial_general",
+        "PlaySocial",
+        NotificationManager.IMPORTANCE_HIGH
+      ).apply {
+        description = "Messages, likes, and activity"
+        setSound(
+          android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION),
+          AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        )
+        enableVibration(true)
+      }
+      nm.createNotificationChannel(channel)
+    }
   }
 }

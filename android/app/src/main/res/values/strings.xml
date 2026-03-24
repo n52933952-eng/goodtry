@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">PlaySocial</string>
+    <string name="notification_action_answer">Answer</string>
+    <string name="notification_action_decline">Decline</string>
 </resources>

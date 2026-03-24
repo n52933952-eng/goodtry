@@ -1,4 +1,4 @@
-package com.compnay
+package com.playsocial
 
 import android.content.Intent
 import android.content.SharedPreferences
@@ -20,7 +20,7 @@ class MainActivity : ReactActivity() {
   // BroadcastReceiver to listen for pending cancel check trigger
   private val pendingCancelReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
-      if (intent?.action == "com.compnay.CHECK_PENDING_CANCEL") {
+      if (intent?.action == "com.playsocial.CHECK_PENDING_CANCEL") {
         android.util.Log.e("MainActivity", "📡 [MainActivity] Received CHECK_PENDING_CANCEL broadcast - triggering check")
         // Emit event to React Native to check SharedPreferences
         emitCheckPendingCancelEvent()
@@ -32,7 +32,7 @@ class MainActivity : ReactActivity() {
    * Returns the name of the main component registered from JavaScript. This is used to schedule
    * rendering of the component.
    */
-  override fun getMainComponentName(): String = "mobile"
+  override fun getMainComponentName(): String = "playsocial"
 
   /**
    * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]
@@ -148,10 +148,30 @@ class MainActivity : ReactActivity() {
       if (callerId != null) {
         android.util.Log.e("MainActivity", "✅✅✅ [MainActivity] shouldAutoAnswer=true - CALLER FOUND: $callerName ($callerId)")
         android.util.Log.e("MainActivity", "✅✅✅ [MainActivity] Call type: $callType")
-        
+
+        // Answer from notification shade / FCM action — stop ringtone and dismiss tray notification
+        try {
+          RingtoneService.stopRingtone(this)
+        } catch (e: Exception) {
+          android.util.Log.w("MainActivity", "stopRingtone: ${e.message}")
+        }
+        try {
+          val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+          nm.cancel(1001)
+        } catch (e: Exception) {
+          android.util.Log.w("MainActivity", "cancel notification: ${e.message}")
+        }
+        // Stale decline flags block JS (AppNavigator ignores NavigateToCallScreen when hasPendingCancelFromPrefs)
+        try {
+          sendBroadcast(Intent("com.playsocial.CLOSE_INCOMING_CALL").apply { putExtra("action", "answer") })
+        } catch (_: Exception) { }
+
         // Store call data in SharedPreferences so React Native can read it immediately
         val prefs = getSharedPreferences("CallDataPrefs", android.content.Context.MODE_PRIVATE)
         prefs.edit().apply {
+          remove("hasPendingCancel")
+          remove("shouldCancelCall")
+          remove("callerIdToCancel")
           putString("callerId", callerId)
           putString("callerName", callerName ?: "Unknown")
           putString("callType", callType ?: "audio")
@@ -210,6 +230,8 @@ class MainActivity : ReactActivity() {
               sendNavigateEvent(3000)   // After 3 seconds (backup)
               sendNavigateEvent(4000)   // After 4 seconds (backup)
               sendNavigateEvent(5000)   // After 5 seconds (backup)
+              sendNavigateEvent(8000)   // Slow devices / cold start
+              sendNavigateEvent(12000)
               
             } ?: run {
               if (attempts < maxAttempts) {
@@ -315,7 +337,7 @@ class MainActivity : ReactActivity() {
     
     // Register BroadcastReceiver to listen for pending cancel check trigger
     try {
-      val filter = IntentFilter("com.compnay.CHECK_PENDING_CANCEL")
+      val filter = IntentFilter("com.playsocial.CHECK_PENDING_CANCEL")
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         registerReceiver(pendingCancelReceiver, filter, RECEIVER_EXPORTED)
       } else {

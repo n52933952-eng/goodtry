@@ -9,7 +9,8 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { API_URL, COLORS } from '../utils/constants';
+import { COLORS } from '../utils/constants';
+import { apiService } from '../services/api';
 import { useShowToast } from '../hooks/useShowToast';
 import { useTheme } from '../context/ThemeContext';
 
@@ -53,14 +54,8 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
   const fetchChannels = async () => {
     try {
       setLoading(true);
-      const baseUrl = API_URL;
-
-      // Fetch live stream channels
-      const channelsRes = await fetch(`${baseUrl}/api/news/channels`, {
-        credentials: 'include',
-      });
-      const channelsData = await channelsRes.json();
-      if (channelsRes.ok && channelsData.channels) {
+      const channelsData = await apiService.get('/api/news/channels');
+      if (channelsData?.channels) {
         setChannels(channelsData.channels);
       }
     } catch (error) {
@@ -77,30 +72,20 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
     try {
       setStreamLoading(prev => ({ ...prev, [loadingKey]: true }));
 
-      const baseUrl = API_URL;
-      const res = await fetch(
-        `${baseUrl}/api/news/post/livestream?channelId=${channelId}&streamIndex=${streamIndex}`,
-        {
-          method: 'POST',
-          credentials: 'include',
-        }
+      const data = await apiService.post(
+        `/api/news/post/livestream?channelId=${encodeURIComponent(channelId)}&streamIndex=${streamIndex}`
       );
-      const data = await res.json();
 
-      if (res.ok) {
-        const channel = channels.find(c => c.id === channelId);
-        showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
-        // Close modal and refresh feed
-        onClose();
-        // Small delay to ensure post is created before refreshing
-        setTimeout(() => {
-          if (onChannelFollowed) {
-            onChannelFollowed();
-          }
-        }, 500);
+      const channel = channels.find(c => c.id === channelId);
+      if (data?.posted === false) {
+        showToast('Info', data?.message || 'Already in your feed', 'info');
       } else {
-        showToast('Info', data.message || 'Already in feed', 'info');
+        showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
       }
+      onClose();
+      setTimeout(() => {
+        onChannelFollowed?.();
+      }, 500);
     } catch (error) {
       console.error('Error creating stream post:', error);
       showToast('Error', 'Failed to add live stream', 'error');
