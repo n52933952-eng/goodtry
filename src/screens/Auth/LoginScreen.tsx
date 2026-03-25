@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
 } from 'react-native';
 import { GoogleSignin } from '../../config/googleSignIn';
 import { useUser } from '../../context/UserContext';
@@ -140,6 +141,14 @@ const LoginScreen = ({ navigation }: any) => {
             </Text>
           </TouchableOpacity>
 
+          <Image
+            source={require('../../assets/app-logo.png')}
+            style={styles.appLogo}
+            resizeMode="contain"
+            accessibilityRole="image"
+            accessibilityLabel="PlaySocial"
+          />
+
           <Text style={[styles.title, isRTL && styles.titleRTL, { color: colors.text }]}>{t('welcomeBack')}</Text>
           <Text style={[styles.subtitle, isRTL && styles.subtitleRTL, { color: colors.textGray }]}>{t('loginToAccount')}</Text>
 
@@ -193,7 +202,22 @@ const LoginScreen = ({ navigation }: any) => {
               onPress={handleGoogleLogin}
               disabled={loading}
             >
-              <Text style={[styles.googleButtonText, { color: colors.text }]}>Continue with Google</Text>
+              <View
+                style={[
+                  styles.googleButtonInner,
+                  isRTL && styles.googleButtonInnerRTL,
+                ]}
+              >
+                <Image
+                  source={require('../../assets/google-g.png')}
+                  style={styles.googleIcon}
+                  resizeMode="contain"
+                  accessibilityIgnoresInvertColors
+                />
+                <Text style={[styles.googleButtonText, { color: colors.text }]}>
+                  Continue with Google
+                </Text>
+              </View>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -223,6 +247,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 30,
+  },
+  appLogo: {
+    width: 96,
+    height: 96,
+    alignSelf: 'center',
+    marginBottom: 20,
   },
   title: {
     fontSize: 32,
@@ -278,9 +308,24 @@ const styles = StyleSheet.create({
     marginTop: 14,
     borderWidth: 1,
     borderRadius: 8,
-    padding: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: 'transparent',
+  },
+  googleButtonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  googleButtonInnerRTL: {
+    flexDirection: 'row-reverse',
+  },
+  googleIcon: {
+    width: 22,
+    height: 22,
   },
   googleButtonText: {
     fontSize: 16,

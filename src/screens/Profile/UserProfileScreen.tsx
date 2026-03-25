@@ -24,7 +24,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
   const { user: currentUser, updateUser } = useUser();
   const { colors } = useTheme();
-  const username = usernameParam === 'self' ? currentUser?.username : usernameParam;
+  const username =
+    usernameParam === 'self' ? currentUser?.username : usernameParam;
   const showToast = useShowToast();
   const { t } = useLanguage();
 
@@ -42,22 +43,23 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const POSTS_PER_PAGE = 9;
 
   useEffect(() => {
-    // Clear previous data immediately when username changes to prevent showing stale data
+    if (!username && usernameParam !== 'self') {
+      showToast('Error', 'Invalid profile', 'error');
+      if (navigation.canGoBack?.()) navigation.goBack();
+      return;
+    }
     setProfileUser(null);
     setPosts([]);
     setFollowing(false);
     setLoading(true);
     setSkip(0);
     setHasMore(true);
-    
-    // Fetch new data
+
     fetchUserProfile();
-    fetchUserPosts(false); // Initial load
-    
-    // Cleanup function to prevent state updates if component unmounts or username changes
-    return () => {
-      // This will prevent stale data from being set if navigation changes
-    };
+    fetchUserPosts(false);
+
+    return () => {};
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when resolved username changes
   }, [username]);
 
   // Update following state immediately from UserContext when profile user or currentUser changes
@@ -267,8 +269,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -292,6 +294,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           const id = item._id?.toString?.() ?? String(item._id);
           return id || `post-${index}`;
         }}
+        ItemSeparatorComponent={() => (
+          <View style={[styles.postSeparator, { backgroundColor: colors.background }]} />
+        )}
+        contentContainerStyle={styles.listContent}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -306,7 +312,12 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <View>
-            <View style={[styles.profileHeader, { borderBottomColor: colors.border }]}>
+            <View
+              style={[
+                styles.profileHeader,
+                { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
+              ]}
+            >
               {profileUser.profilePic ? (
                 <Image source={{ uri: profileUser.profilePic }} style={styles.avatar} />
               ) : (
@@ -350,7 +361,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 </TouchableOpacity>
               )}
               
-              <View style={styles.stats}>
+              <View style={[styles.stats, { borderTopColor: colors.border }]}>
                 <View style={styles.statItem}>
                   <Text style={[styles.statNumber, { color: colors.text }]}>{posts.length}</Text>
                   <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('posts')}</Text>
@@ -369,7 +380,12 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 </View>
               </View>
             </View>
-            <View style={[styles.postsSection, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+            <View
+              style={[
+                styles.postsSection,
+                { backgroundColor: colors.background, borderBottomColor: colors.border },
+              ]}
+            >
               <Text style={[styles.postsTitle, { color: colors.text }]}>{t('posts')}</Text>
             </View>
           </View>
@@ -387,11 +403,15 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           ) : null
         }
         renderItem={({ item }) => (
-          <Post 
-            post={item} 
-            fromScreen="UserProfile"
-            userProfileParams={{ username }}
-          />
+          <View
+            style={[styles.profilePostCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+          >
+            <Post
+              post={item}
+              fromScreen="UserProfile"
+              userProfileParams={{ username }}
+            />
+          </View>
         )}
       />
     </View>
@@ -410,17 +430,17 @@ const styles = StyleSheet.create({
   },
   profileHeader: {
     alignItems: 'center',
-    paddingTop: 5,
-    paddingBottom: 20,
+    paddingTop: 20,
+    paddingBottom: 24,
     paddingHorizontal: 20,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   avatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    marginBottom: 8,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    marginBottom: 12,
   },
   avatarPlaceholder: {
     backgroundColor: COLORS.primary,
@@ -453,7 +473,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     width: '100%',
-    marginBottom: 15,
+    marginTop: 4,
+    paddingTop: 18,
+    marginBottom: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   statItem: {
     alignItems: 'center',
@@ -498,14 +521,29 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  listContent: {
+    paddingBottom: 28,
+  },
+  postSeparator: {
+    height: 10,
+  },
+  profilePostCard: {
+    marginHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
   postsSection: {
-    padding: 15,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
   },
   postsTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 18,
+    fontWeight: '700',
     color: COLORS.text,
-    marginBottom: 15,
+    letterSpacing: 0.2,
+    marginBottom: 4,
   },
   emptyText: {
     textAlign: 'center',

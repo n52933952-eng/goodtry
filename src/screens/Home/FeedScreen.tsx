@@ -3,6 +3,7 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   StyleSheet,
   RefreshControl,
   ActivityIndicator,
@@ -53,7 +54,12 @@ const FeedScreen = ({ navigation }: any) => {
   const [showActivityModal, setShowActivityModal] = useState(false);
   const isFetchingRef = useRef(false);
   const lastLoadMoreTimeRef = useRef<number>(0);
+  const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const LOAD_MORE_DEBOUNCE_MS = 2000;
+
+  useEffect(() => {
+    feedSessionUserIdRef.current = user?._id;
+  }, [user?._id]);
 
   // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
   useFocusEffect(
@@ -85,16 +91,8 @@ const FeedScreen = ({ navigation }: any) => {
       showToast('Chess Challenge!', `${data.fromName} challenged you to chess!`, 'info');
     };
 
-    const handleAcceptChessChallenge = (data: any) => {
-      if (!data?.roomId || !data?.yourColor) return;
-
-      showToast('Challenge Accepted', 'Game starting!', 'success');
-      navigation.navigate('ChessGame', { 
-        roomId: data.roomId, 
-        color: data.yourColor,
-        opponentId: data.opponentId 
-      });
-    };
+    // acceptChessChallenge navigation is handled globally in AppNavigator so the
+    // challenger opens the game even when not on the Feed tab (Messages, Search, etc.).
 
     const handleChessDeclined = (data: any) => {
       // Backend sends: { from } where 'from' is the user who declined (the opponent)
@@ -115,15 +113,7 @@ const FeedScreen = ({ navigation }: any) => {
       showToast('Card Challenge!', `${data.fromName} challenged you to Go Fish!`, 'info');
     };
 
-    const handleAcceptCardChallenge = (data: any) => {
-      if (!data?.roomId) return;
-
-      showToast('Challenge Accepted', 'Game starting!', 'success');
-      navigation.navigate('CardGame', { 
-        roomId: data.roomId,
-        opponentId: data.opponentId 
-      });
-    };
+    // acceptCardChallenge navigation is handled globally in AppNavigator (same as chess).
 
     const handleCardDeclined = (data: any) => {
       console.log('🃏 [FeedScreen] Card challenge declined by:', data.from);
@@ -157,10 +147,8 @@ const FeedScreen = ({ navigation }: any) => {
     };
 
     socket.on('chessChallenge', handleChessChallenge);
-    socket.on('acceptChessChallenge', handleAcceptChessChallenge);
     socket.on('chessDeclined', handleChessDeclined);
     socket.on('cardChallenge', handleCardChallenge);
-    socket.on('acceptCardChallenge', handleAcceptCardChallenge);
     socket.on('cardDeclined', handleCardDeclined);
     socket.on('userAvailableCard', handleUserAvailableCard);
     socket.on('footballPageUpdate', handleFootballUpdate);
@@ -169,10 +157,8 @@ const FeedScreen = ({ navigation }: any) => {
 
     return () => {
       socket.off('chessChallenge', handleChessChallenge);
-      socket.off('acceptChessChallenge', handleAcceptChessChallenge);
       socket.off('chessDeclined', handleChessDeclined);
       socket.off('cardChallenge', handleCardChallenge);
-      socket.off('acceptCardChallenge', handleAcceptCardChallenge);
       socket.off('cardDeclined', handleCardDeclined);
       socket.off('userAvailableCard', handleUserAvailableCard);
       socket.off('footballPageUpdate', handleFootballUpdate);
@@ -411,12 +397,7 @@ const FeedScreen = ({ navigation }: any) => {
       roomId: roomId,
     });
 
-    navigation.navigate('ChessGame', { 
-      roomId: roomId,
-      color: 'black',
-      opponentId: incomingChallenge.from
-    });
-    
+    // Navigation happens via acceptChessChallenge socket (AppNavigator) so params match server (colors, etc.).
     setIncomingChallenge(null);
     showToast('Success', 'Challenge accepted!', 'success');
   };
@@ -462,11 +443,6 @@ const FeedScreen = ({ navigation }: any) => {
       roomId: roomId,
     });
 
-    navigation.navigate('CardGame', { 
-      roomId: roomId,
-      opponentId: incomingCardChallenge.from
-    });
-    
     setIncomingCardChallenge(null);
     showToast('Success', 'Challenge accepted!', 'success');
   };
@@ -496,32 +472,13 @@ const FeedScreen = ({ navigation }: any) => {
 
   const renderPost = ({ item }: { item: any }) => <Post post={item} />;
 
-  return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Text style={styles.logoutButtonText}>⬅️</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.themeButton, { backgroundColor: colors.primary }]}
-            onPress={toggleTheme}
-          >
-            <Text style={[styles.themeButtonText, { color: colors.buttonText }]}>
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.createButton, { backgroundColor: colors.primary }]}
-            onPress={() => navigation.navigate('CreatePost')}
-          >
-            <Text style={[styles.createButtonText, { color: colors.buttonText }]}>+</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <View style={styles.quickAccessRightRail}>
+  const quickActionsHeader = (
+    <View style={styles.quickAccessHeaderContainer}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.quickAccessScrollContent}
+      >
         <TouchableOpacity
           style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() => navigation.navigate('Notifications')}
@@ -586,11 +543,46 @@ const FeedScreen = ({ navigation }: any) => {
           <Text style={styles.quickAccessIcon}>🔴</Text>
           <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Activity</Text>
         </TouchableOpacity>
+      </ScrollView>
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+            activeOpacity={0.85}
+          >
+            <View style={styles.logoutButtonInner}>
+              <Text style={styles.logoutButtonText}>↩</Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.themeButton}
+            onPress={toggleTheme}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.themeButtonText}>
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.createButton, { backgroundColor: colors.primary }]}
+            onPress={() => navigation.navigate('CreatePost')}
+          >
+            <Text style={[styles.createButtonText, { color: colors.buttonText }]}>+</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
-        data={posts}
+        data={loading ? [] : posts}
         renderItem={renderPost}
+        ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
         keyExtractor={(item, index) => {
           // Ensure unique keys by using both _id and index as fallback
           const id = item._id?.toString?.() ?? String(item._id);
@@ -607,11 +599,14 @@ const FeedScreen = ({ navigation }: any) => {
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
-          loading ? (
-            <View style={styles.inlineLoading}>
-              <ActivityIndicator size="large" color={COLORS.primary} />
-            </View>
-          ) : null
+          <View>
+            {quickActionsHeader}
+            {loading ? (
+              <View style={styles.inlineLoading}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+              </View>
+            ) : null}
+          </View>
         }
         ListFooterComponent={
           loadingMore ? (
@@ -882,15 +877,34 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   logoutButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.error,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#D93543',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#D93543',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  logoutButtonInner: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   logoutButtonText: {
-    fontSize: 20,
+    fontSize: 24,
+    lineHeight: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    includeFontPadding: false,
+    textAlign: 'center',
+    marginTop: -4,
   },
   createButton: {
     width: 40,
@@ -906,15 +920,23 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   themeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.primary,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.08)',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    elevation: 4,
   },
   themeButtonText: {
-    fontSize: 20,
+    fontSize: 21,
+    includeFontPadding: false,
   },
   loadingContainer: {
     flex: 1,
@@ -924,7 +946,9 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 20,
-    paddingRight: 96, // leave space for the right-side quick actions rail
+  },
+  postSeparator: {
+    height: 8,
   },
   emptyContainer: {
     alignItems: 'center',
@@ -946,21 +970,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  quickAccessRightRail: {
-    position: 'absolute',
-    right: 10,
-    top: 100, // moved up from 140
-    zIndex: 10,
-    alignItems: 'flex-end',
-    gap: 8, // reduced gap
+  quickAccessHeaderContainer: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    marginBottom: 8,
+  },
+  quickAccessScrollContent: {
+    paddingHorizontal: 10,
+    gap: 8,
   },
   quickAccessButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8, // reduced from 10
-    paddingHorizontal: 6, // reduced from 8
-    minWidth: 60, // reduced from 72
-    borderRadius: 10, // reduced from 12
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    minWidth: 74,
+    borderRadius: 10,
     backgroundColor: COLORS.backgroundLight,
     borderWidth: 1,
     borderColor: COLORS.border,

@@ -15,9 +15,30 @@ import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
-import ChessBoard from '../../components/ChessBoard';
+import ChessBoard, { ChessMoveAnimation } from '../../components/ChessBoard';
 
 const { width } = Dimensions.get('window');
+
+/** Piece char for board glyphs (P/N/B/R/Q/K) — uses promotion when present. */
+function getPieceCharForAnimation(
+  beforeFen: string,
+  from: string,
+  promotion: string | undefined,
+  color: 'w' | 'b',
+): string {
+  if (promotion) {
+    const t = promotion.toLowerCase();
+    return color === 'w' ? t.toUpperCase() : t;
+  }
+  try {
+    const c = new Chess(beforeFen);
+    const p = c.get(from as any);
+    if (!p) return 'p';
+    return p.color === 'w' ? (p.type as string).toUpperCase() : p.type;
+  } catch {
+    return 'p';
+  }
+}
 
 interface ChessGameScreenProps {
   navigation: any;
@@ -47,6 +68,8 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [capturedBlack, setCapturedBlack] = useState<string[]>([]);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [legalMoves, setLegalMoves] = useState<string[]>([]);
+  const [moveAnimation, setMoveAnimation] = useState<ChessMoveAnimation | null>(null);
+  const moveAnimKeyRef = useRef(0);
   // Track current roomId to prevent processing events from old rooms
   const currentRoomIdRef = useRef<string | null>(null);
   // Track previous roomId to detect game switches
@@ -139,6 +162,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     };
   }, []);
 
+  const triggerMoveAnimation = useCallback((from: string, to: string, piece: string) => {
+    moveAnimKeyRef.current += 1;
+    setMoveAnimation({ key: moveAnimKeyRef.current, from, to, piece });
+  }, []);
+
   const playSound = useCallback((type: 'move' | 'capture' | 'check' | 'gameStart') => {
     const sound = sounds.current[type];
     if (sound) {
@@ -193,6 +221,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setGameResult('');
     setSelectedSquare(null);
     setLegalMoves([]);
+    setMoveAnimation(null);
     setGameLive(false); // Will be set to true when game state is received
     // Clear player states when switching games
     setPlayer1(null);
@@ -531,7 +560,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (data.move) {
       if (data.move.after) {
         try {
-          const beforeFen = chess.fen();
+          const beforeFen = data.move.before || chess.fen();
+          const moveColor = (data.move.color as 'w' | 'b') || 'w';
+          const pieceChar = getPieceCharForAnimation(
+            beforeFen,
+            data.move.from,
+            data.move.promotion,
+            moveColor,
+          );
+          triggerMoveAnimation(data.move.from, data.move.to, pieceChar);
           chess.load(data.move.after);
           setFen(data.move.after);
           
@@ -568,6 +605,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         }
         
         try {
+          const fenBeforeMove = chess.fen();
           const moveObj: any = {
             from: data.move.from,
             to: data.move.to,
@@ -580,6 +618,13 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           const moveResult = chess.move(moveObj);
           
           if (moveResult) {
+            const pieceChar = getPieceCharForAnimation(
+              fenBeforeMove,
+              moveResult.from,
+              moveResult.promotion,
+              moveResult.color,
+            );
+            triggerMoveAnimation(moveResult.from, moveResult.to, pieceChar);
             const newFen = chess.fen();
             setFen(newFen);
             
@@ -627,7 +672,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (chess.isGameOver()) {
       handleLocalGameOver();
     }
-  }, [chess, playSound]);
+  }, [chess, playSound, triggerMoveAnimation]);
 
   const removeOwnChessPost = () => {
     // Remove chess game post from feed (frontend only)
@@ -816,6 +861,13 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           if (move) {
             const beforeFen = move.before;
             const newFen = chess.fen();
+            const pieceChar = getPieceCharForAnimation(
+              beforeFen,
+              move.from,
+              move.promotion,
+              move.color,
+            );
+            triggerMoveAnimation(move.from, move.to, pieceChar);
             setFen(newFen);
             setSelectedSquare(null);
             setLegalMoves([]);
@@ -878,7 +930,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         }
       }
     }
-  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound]);
+  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound, triggerMoveAnimation]);
 
   const handleBack = () => {
     // Only emit resign if user is a player (not a spectator)
@@ -1014,6 +1066,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             onSquarePress={handleSquarePress}
             selectedSquare={selectedSquare}
             legalMoves={legalMoves}
+            moveAnimation={moveAnimation}
           />
         </View>
       </View>

@@ -20,15 +20,17 @@ import { useSocket } from '../context/SocketContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
+import VideoFeedPreview from './VideoFeedPreview';
 
 interface PostProps {
   post: any;
   disableNavigation?: boolean; // If true, disable navigation to PostDetail (for PostDetailScreen)
   fromScreen?: string; // Screen name where Post is rendered (e.g., 'UserProfile')
   userProfileParams?: any; // Params to pass when navigating back to UserProfile
+  autoPlayMedia?: boolean; // Force media autoplay (used in PostDetail)
 }
 
-const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen, userProfileParams }) => {
+const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen, userProfileParams, autoPlayMedia = false }) => {
   const navigation = useNavigation<any>();
   
   // Helper function to navigate to PostDetail (ensures tab bar is visible)
@@ -225,6 +227,13 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
     setLocalLikesCount(post.likes?.length || 0);
   }, [post.likes, user?._id]);
 
+  // Ensure media starts playing when opening PostDetail.
+  useEffect(() => {
+    if (disableNavigation && autoPlayMedia) {
+      setYoutubePlaying(true);
+    }
+  }, [disableNavigation, autoPlayMedia, post?._id]);
+
   // Load personalized weather data for weather posts
   useEffect(() => {
     if (!isWeatherPost || !post?.weatherData) {
@@ -410,40 +419,39 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
     return date.toLocaleDateString();
   };
 
-  // Check if post has YouTube embed
-  const isYouTubeEmbed = post.img && (
-    post.img.includes('youtube.com/embed') || 
-    post.img.includes('youtu.be')
-  );
-  
-  // Check if this is a channel post (system account with YouTube embed or channel post)
-  const channelUsernames = ['Football', 'AlJazeera', 'NBCNews', 'BeinSportsNews', 'SkyNews', 'Cartoonito', 
-    'NatGeoKids', 'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 'MBCDrama', 'Fox11'];
-  const isChannelPost = isYouTubeEmbed || !!post?.channelAddedBy || 
-    channelUsernames.includes(post.postedBy?.username);
-  
-  // Debug log for channel detection
-  if (isYouTubeEmbed) {
-    console.log('📺 [Post] Detected as channel post (YouTube embed):', post.postedBy?.username);
-  }
-  
-  // Extract YouTube video ID from embed URL
-  const getYouTubeVideoId = (embedUrl: string) => {
-    if (!embedUrl) return '';
-    // Extract video ID from embed URL: https://www.youtube.com/embed/VIDEO_ID?autoplay=1&mute=0
-    const embedMatch = embedUrl.match(/youtube\.com\/embed\/([^?&]+)/);
-    if (embedMatch) {
-      return embedMatch[1];
-    }
-    // Extract from youtu.be: https://youtu.be/VIDEO_ID
-    const shortMatch = embedUrl.match(/youtu\.be\/([^?&]+)/);
-    if (shortMatch) {
-      return shortMatch[1];
+  // Extract YouTube video ID from many possible URL shapes:
+  // embed, watch?v=, youtu.be, shorts, live, and thumbnail /vi/<id>/...
+  const getYouTubeVideoId = (url: string) => {
+    if (!url) return '';
+    const normalized = url.trim();
+    const patterns = [
+      /youtube\.com\/embed\/([^?&/]+)/i,
+      /youtube\.com\/watch\?v=([^?&/]+)/i,
+      /youtu\.be\/([^?&/]+)/i,
+      /youtube\.com\/shorts\/([^?&/]+)/i,
+      /youtube\.com\/live\/([^?&/]+)/i,
+      /(?:ytimg\.com|img\.youtube\.com)\/vi\/([^?&/]+)/i,
+    ];
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern);
+      if (match?.[1]) return match[1];
     }
     return '';
   };
+
+  const youtubeVideoId = getYouTubeVideoId(post.img || '');
+  const isYouTubePost = !!youtubeVideoId;
+
+  // Check if this is a channel post (system account with YouTube or channel post)
+  const channelUsernames = ['Football', 'AlJazeera', 'NBCNews', 'BeinSportsNews', 'SkyNews', 'Cartoonito', 
+    'NatGeoKids', 'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 'MBCDrama', 'Fox11'];
+  const isChannelPost = isYouTubePost || !!post?.channelAddedBy || 
+    channelUsernames.includes(post.postedBy?.username);
   
-  const youtubeVideoId = isYouTubeEmbed ? getYouTubeVideoId(post.img) : '';
+  // Debug log for channel detection
+  if (isYouTubePost) {
+    console.log('📺 [Post] Detected as YouTube post:', { username: post.postedBy?.username, youtubeVideoId, img: post.img });
+  }
   
   // Check if post has regular video (mp4, webm, etc.)
   const isVideoPost = post.img && (
@@ -462,23 +470,22 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             e.stopPropagation();
             // If navigation is disabled (PostDetailScreen), don't navigate
             if (disableNavigation) return;
-            
-            // If this is a channel post, navigate to post page
-            const username = post.postedBy?.username;
-            const hasChannelAddedBy = !!post?.channelAddedBy;
-            const hasYouTubeEmbed = !!isYouTubeEmbed;
-            const isInChannelList = channelUsernames.includes(username);
-            const isChannelPost = isYouTubeEmbed || hasChannelAddedBy || isInChannelList;
-            
+
+            const username =
+              typeof post.postedBy === 'object' && post.postedBy?.username
+                ? String(post.postedBy.username).trim()
+                : '';
+
+            // Use the same channel rules as the rest of the component (was referencing
+            // undefined `isYouTubeEmbed` here → ReferenceError / app exit on every tap).
             if (isChannelPost && post?._id) {
               console.log('📺 [Post] Channel post - navigating to PostDetail:', post._id);
               navigateToPostDetail(post._id);
             } else if (username) {
-              // For regular users, navigate to their profile page
               console.log('👤 [Post] User post - navigating to UserProfile:', username);
-              navigation.navigate('Profile', { 
-                screen: 'UserProfile', 
-                params: { username } 
+              navigation.navigate('Profile', {
+                screen: 'UserProfile',
+                params: { username },
               });
             }
           }}
@@ -549,7 +556,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         )
       )}
 
-      {post.img && isYouTubeEmbed && youtubeVideoId ? (
+      {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
           <View 
             style={styles.videoContainer}
@@ -559,7 +566,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             <YoutubePlayer
             height={styles.videoContainer.height}
             videoId={youtubeVideoId}
-            play={youtubePlaying}
+            play={disableNavigation && autoPlayMedia ? true : youtubePlaying}
             mute={false}
             webViewProps={{
               allowsInlineMediaPlayback: true,
@@ -662,6 +669,8 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
                     <video
                       src="${post.img}"
                       controls
+                      autoplay
+                      muted
                       playsinline
                       preload="metadata"
                       controlsList="nodownload"
@@ -672,7 +681,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
             }}
             style={styles.videoWebView}
             allowsFullscreenVideo={true}
-            mediaPlaybackRequiresUserAction={true}
+            mediaPlaybackRequiresUserAction={!(disableNavigation && autoPlayMedia)}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             allowsInlineMediaPlayback={true}
@@ -698,20 +707,12 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
           // FEED OPTIMIZATION: render a lightweight placeholder instead of mounting WebView in a scrolling list
           <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
             <View style={styles.videoContainer}>
-              {/* Show thumbnail if available (for channels or posts with thumbnail) */}
-              {post.thumbnail ? (
-                <Image
-                  source={{ uri: post.thumbnail }}
-                  style={styles.videoThumbnail}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={[styles.videoContainer, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }]}>
-                  <Text style={{ fontSize: 42, color: '#FFFFFF' }}>▶</Text>
-                  <Text style={{ color: COLORS.textGray, marginTop: 8 }}>Tap to play</Text>
-                </View>
-              )}
-              {/* Always show play button overlay */}
+              <VideoFeedPreview
+                videoUrl={post.img}
+                serverThumbnail={post.thumbnail}
+                placeholderColor={colors.background}
+                spinnerColor={colors.primary}
+              />
               <View style={styles.youtubeOverlay}>
                 <View style={styles.youtubePlayButton}>
                   <Text style={styles.youtubePlayIcon}>▶</Text>
@@ -1006,14 +1007,6 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
           <Text style={styles.actionText}>{post.replies?.length || 0}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={styles.actionButton}
-          onPress={(e) => {
-            e.stopPropagation();
-          }}
-        >
-          <Text style={styles.actionIcon}>🔄</Text>
-        </TouchableOpacity>
       </View>
       
     </View>
@@ -1102,10 +1095,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   youtubeThumbnail: {
-    width: '100%',
-    height: '100%',
-  },
-  videoThumbnail: {
     width: '100%',
     height: '100%',
   },

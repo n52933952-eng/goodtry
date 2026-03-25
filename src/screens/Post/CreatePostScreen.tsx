@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -17,29 +16,40 @@ import {
 import { useUser } from '../../context/UserContext';
 import { usePost } from '../../context/PostContext';
 import { apiService } from '../../services/api';
-import { ENDPOINTS, COLORS } from '../../utils/constants';
+import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useImagePicker } from '../../hooks/useImagePicker';
 import { useLanguage } from '../../context/LanguageContext';
+import { useTheme } from '../../context/ThemeContext';
 
 const CreatePostScreen = ({ navigation }: any) => {
   const { user } = useUser();
   const { addPost } = usePost();
   const showToast = useShowToast();
-  const { imageUri, imageData, pickImage, clearImage } = useImagePicker();
+  const {
+    imageUri,
+    imageData,
+    isVideo,
+    pickImage,
+    pickMixedFromGallery,
+    pickVideoFromCamera,
+    clearImage,
+  } = useImagePicker();
   const { t } = useLanguage();
+  const { colors } = useTheme();
 
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [isCollaborative, setIsCollaborative] = useState(false);
 
-  const handleImagePick = () => {
+  const handleMediaPick = () => {
     Alert.alert(
-      t('selectImage'),
+      t('selectMedia'),
       t('chooseOption'),
       [
         { text: t('camera'), onPress: () => pickImage(true) },
-        { text: t('gallery'), onPress: () => pickImage(false) },
+        { text: t('gallery'), onPress: () => pickMixedFromGallery() },
+        { text: t('recordVideo'), onPress: () => pickVideoFromCamera() },
         { text: t('cancel'), style: 'cancel' },
       ]
     );
@@ -62,10 +72,16 @@ const CreatePostScreen = ({ navigation }: any) => {
         formData.append('postedBy', user?._id || '');
         formData.append('isCollaborative', isCollaborative ? 'true' : 'false');
         
+        const mime =
+          imageData?.type ||
+          (isVideo ? 'video/mp4' : 'image/jpeg');
+        const fallbackExt = mime.includes('video') ? 'mp4' : 'jpg';
         const imageFile = {
           uri: imageUri,
-          type: imageData.type || 'image/jpeg',
-          name: imageData.fileName || `image_${Date.now()}.jpg`,
+          type: mime,
+          name:
+            imageData?.fileName ||
+            (isVideo ? `video_${Date.now()}.${fallbackExt}` : `image_${Date.now()}.${fallbackExt}`),
         };
         
         formData.append('file', imageFile as any);
@@ -135,24 +151,30 @@ const CreatePostScreen = ({ navigation }: any) => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
+        ]}
+      >
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.cancelButton}>{t('cancel')}</Text>
+          <Text style={[styles.cancelButton, { color: colors.textGray }]}>{t('cancel')}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>{t('createPost')}</Text>
+        <Text style={[styles.title, { color: colors.text }]}>{t('createPost')}</Text>
         <TouchableOpacity 
           onPress={handlePost}
           disabled={loading || (!text.trim() && !imageUri)}
         >
           {loading ? (
-            <ActivityIndicator color={COLORS.primary} />
+            <ActivityIndicator color={colors.primary} />
           ) : (
             <Text 
               style={[
                 styles.postButton,
+                { color: colors.primary },
                 (!text.trim() && !imageUri) && styles.postButtonDisabled
               ]}
             >
@@ -162,36 +184,58 @@ const CreatePostScreen = ({ navigation }: any) => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView
+        style={[styles.content, { backgroundColor: colors.background }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.userInfo}>
           {user?.profilePic ? (
             <Image source={{ uri: user.profilePic }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
               <Text style={styles.avatarText}>
                 {user?.name?.[0]?.toUpperCase() || '?'}
               </Text>
             </View>
           )}
           <View style={styles.userDetails}>
-            <Text style={styles.userName}>{user?.name}</Text>
-            <Text style={styles.userUsername}>@{user?.username}</Text>
+            <Text style={[styles.userName, { color: colors.text }]}>{user?.name}</Text>
+            <Text style={[styles.userUsername, { color: colors.textGray }]}>@{user?.username}</Text>
           </View>
         </View>
 
         <TextInput
-          style={styles.textInput}
+          style={[styles.textInput, { color: colors.text }]}
           placeholder={t('whatsOnYourMind')}
-          placeholderTextColor={COLORS.textGray}
+          placeholderTextColor={colors.textGray}
           value={text}
           onChangeText={setText}
           multiline
           autoFocus
         />
 
-        {imageUri && (
+        {imageUri && !isVideo && (
           <View style={styles.imageContainer}>
             <Image source={{ uri: imageUri }} style={styles.image} />
+            <TouchableOpacity
+              style={styles.removeImageButton}
+              onPress={clearImage}
+            >
+              <Text style={styles.removeImageText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {imageUri && isVideo && (
+          <View style={styles.imageContainer}>
+            <View style={styles.videoPreview}>
+              <Text style={styles.videoPreviewIcon}>🎬</Text>
+              <Text style={styles.videoPreviewText}>{t('videoSelected')}</Text>
+              {!!imageData?.duration && imageData.duration > 0 && (
+                <Text style={styles.videoPreviewMeta}>
+                  {Math.round(imageData.duration)}s
+                </Text>
+              )}
+            </View>
             <TouchableOpacity
               style={styles.removeImageButton}
               onPress={clearImage}
@@ -209,13 +253,18 @@ const CreatePostScreen = ({ navigation }: any) => {
             <Text style={styles.optionIcon}>
               {isCollaborative ? '✅' : '☑️'}
             </Text>
-            <Text style={styles.optionText}>{t('collaborativePost')}</Text>
+            <Text style={[styles.optionText, { color: colors.text }]}>{t('collaborativePost')}</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
 
-      <View style={styles.toolbar}>
-        <TouchableOpacity style={styles.toolbarButton} onPress={handleImagePick}>
+      <View
+        style={[
+          styles.toolbar,
+          { backgroundColor: colors.backgroundLight, borderTopColor: colors.border },
+        ]}
+      >
+        <TouchableOpacity style={styles.toolbarButton} onPress={handleMediaPick}>
           <Text style={styles.toolbarIcon}>🖼️</Text>
         </TouchableOpacity>
       </View>
@@ -226,7 +275,6 @@ const CreatePostScreen = ({ navigation }: any) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
   },
   header: {
     flexDirection: 'row',
@@ -234,21 +282,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 15,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
   },
   cancelButton: {
     fontSize: 16,
-    color: COLORS.textGray,
   },
   title: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: COLORS.text,
   },
   postButton: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: COLORS.primary,
   },
   postButtonDisabled: {
     opacity: 0.4,
@@ -269,7 +313,6 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   avatarPlaceholder: {
-    backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -284,15 +327,12 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: COLORS.text,
   },
   userUsername: {
     fontSize: 14,
-    color: COLORS.textGray,
   },
   textInput: {
     fontSize: 16,
-    color: COLORS.text,
     minHeight: 120,
     textAlignVertical: 'top',
   },
@@ -304,6 +344,28 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 200,
     borderRadius: 12,
+  },
+  videoPreview: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    backgroundColor: '#111',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoPreviewIcon: {
+    fontSize: 42,
+    marginBottom: 8,
+  },
+  videoPreviewText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  videoPreviewMeta: {
+    color: '#94A3B8',
+    fontSize: 14,
+    marginTop: 6,
   },
   removeImageButton: {
     position: 'absolute',
@@ -335,13 +397,11 @@ const styles = StyleSheet.create({
   },
   optionText: {
     fontSize: 16,
-    color: COLORS.text,
   },
   toolbar: {
     flexDirection: 'row',
     padding: 15,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
   },
   toolbarButton: {
     marginRight: 15,

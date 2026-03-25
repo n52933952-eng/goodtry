@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -13,10 +13,11 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
+import { ENDPOINTS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
+import { useTheme } from '../../context/ThemeContext';
 
 interface Match {
   _id: string;
@@ -72,6 +73,299 @@ const FootballScreen = () => {
   const [activeTab, setActiveTab] = useState<'live' | 'upcoming' | 'finished'>('live');
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
+  );
+
+  const { colors } = useTheme();
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          flex: 1,
+          backgroundColor: colors.background,
+        },
+        loadingContainer: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+        },
+        header: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: 15,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        headerTitle: {
+          fontSize: 24,
+          fontWeight: 'bold',
+          color: colors.text,
+        },
+        headerSubtitle: {
+          fontSize: 14,
+          color: colors.textGray,
+          marginTop: 2,
+        },
+        followButton: {
+          backgroundColor: colors.primary,
+          paddingVertical: 8,
+          paddingHorizontal: 16,
+          borderRadius: 20,
+          minWidth: 80,
+          alignItems: 'center',
+        },
+        unfollowButton: {
+          backgroundColor: colors.backgroundLight,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        followButtonText: {
+          color: '#FFFFFF',
+          fontSize: 14,
+          fontWeight: 'bold',
+        },
+        followButtonTextMuted: {
+          color: colors.text,
+        },
+        infoBox: {
+          backgroundColor: colors.backgroundLight,
+          borderRadius: 8,
+          padding: 12,
+          margin: 15,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        infoText: {
+          fontSize: 14,
+          color: colors.text,
+          textAlign: 'center',
+        },
+        tabsContainer: {
+          flexDirection: 'row',
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          backgroundColor: colors.background,
+        },
+        tab: {
+          flex: 1,
+          paddingVertical: 12,
+          alignItems: 'center',
+          borderBottomWidth: 2,
+          borderBottomColor: 'transparent',
+        },
+        activeTab: {
+          borderBottomColor: colors.primary,
+        },
+        tabText: {
+          fontSize: 14,
+          color: colors.textGray,
+          fontWeight: '500',
+        },
+        activeTabText: {
+          color: colors.primary,
+          fontWeight: 'bold',
+        },
+        dateSelector: {
+          maxHeight: 100,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        dateSelectorContent: {
+          paddingHorizontal: 10,
+          paddingVertical: 10,
+        },
+        dateButton: {
+          width: 70,
+          minWidth: 70,
+          maxWidth: 70,
+          flexShrink: 0,
+          flexGrow: 0,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingVertical: 8,
+          paddingHorizontal: 4,
+          borderRadius: 8,
+          marginRight: 8,
+          backgroundColor: colors.backgroundLight,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        selectedDateButton: {
+          backgroundColor: colors.primary,
+          borderColor: colors.primary,
+        },
+        dateDayName: {
+          fontSize: 9,
+          fontWeight: '600',
+          color: colors.textGray,
+          marginBottom: 2,
+          textAlign: 'center',
+          includeFontPadding: false,
+        },
+        dateDayNumber: {
+          fontSize: 18,
+          fontWeight: 'bold',
+          color: colors.text,
+          textAlign: 'center',
+          includeFontPadding: false,
+        },
+        dateMonthName: {
+          fontSize: 9,
+          color: colors.textGray,
+          marginTop: 2,
+          textAlign: 'center',
+          includeFontPadding: false,
+        },
+        selectedDateText: {
+          color: '#FFFFFF',
+        },
+        todayBadge: {
+          marginTop: 4,
+          backgroundColor: 'rgba(255, 255, 255, 0.3)',
+          paddingHorizontal: 6,
+          paddingVertical: 2,
+          borderRadius: 4,
+        },
+        todayBadgeText: {
+          fontSize: 9,
+          color: '#FFFFFF',
+          fontWeight: 'bold',
+        },
+        listContainer: {
+          padding: 15,
+        },
+        matchCard: {
+          backgroundColor: colors.backgroundLight,
+          borderRadius: 12,
+          padding: 15,
+          marginBottom: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        leagueRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          marginBottom: 12,
+        },
+        leagueLogo: {
+          width: 20,
+          height: 20,
+          marginRight: 8,
+        },
+        leagueName: {
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.text,
+          flex: 1,
+        },
+        liveBadge: {
+          backgroundColor: '#EF4444',
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 4,
+        },
+        liveBadgeText: {
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+        halfTimeBadge: {
+          backgroundColor: '#F97316',
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 4,
+        },
+        halfTimeBadgeText: {
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+        matchContent: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          marginBottom: 12,
+        },
+        teamContainer: {
+          flex: 1,
+          alignItems: 'center',
+        },
+        teamName: {
+          fontSize: 15,
+          fontWeight: 'bold',
+          color: colors.text,
+          textAlign: 'center',
+          marginBottom: 8,
+        },
+        teamLogo: {
+          width: 30,
+          height: 30,
+        },
+        scoreContainer: {
+          alignItems: 'center',
+          marginHorizontal: 10,
+        },
+        scoreRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+        },
+        score: {
+          fontSize: 24,
+          fontWeight: 'bold',
+          color: colors.text,
+        },
+        scoreSeparator: {
+          fontSize: 18,
+          color: colors.textGray,
+          marginHorizontal: 4,
+        },
+        matchTime: {
+          fontSize: 14,
+          color: colors.textGray,
+          fontWeight: '500',
+        },
+        eventsContainer: {
+          marginTop: 12,
+          paddingTop: 12,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+        },
+        eventsTitle: {
+          fontSize: 11,
+          color: colors.textGray,
+          fontWeight: '600',
+          marginBottom: 8,
+        },
+        eventRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 4,
+        },
+        eventText: {
+          fontSize: 12,
+          color: colors.text,
+          fontWeight: '500',
+        },
+        eventTeam: {
+          fontSize: 11,
+          color: colors.textGray,
+        },
+        emptyContainer: {
+          padding: 60,
+          alignItems: 'center',
+        },
+        emptyIcon: {
+          fontSize: 64,
+          marginBottom: 20,
+        },
+        emptyText: {
+          fontSize: 16,
+          color: colors.textGray,
+          textAlign: 'center',
+        },
+      }),
+    [colors],
   );
 
   // Check if user follows Football account
@@ -404,7 +698,7 @@ const FootballScreen = () => {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -424,9 +718,9 @@ const FootballScreen = () => {
             disabled={followLoading}
           >
             {followLoading ? (
-              <ActivityIndicator color="#FFFFFF" size="small" />
+              <ActivityIndicator color={isFollowing ? colors.text : '#FFFFFF'} size="small" />
             ) : (
-              <Text style={styles.followButtonText}>
+              <Text style={[styles.followButtonText, isFollowing && styles.followButtonTextMuted]}>
                 {isFollowing ? t('following') : t('follow')}
               </Text>
             )}
@@ -535,7 +829,7 @@ const FootballScreen = () => {
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.listContainer}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.primary} />
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
@@ -555,290 +849,5 @@ const FootballScreen = () => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    marginTop: 2,
-  },
-  followButton: {
-    backgroundColor: COLORS.primary,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  unfollowButton: {
-    backgroundColor: COLORS.backgroundLight,
-    borderWidth: 1,
-    borderColor: COLORS.textGray,
-  },
-  followButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  infoBox: {
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 8,
-    padding: 12,
-    margin: 15,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  infoText: {
-    fontSize: 14,
-    color: COLORS.text,
-    textAlign: 'center',
-  },
-  tabsContainer: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    backgroundColor: COLORS.background,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-  },
-  activeTab: {
-    borderBottomColor: COLORS.primary,
-  },
-  tabText: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    fontWeight: '500',
-  },
-  activeTabText: {
-    color: COLORS.primary,
-    fontWeight: 'bold',
-  },
-  dateSelector: {
-    maxHeight: 100,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  dateSelectorContent: {
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  dateButton: {
-    width: 70,
-    minWidth: 70,
-    maxWidth: 70,
-    flexShrink: 0,
-    flexGrow: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderRadius: 8,
-    marginRight: 8,
-    backgroundColor: COLORS.backgroundLight,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  selectedDateButton: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  dateDayName: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: COLORS.textGray,
-    marginBottom: 2,
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-  dateDayNumber: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-  dateMonthName: {
-    fontSize: 9,
-    color: COLORS.textGray,
-    marginTop: 2,
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-  selectedDateText: {
-    color: '#FFFFFF',
-  },
-  todayBadge: {
-    marginTop: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  todayBadgeText: {
-    fontSize: 9,
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-  },
-  listContainer: {
-    padding: 15,
-  },
-  matchCard: {
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  leagueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  leagueLogo: {
-    width: 20,
-    height: 20,
-    marginRight: 8,
-  },
-  leagueName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.text,
-    flex: 1,
-  },
-  liveBadge: {
-    backgroundColor: '#EF4444',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  liveBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  halfTimeBadge: {
-    backgroundColor: '#F97316',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  halfTimeBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  matchContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  teamContainer: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  teamName: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  teamLogo: {
-    width: 30,
-    height: 30,
-  },
-  scoreContainer: {
-    alignItems: 'center',
-    marginHorizontal: 10,
-  },
-  scoreRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  score: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  scoreSeparator: {
-    fontSize: 18,
-    color: COLORS.textGray,
-    marginHorizontal: 4,
-  },
-  matchTime: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    fontWeight: '500',
-  },
-  eventsContainer: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  eventsTitle: {
-    fontSize: 11,
-    color: COLORS.textGray,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  eventRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  eventText: {
-    fontSize: 12,
-    color: COLORS.text,
-    fontWeight: '500',
-  },
-  eventTeam: {
-    fontSize: 11,
-    color: COLORS.textGray,
-  },
-  emptyContainer: {
-    padding: 60,
-    alignItems: 'center',
-  },
-  emptyIcon: {
-    fontSize: 64,
-    marginBottom: 20,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: COLORS.textGray,
-    textAlign: 'center',
-  },
-});
 
 export default FootballScreen;

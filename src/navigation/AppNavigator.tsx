@@ -1,12 +1,11 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity } from 'react-native';
-import { NavigationContainer, DarkTheme } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useUser } from '../context/UserContext';
 import { useWebRTC } from '../context/WebRTCContext';
 import { useTheme } from '../context/ThemeContext';
-import { COLORS } from '../utils/constants';
 import fcmService from '../services/fcmService';
 import { getPendingCallData, clearCallData } from '../services/callData';
 
@@ -64,6 +63,7 @@ const FeedStack = () => {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
       }}
     >
       <Stack.Screen name="FeedScreen" component={FeedScreen} />
@@ -94,6 +94,7 @@ const MainTabs = () => {
   <Tab.Navigator
     screenOptions={{
       headerShown: false,
+      sceneStyle: { backgroundColor: colors.background },
       tabBarShowLabel: false, // Remove text labels below icons
       tabBarStyle: {
         backgroundColor: colors.backgroundLight,
@@ -268,6 +269,7 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
       }}
     >
       <Stack.Screen 
@@ -397,6 +399,7 @@ const MessagesIcon = ({ color }: { color: string }) => (
 // Main App Navigator
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
+  const { colors, theme: appTheme } = useTheme();
   const { call, pendingCancel, callEnded, isCalling, callAccepted, setIncomingCallFromNotification, getIncomingCallFromNotificationCallerId } = useWebRTC();
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
   const callRef = useRef(call);
@@ -640,6 +643,11 @@ const AppNavigator = () => {
       getPendingCallData()
         .then((callData) => {
           if (!callData?.hasPendingCall || !navigationRef.current) return;
+          // Corrupt / stale prefs from a crashed session can strand users on a ghost CallScreen.
+          if (!callData.callerId) {
+            clearCallData();
+            return;
+          }
           const g = cancelGuardRef.current;
           const answering = callData.shouldAutoAnswer === true;
           if (!answering && (g.pendingCancel || g.hasPendingCancelFromPrefs || g.callEnded)) {
@@ -678,6 +686,48 @@ const AppNavigator = () => {
       console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
     }
   }, [navReady, user, setIncomingCallFromNotification]);
+
+  // Chess / Go Fish: server emits accept*Challenge to both players — navigate from root so the
+  // challenger opens the game even when not on the Feed tab (previously only FeedScreen listened).
+  useEffect(() => {
+    if (!navReady || !socket || !user?._id) return;
+
+    const goChess = (data: any) => {
+      if (!data?.roomId || !data?.yourColor || !data?.opponentId) return;
+      const nav = navigationRef.current;
+      if (!nav?.navigate) return;
+      const cur = nav.getCurrentRoute?.();
+      if (cur?.name === 'ChessGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
+        return;
+      }
+      nav.navigate('ChessGame', {
+        roomId: data.roomId,
+        color: data.yourColor,
+        opponentId: data.opponentId,
+      });
+    };
+
+    const goCard = (data: any) => {
+      if (!data?.roomId || !data?.opponentId) return;
+      const nav = navigationRef.current;
+      if (!nav?.navigate) return;
+      const cur = nav.getCurrentRoute?.();
+      if (cur?.name === 'CardGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
+        return;
+      }
+      nav.navigate('CardGame', {
+        roomId: data.roomId,
+        opponentId: data.opponentId,
+      });
+    };
+
+    socket.on('acceptChessChallenge', goChess);
+    socket.on('acceptCardChallenge', goCard);
+    return () => {
+      socket.off('acceptChessChallenge', goChess);
+      socket.off('acceptCardChallenge', goCard);
+    };
+  }, [navReady, socket, user?._id]);
 
   // Listen for navigation events from native code (e.g., from IncomingCallActivity via MainActivity)
   useEffect(() => {
@@ -828,6 +878,10 @@ const AppNavigator = () => {
       getPendingCallData()
         .then((callData) => {
           if (callData && callData.hasPendingCall && navigationRef.current) {
+            if (!callData.callerId) {
+              clearCallData();
+              return;
+            }
             console.log('📞 [AppNavigator] Found pending call in SharedPreferences (polling):', callData);
             
             // Check if already on CallScreen
@@ -897,14 +951,17 @@ const AppNavigator = () => {
     return null; // You can add a splash screen here
   }
 
+  const baseNavTheme = appTheme === 'dark' ? DarkTheme : DefaultTheme;
   const navTheme = {
-    ...DarkTheme,
+    ...baseNavTheme,
     colors: {
-      ...DarkTheme.colors,
-      background: COLORS.background,
-      card: COLORS.background,
-      border: COLORS.border,
-      text: COLORS.text,
+      ...baseNavTheme.colors,
+      primary: colors.primary,
+      background: colors.background,
+      card: colors.backgroundLight,
+      border: colors.border,
+      text: colors.text,
+      notification: colors.primary,
     },
   };
 

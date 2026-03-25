@@ -1,4 +1,5 @@
-import React, { createContext, useState, useContext, ReactNode } from 'react';
+import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import { useUser } from './UserContext';
 
 export interface Post {
   _id: string;
@@ -40,7 +41,15 @@ interface PostContextType {
 const PostContext = createContext<PostContextType | undefined>(undefined);
 
 export const PostProvider = ({ children }: { children: ReactNode }) => {
+  const { user } = useUser();
   const [posts, setPosts] = useState<Post[]>([]);
+
+  // Drop feed when logged out or between accounts so a new session never flashes the prior user's posts.
+  useEffect(() => {
+    if (!user?._id) {
+      setPosts([]);
+    }
+  }, [user?._id]);
 
   const addPost = (post: Post) => {
     setPosts((prevPosts) => {

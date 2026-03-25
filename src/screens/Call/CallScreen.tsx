@@ -293,6 +293,7 @@ const CallScreen = () => {
           streamURL={remoteStream.toURL()}
           style={styles.remoteVideo}
           objectFit="cover"
+          zOrder={0}
         />
       )}
       {isVideo && !remoteStream && (
@@ -344,13 +345,19 @@ const CallScreen = () => {
 
       {/* Local video (pip) - video call only */}
       {isVideo && localStream && (
-        <View style={styles.localVideoWrap}>
+        <View style={styles.localVideoWrap} pointerEvents="box-none">
           <RTCView
             streamURL={localStream.toURL()}
             style={styles.localVideo}
             objectFit="cover"
-            mirror={true}
+            mirror
+            zOrder={1}
           />
+          {isCameraOff && (
+            <View style={styles.localVideoCameraOffOverlay}>
+              <Text style={styles.localVideoCameraOffText}>Camera off</Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -546,14 +553,32 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: Platform.OS === 'ios' ? 56 : 48,
     right: 16,
-    width: 100,
-    height: 140,
-    borderRadius: 8,
+    width: 120,
+    height: 160,
+    borderRadius: 12,
     overflow: 'hidden',
+    zIndex: 20,
+    elevation: 20,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: '#111',
   },
   localVideo: {
     width: '100%',
     height: '100%',
+  },
+  localVideoCameraOffOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  localVideoCameraOffText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   connectedContent: {
     flex: 1,

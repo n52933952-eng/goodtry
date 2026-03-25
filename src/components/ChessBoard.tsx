@@ -1,10 +1,19 @@
-import React, { memo, useMemo, useRef, useEffect, useState } from 'react';
+import React, { memo, useMemo, useRef, useLayoutEffect, useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing } from 'react-native';
 import { COLORS } from '../utils/constants';
 
 const { width } = Dimensions.get('window');
 const SQUARE_SIZE = (width - 32) / 8;
 const BOARD_SIZE = SQUARE_SIZE * 8;
+const MOVE_DURATION_MS = 320;
+
+export interface ChessMoveAnimation {
+  key: number;
+  from: string;
+  to: string;
+  /** FEN piece char e.g. P, n, Q */
+  piece: string;
+}
 
 interface ChessBoardProps {
   fen: string;
@@ -12,12 +21,11 @@ interface ChessBoardProps {
   onSquarePress: (square: string) => void;
   selectedSquare: string | null;
   legalMoves: string[];
+  /** When key changes, animates piece sliding from → to (both local and opponent moves). */
+  moveAnimation?: ChessMoveAnimation | null;
 }
 
 const PIECE_SYMBOLS: { [key: string]: string } = {
-  // NOTE: Unicode "white" chess glyphs tend to look much bolder/heavier on Android.
-  // To better match the web (SVG) look, render WHITE pieces using the slimmer glyph shapes
-  // (same shapes as black pieces) but keep them styled as white via `styles.whitePiece`.
   'P': '♟', 'N': '♞', 'B': '♝', 'R': '♜', 'Q': '♛', 'K': '♚',
   'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚',
 };
@@ -28,22 +36,25 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   onSquarePress,
   selectedSquare,
   legalMoves,
+  moveAnimation,
 }) => {
-  const prevFen = useRef(fen);
-  const prevSelectedSquare = useRef(selectedSquare);
-  // Overlay animation state - only for opponent moves
-  const [overlayMove, setOverlayMove] = useState<{
-    piece: string;
-    fromPos: { x: number; y: number };
-    toPos: { x: number; y: number };
-  } | null>(null);
   const overlayPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const overlayOpacity = useRef(new Animated.Value(1)).current;
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  /** Prevents restarting the same moveAnimation.key when parent re-renders mid-flight. */
+  const startedAnimKeyRef = useRef<number | null>(null);
+
+  /** When this equals moveAnimation.key, the slide for that move is done (squares use FEN again). */
+  const [completedMoveKey, setCompletedMoveKey] = useState<number | null>(null);
+
+  const isSliding =
+    moveAnimation != null &&
+    completedMoveKey !== moveAnimation.key;
 
   const board = useMemo(() => {
     const parsedBoard: (string | null)[][] = [];
     const rows = fen.split(' ')[0].split('/');
-    
+
     for (const row of rows) {
       const boardRow: (string | null)[] = [];
       for (const char of row) {
@@ -57,134 +68,90 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
       }
       parsedBoard.push(boardRow);
     }
-    
+
     return parsedBoard;
   }, [fen]);
 
-  // Helper function to convert square name to pixel coordinates
-  const getSquarePixelPosition = (square: string): { x: number; y: number } => {
+  const getSquarePixelPosition = useCallback((square: string): { x: number; y: number } => {
     const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
-    
+
     const file = files.indexOf(square[0]);
     const rank = ranks.indexOf(square[1]);
-    
+
     if (orientation === 'white') {
       return {
         x: file * SQUARE_SIZE,
         y: rank * SQUARE_SIZE,
       };
-    } else {
-      return {
-        x: (7 - file) * SQUARE_SIZE,
-        y: (7 - rank) * SQUARE_SIZE,
-      };
     }
-  };
+    return {
+      x: (7 - file) * SQUARE_SIZE,
+      y: (7 - rank) * SQUARE_SIZE,
+    };
+  }, [orientation]);
 
-  const parseFen = (fenString: string) => {
-    const parsedBoard: (string | null)[][] = [];
-    const rows = fenString.split(' ')[0].split('/');
-    
-    for (const row of rows) {
-      const boardRow: (string | null)[] = [];
-      for (const char of row) {
-        if (isNaN(parseInt(char))) {
-          boardRow.push(char);
-        } else {
-          for (let i = 0; i < parseInt(char); i++) {
-            boardRow.push(null);
-          }
-        }
+  useLayoutEffect(() => {
+    if (!moveAnimation) {
+      if (animRef.current) {
+        animRef.current.stop();
+        animRef.current = null;
       }
-      parsedBoard.push(boardRow);
+      startedAnimKeyRef.current = null;
+      return;
     }
-    
-    return parsedBoard;
-  };
 
-  useEffect(() => {
-    // Check if this is a user move (selectedSquare was just cleared) or opponent move
-    const isUserMove = prevSelectedSquare.current !== null && selectedSquare === null;
-    prevSelectedSquare.current = selectedSquare;
+    const { key, from, to, piece } = moveAnimation;
+    if (!from || !to || !piece) return;
 
-    if (prevFen.current !== fen && !isUserMove) {
-      // This is an opponent move - add subtle animation
-      const prevBoard = parseFen(prevFen.current);
-      const currBoard = parseFen(fen);
-      
-      let moveFrom: string | null = null;
-      let moveTo: string | null = null;
-      let movedPiece: string | null = null;
-      
-      const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-      const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
-      
-      for (let row = 0; row < 8; row++) {
-        for (let col = 0; col < 8; col++) {
-          const prevPiece = prevBoard[row][col];
-          const currPiece = currBoard[row][col];
-          const squareName = files[col] + ranks[row];
-          
-          if (prevPiece && !currPiece) {
-            moveFrom = squareName;
-            movedPiece = prevPiece;
-          }
-          if (!prevPiece && currPiece) {
-            moveTo = squareName;
-            if (!movedPiece) movedPiece = currPiece;
-          }
-          if (prevPiece && currPiece && prevPiece !== currPiece) {
-            moveTo = squareName;
-            if (!movedPiece) movedPiece = currPiece;
-          }
-        }
-      }
-      
-      if (moveFrom && moveTo && movedPiece) {
-        // Subtle animation for opponent moves only
-        const fromPos = getSquarePixelPosition(moveFrom);
-        const toPos = getSquarePixelPosition(moveTo);
-        
-        setOverlayMove({
-          piece: movedPiece,
-          fromPos,
-          toPos,
-        });
-        
-        overlayPosition.setValue({ x: fromPos.x, y: fromPos.y });
-        overlayOpacity.setValue(1);
-        
-        // Quick, subtle animation (200ms)
-        const moveAnimation = Animated.timing(overlayPosition, {
-          toValue: { x: toPos.x, y: toPos.y },
-          duration: 200,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        });
-        
-        // Fade out quickly to prevent overlap
-        const fadeAnimation = Animated.sequence([
-          Animated.delay(50), // Start fading early
-          Animated.timing(overlayOpacity, {
-            toValue: 0,
-            duration: 80,
-            easing: Easing.in(Easing.quad),
-            useNativeDriver: true,
-          }),
-        ]);
-        
-        Animated.parallel([moveAnimation, fadeAnimation]).start(({ finished }) => {
-          if (finished) {
-            setOverlayMove(null);
-            overlayOpacity.setValue(1);
-          }
-        });
-      }
+    if (startedAnimKeyRef.current === key) {
+      return;
     }
-    
-    prevFen.current = fen;
-  }, [fen, selectedSquare, orientation]);
+
+    if (animRef.current) {
+      animRef.current.stop();
+      animRef.current = null;
+    }
+
+    startedAnimKeyRef.current = key;
+
+    const fromPos = getSquarePixelPosition(from);
+    const toPos = getSquarePixelPosition(to);
+
+    overlayPosition.setValue({ x: fromPos.x, y: fromPos.y });
+    overlayOpacity.setValue(1);
+
+    const moveAnimationRun = Animated.timing(overlayPosition, {
+      toValue: { x: toPos.x, y: toPos.y },
+      duration: MOVE_DURATION_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+
+    animRef.current = moveAnimationRun;
+    moveAnimationRun.start(({ finished }) => {
+      animRef.current = null;
+      if (finished) {
+        setCompletedMoveKey(key);
+      }
+    });
+
+    return () => {
+      if (animRef.current) {
+        animRef.current.stop();
+        animRef.current = null;
+      }
+      startedAnimKeyRef.current = null;
+    };
+  }, [
+    moveAnimation?.key,
+    moveAnimation?.from,
+    moveAnimation?.to,
+    moveAnimation?.piece,
+    getSquarePixelPosition,
+    overlayPosition,
+    overlayOpacity,
+  ]);
 
   const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
   const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
@@ -208,6 +175,11 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     const isLegalMove = legalMoves.includes(squareName);
     const isWhitePiece = piece && piece === piece.toUpperCase();
 
+    const hideForSlide =
+      isSliding &&
+      moveAnimation &&
+      (squareName === moveAnimation.from || squareName === moveAnimation.to);
+
     return (
       <TouchableOpacity
         key={`${row}-${col}`}
@@ -219,7 +191,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         ]}
         onPress={() => onSquarePress(squareName)}
       >
-        {piece && (
+        {piece && !hideForSlide && (
           <Text
             style={[
               styles.piece,
@@ -234,7 +206,9 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     );
   };
 
-  const isWhitePiece = overlayMove?.piece && overlayMove.piece === overlayMove.piece.toUpperCase();
+  const slidingPiece = moveAnimation?.piece;
+  const overlayIsWhite =
+    slidingPiece && slidingPiece === slidingPiece.toUpperCase();
 
   return (
     <View style={styles.container}>
@@ -243,9 +217,8 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           {[0, 1, 2, 3, 4, 5, 6, 7].map((col) => renderSquare(row, col))}
         </View>
       ))}
-      
-      {/* Subtle animation overlay - only for opponent moves */}
-      {overlayMove && (
+
+      {isSliding && slidingPiece && (
         <Animated.View
           style={[
             styles.overlayPiece,
@@ -262,10 +235,10 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           <Text
             style={[
               styles.piece,
-              isWhitePiece ? styles.whitePiece : styles.blackPiece,
+              overlayIsWhite ? styles.whitePiece : styles.blackPiece,
             ]}
           >
-            {PIECE_SYMBOLS[overlayMove.piece] || overlayMove.piece}
+            {PIECE_SYMBOLS[slidingPiece] || slidingPiece}
           </Text>
         </Animated.View>
       )}
@@ -276,6 +249,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     prevProps.fen === nextProps.fen &&
     prevProps.orientation === nextProps.orientation &&
     prevProps.selectedSquare === nextProps.selectedSquare &&
+    prevProps.moveAnimation?.key === nextProps.moveAnimation?.key &&
     JSON.stringify(prevProps.legalMoves) === JSON.stringify(nextProps.legalMoves)
   );
 });

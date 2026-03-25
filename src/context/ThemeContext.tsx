@@ -45,21 +45,21 @@ const darkTheme: ThemeColors = {
   cardText: '#FFFFFF', // White text on cards
 };
 
-// Blue Theme (Darker)
+// Light Theme (White)
 const blueTheme: ThemeColors = {
-  primary: '#FFFFFF', // White as primary on blue background
-  background: '#0D47A1', // Dark blue background (much darker)
-  backgroundLight: '#1565C0', // Medium dark blue
-  text: '#FFFFFF', // White text
-  textGray: '#90CAF9', // Lighter blue for secondary text
-  border: '#1976D2', // Medium blue border
-  error: '#FF5252',
-  success: '#69F0AE',
-  warning: '#FFD740',
-  avatarBg: '#1976D2', // Medium blue for avatars (visible on blue backgrounds)
-  buttonText: '#000000', // Black text on white buttons
+  primary: '#1D9BF0', // Accent buttons (create, highlights)
+  background: '#F7F9FC', // App page background
+  backgroundLight: '#FFFFFF', // Header / section background
+  text: '#0F172A', // Main text on light backgrounds
+  textGray: '#64748B', // Secondary text
+  border: '#E2E8F0', // Soft borders/dividers
+  error: '#E11D48',
+  success: '#16A34A',
+  warning: '#D97706',
+  avatarBg: '#1D9BF0', // Keep avatars vibrant and visible
+  buttonText: '#FFFFFF', // White text on primary colored buttons
   cardBg: '#FFFFFF', // White cards
-  cardText: '#000000', // Black text on cards
+  cardText: '#0F172A', // Dark text on cards
 };
 
 export const ThemeProvider = ({ children }: { children: ReactNode }) => {

@@ -570,6 +570,13 @@ const ChatScreen = ({ route, navigation }: any) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const CHAT_MEDIA_SIZE = 220;
+
+  const buildChatVideoHtml = (videoUrl: string) => {
+    const safe = String(videoUrl).replace(/"/g, '&quot;').replace(/</g, '');
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata" src="${safe}"></video></body></html>`;
+  };
+
   // Check if the other user is online
   const isOtherUserOnline = () => {
     if (!otherUser?._id || !onlineUsers || !Array.isArray(onlineUsers)) return false;
@@ -673,14 +680,16 @@ const ChatScreen = ({ route, navigation }: any) => {
           )}
 
           {!!item.img && isVideoUrl(item.img) && (
-            <View style={styles.chatVideoContainer}>
+            <View style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
               <WebView
-                source={{
-                  html: `<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /></head><body style=\"margin:0;background:black;\"><video controls playsinline style=\"width:100%;height:100%;\" src=\"${item.img}\"></video></body></html>`,
-                }}
-                style={styles.chatVideo}
+                source={{ html: buildChatVideoHtml(item.img) }}
+                style={[styles.chatVideo, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
                 allowsFullscreenVideo
                 mediaPlaybackRequiresUserAction
+                scrollEnabled={false}
+                showsVerticalScrollIndicator={false}
+                showsHorizontalScrollIndicator={false}
+                androidLayerType="hardware"
               />
             </View>
           )}
@@ -723,8 +732,8 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -909,7 +918,6 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: COLORS.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1045,15 +1053,12 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   chatVideoContainer: {
-    width: 260,
-    height: 200,
     borderRadius: 12,
     overflow: 'hidden',
     marginTop: 8,
     backgroundColor: '#000',
   },
   chatVideo: {
-    flex: 1,
     backgroundColor: '#000',
   },
   reactionsRow: {

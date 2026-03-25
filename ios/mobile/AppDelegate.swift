@@ -21,6 +21,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     reactNativeDelegate = delegate
     reactNativeFactory = factory
 
+    // Keep layout LTR when the device language is Arabic (or any RTL locale).
+    UIView.appearance().semanticContentAttribute = .forceLeftToRight
+
     window = UIWindow(frame: UIScreen.main.bounds)
 
     factory.startReactNative(

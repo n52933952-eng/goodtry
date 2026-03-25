@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -12,10 +12,11 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
-import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
+import { API_URL, ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
 import { useLanguage } from '../../context/LanguageContext';
+import { useTheme } from '../../context/ThemeContext';
 
 interface WeatherData {
   _id: string;
@@ -32,6 +33,248 @@ const WeatherScreen = () => {
   const { user } = useUser();
   const showToast = useShowToast();
   const { t } = useLanguage();
+  const { colors } = useTheme();
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          flex: 1,
+          backgroundColor: colors.background,
+        },
+        loadingContainer: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+        },
+        header: {
+          padding: 15,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        headerTop: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        },
+        headerTextContainer: {
+          flex: 1,
+        },
+        headerTitle: {
+          fontSize: 24,
+          fontWeight: 'bold',
+          color: colors.text,
+          marginBottom: 5,
+        },
+        headerSubtitle: {
+          fontSize: 14,
+          color: colors.textGray,
+        },
+        followButton: {
+          backgroundColor: colors.primary,
+          paddingHorizontal: 16,
+          paddingVertical: 8,
+          borderRadius: 8,
+          minWidth: 100,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        followingButton: {
+          backgroundColor: colors.backgroundLight,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        followButtonText: {
+          color: '#FFFFFF',
+          fontSize: 14,
+          fontWeight: '600',
+        },
+        followingButtonText: {
+          color: colors.text,
+        },
+        searchContainer: {
+          padding: 15,
+        },
+        searchInput: {
+          backgroundColor: colors.backgroundLight,
+          borderRadius: 10,
+          paddingVertical: 12,
+          paddingHorizontal: 15,
+          color: colors.text,
+          fontSize: 16,
+        },
+        listContainer: {
+          padding: 15,
+          paddingBottom: 100,
+        },
+        weatherCard: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: colors.backgroundLight,
+          borderRadius: 12,
+          padding: 15,
+          marginBottom: 12,
+          borderWidth: 2,
+          borderColor: 'transparent',
+        },
+        selectedCard: {
+          borderColor: colors.primary,
+          backgroundColor: colors.backgroundLight,
+        },
+        checkboxContainer: {
+          marginRight: 12,
+        },
+        checkbox: {
+          width: 24,
+          height: 24,
+          borderRadius: 12,
+          borderWidth: 2,
+          borderColor: colors.textGray,
+          justifyContent: 'center',
+          alignItems: 'center',
+        },
+        checkboxChecked: {
+          backgroundColor: colors.primary,
+          borderColor: colors.primary,
+        },
+        checkmark: {
+          color: '#FFFFFF',
+          fontSize: 16,
+          fontWeight: 'bold',
+        },
+        cityInfo: {
+          flex: 1,
+        },
+        cityName: {
+          fontSize: 18,
+          fontWeight: 'bold',
+          color: colors.text,
+          marginBottom: 4,
+        },
+        condition: {
+          fontSize: 14,
+          color: colors.textGray,
+        },
+        tempContainer: {
+          alignItems: 'center',
+          marginRight: 15,
+        },
+        weatherIcon: {
+          fontSize: 32,
+          marginBottom: 4,
+        },
+        temperature: {
+          fontSize: 20,
+          fontWeight: 'bold',
+          color: colors.text,
+        },
+        detailsContainer: {
+          alignItems: 'flex-end',
+        },
+        detailText: {
+          fontSize: 13,
+          color: colors.textGray,
+          marginBottom: 4,
+        },
+        emptyContainer: {
+          padding: 60,
+          alignItems: 'center',
+        },
+        emptyText: {
+          fontSize: 16,
+          color: colors.textGray,
+          textAlign: 'center',
+          marginBottom: 8,
+        },
+        emptySubtext: {
+          fontSize: 14,
+          color: colors.textGray,
+          textAlign: 'center',
+        },
+        searchLoading: {
+          position: 'absolute',
+          right: 15,
+          top: 15,
+        },
+        searchResultsContainer: {
+          maxHeight: 300,
+          backgroundColor: colors.backgroundLight,
+          marginHorizontal: 15,
+          marginTop: 10,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        searchResultsTitle: {
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.text,
+          padding: 12,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        searchResultItem: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: 12,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        searchResultItemSelected: {
+          opacity: 0.5,
+        },
+        searchResultInfo: {
+          flex: 1,
+        },
+        searchResultCity: {
+          fontSize: 16,
+          fontWeight: '600',
+          color: colors.text,
+          marginBottom: 2,
+        },
+        searchResultState: {
+          fontSize: 12,
+          color: colors.textGray,
+        },
+        searchResultAdd: {
+          fontSize: 14,
+          color: colors.primary,
+          fontWeight: '600',
+        },
+        searchResultAdded: {
+          fontSize: 14,
+          color: colors.success,
+          fontWeight: '600',
+        },
+        saveButtonContainer: {
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          padding: 15,
+          backgroundColor: colors.background,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+        },
+        saveButton: {
+          backgroundColor: colors.primary,
+          borderRadius: 12,
+          paddingVertical: 15,
+          alignItems: 'center',
+        },
+        saveButtonDisabled: {
+          opacity: 0.5,
+        },
+        saveButtonText: {
+          color: '#FFFFFF',
+          fontSize: 16,
+          fontWeight: 'bold',
+        },
+      }),
+    [colors],
+  );
 
   const [weatherData, setWeatherData] = useState<WeatherData[]>([]);
   const [selectedCities, setSelectedCities] = useState<Array<string | { name: string; country?: string; lat?: number; lon?: number }>>([]);
@@ -357,7 +600,7 @@ const WeatherScreen = () => {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -379,7 +622,7 @@ const WeatherScreen = () => {
               disabled={followLoading}
             >
               {followLoading ? (
-                <ActivityIndicator size="small" color={isFollowing ? COLORS.text : '#FFFFFF'} />
+                <ActivityIndicator size="small" color={isFollowing ? colors.text : '#FFFFFF'} />
               ) : (
                 <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
                   {isFollowing ? t('following') : t('followWeather')}
@@ -394,7 +637,7 @@ const WeatherScreen = () => {
         <TextInput
           style={styles.searchInput}
           placeholder={t('searchCities')}
-          placeholderTextColor={COLORS.textGray}
+          placeholderTextColor={colors.textGray}
           value={searchQuery}
           onChangeText={handleSearch}
           autoCapitalize="none"
@@ -402,7 +645,7 @@ const WeatherScreen = () => {
         />
         {searchLoading && (
           <View style={styles.searchLoading}>
-            <ActivityIndicator size="small" color={COLORS.primary} />
+            <ActivityIndicator size="small" color={colors.primary} />
           </View>
         )}
       </View>
@@ -485,7 +728,7 @@ const WeatherScreen = () => {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              tintColor={COLORS.primary}
+              tintColor={colors.primary}
             />
           }
           ListEmptyComponent={
@@ -513,242 +756,5 @@ const WeatherScreen = () => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-  },
-  header: {
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerTextContainer: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 5,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: COLORS.textGray,
-  },
-  followButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    minWidth: 100,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  followingButton: {
-    backgroundColor: COLORS.backgroundLight,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  followButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  followingButtonText: {
-    color: COLORS.text,
-  },
-  searchContainer: {
-    padding: 15,
-  },
-  searchInput: {
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 15,
-    color: COLORS.text,
-    fontSize: 16,
-  },
-  listContainer: {
-    padding: 15,
-    paddingBottom: 100,
-  },
-  weatherCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  selectedCard: {
-    borderColor: COLORS.primary,
-    backgroundColor: COLORS.backgroundLight,
-  },
-  checkboxContainer: {
-    marginRight: 12,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: COLORS.textGray,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkboxChecked: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  checkmark: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  cityInfo: {
-    flex: 1,
-  },
-  cityName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  condition: {
-    fontSize: 14,
-    color: COLORS.textGray,
-  },
-  tempContainer: {
-    alignItems: 'center',
-    marginRight: 15,
-  },
-  weatherIcon: {
-    fontSize: 32,
-    marginBottom: 4,
-  },
-  temperature: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  detailsContainer: {
-    alignItems: 'flex-end',
-  },
-  detailText: {
-    fontSize: 13,
-    color: COLORS.textGray,
-    marginBottom: 4,
-  },
-  emptyContainer: {
-    padding: 60,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: 16,
-    color: COLORS.textGray,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    textAlign: 'center',
-  },
-  searchLoading: {
-    position: 'absolute',
-    right: 15,
-    top: 15,
-  },
-  searchResultsContainer: {
-    maxHeight: 300,
-    backgroundColor: COLORS.backgroundLight,
-    marginHorizontal: 15,
-    marginTop: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  searchResultsTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.text,
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  searchResultItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  searchResultItemSelected: {
-    opacity: 0.5,
-  },
-  searchResultInfo: {
-    flex: 1,
-  },
-  searchResultCity: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: 2,
-  },
-  searchResultState: {
-    fontSize: 12,
-    color: COLORS.textGray,
-  },
-  searchResultAdd: {
-    fontSize: 14,
-    color: COLORS.primary,
-    fontWeight: '600',
-  },
-  searchResultAdded: {
-    fontSize: 14,
-    color: COLORS.success,
-    fontWeight: '600',
-  },
-  saveButtonContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 15,
-    backgroundColor: COLORS.background,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  saveButton: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingVertical: 15,
-    alignItems: 'center',
-  },
-  saveButtonDisabled: {
-    opacity: 0.5,
-  },
-  saveButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-});
 
 export default WeatherScreen;

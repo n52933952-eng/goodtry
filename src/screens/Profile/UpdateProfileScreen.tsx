@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
-import { COLORS } from '../../utils/constants';
+import { useTheme } from '../../context/ThemeContext';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
@@ -20,6 +20,7 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const UpdateProfileScreen = ({ navigation }: any) => {
   const { user, setUser } = useUser();
+  const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
   const [updating, setUpdating] = useState(false);
@@ -120,13 +121,25 @@ const UpdateProfileScreen = ({ navigation }: any) => {
     }
   };
 
+  const inputStyle = [
+    styles.input,
+    {
+      backgroundColor: colors.backgroundLight,
+      color: colors.text,
+      borderColor: colors.border,
+    },
+  ];
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={[styles.content, { backgroundColor: colors.background }]}
+    >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>←</Text>
+          <Text style={[styles.backButton, { color: colors.text }]}>←</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{t('updateProfile')}</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('updateProfile')}</Text>
         <View style={{ width: 30 }} />
       </View>
 
@@ -139,51 +152,54 @@ const UpdateProfileScreen = ({ navigation }: any) => {
               style={styles.avatar}
             />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.primary }]}>
               <Text style={styles.avatarText}>
                 {inputs.name?.[0]?.toUpperCase() || '?'}
               </Text>
             </View>
           )}
-          <TouchableOpacity style={styles.changeAvatarBtn} onPress={handleImageChange}>
+          <TouchableOpacity
+            style={[styles.changeAvatarBtn, { backgroundColor: colors.primary }]}
+            onPress={handleImageChange}
+          >
             <Text style={styles.changeAvatarText}>{t('changeAvatar')}</Text>
           </TouchableOpacity>
         </View>
 
         {/* Full Name */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('fullName')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('fullName')}</Text>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             value={inputs.name}
             onChangeText={(text) => setInputs({ ...inputs, name: text })}
             placeholder="John Doe"
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
           />
         </View>
 
         {/* Username */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('username')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('username')}</Text>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             value={inputs.username}
             onChangeText={(text) => setInputs({ ...inputs, username: text })}
             placeholder="johndoe"
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
             autoCapitalize="none"
           />
         </View>
 
         {/* Email */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('email')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('email')}</Text>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             value={inputs.email}
             onChangeText={(text) => setInputs({ ...inputs, email: text })}
             placeholder="your-email@example.com"
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
             keyboardType="email-address"
             autoCapitalize="none"
           />
@@ -191,13 +207,13 @@ const UpdateProfileScreen = ({ navigation }: any) => {
 
         {/* Bio */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('bio')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('bio')}</Text>
           <TextInput
-            style={[styles.input, styles.textArea]}
+            style={[...inputStyle, styles.textArea]}
             value={inputs.bio}
             onChangeText={(text) => setInputs({ ...inputs, bio: text })}
             placeholder={t('yourBio')}
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
             multiline
             numberOfLines={3}
           />
@@ -205,32 +221,36 @@ const UpdateProfileScreen = ({ navigation }: any) => {
 
         {/* Country */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('country')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('country')}</Text>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             value={inputs.country}
             onChangeText={(text) => setInputs({ ...inputs, country: text })}
             placeholder={t('selectCountryPlaceholder')}
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
           />
         </View>
 
         {/* Password (optional) */}
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>{t('passwordLeaveEmpty')}</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t('passwordLeaveEmpty')}</Text>
           <TextInput
-            style={styles.input}
+            style={inputStyle}
             value={inputs.password}
             onChangeText={(text) => setInputs({ ...inputs, password: text })}
             placeholder={t('newPasswordPlaceholder')}
-            placeholderTextColor={COLORS.textGray}
+            placeholderTextColor={colors.textGray}
             secureTextEntry
           />
         </View>
 
         {/* Submit Button */}
         <TouchableOpacity
-          style={[styles.submitButton, updating && styles.submitButtonDisabled]}
+          style={[
+            styles.submitButton,
+            { backgroundColor: colors.primary },
+            updating && styles.submitButtonDisabled,
+          ]}
           onPress={handleSubmit}
           disabled={updating}
         >
@@ -248,7 +268,6 @@ const UpdateProfileScreen = ({ navigation }: any) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
   },
   content: {
     padding: 20,
@@ -262,12 +281,10 @@ const styles = StyleSheet.create({
   },
   backButton: {
     fontSize: 24,
-    color: COLORS.text,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: COLORS.text,
   },
   form: {
     gap: 20,
@@ -283,7 +300,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   avatarPlaceholder: {
-    backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -295,7 +311,6 @@ const styles = StyleSheet.create({
   changeAvatarBtn: {
     paddingHorizontal: 20,
     paddingVertical: 10,
-    backgroundColor: COLORS.primary,
     borderRadius: 20,
   },
   changeAvatarText: {
@@ -308,24 +323,19 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: COLORS.text,
     marginBottom: 8,
   },
   input: {
-    backgroundColor: COLORS.backgroundLight,
     borderRadius: 10,
     padding: 15,
     fontSize: 16,
-    color: COLORS.text,
     borderWidth: 1,
-    borderColor: COLORS.border,
   },
   textArea: {
     minHeight: 80,
     textAlignVertical: 'top',
   },
   submitButton: {
-    backgroundColor: COLORS.primary,
     borderRadius: 10,
     padding: 15,
     alignItems: 'center',

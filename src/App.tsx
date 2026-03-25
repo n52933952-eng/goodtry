@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { StatusBar, I18nManager } from 'react-native';
+import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { UserProvider } from './context/UserContext';
@@ -14,13 +14,8 @@ import './config/googleSignIn';
 
 const App = () => {
   useEffect(() => {
-    // Force LTR (Left-to-Right) layout regardless of phone language
-    // This prevents the app from flipping when phone is set to Arabic
-    if (I18nManager.isRTL) {
-      I18nManager.allowRTL(false);
-      I18nManager.forceRTL(false);
-      console.log('🔄 [App] Forced LTR layout (disabled RTL)');
-    }
+    // LTR is enforced natively: AndroidManifest android:supportsRtl="false", iOS UIView appearance.
+    // Root View uses direction: 'ltr' so flex layout (e.g. chess board) stays consistent.
 
     // Initialize Firebase Cloud Messaging for call notifications (WhatsApp-like)
     console.log('🔥 [App] Initializing FCM...');
@@ -42,7 +37,7 @@ const App = () => {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, direction: 'ltr' }}>
       <SafeAreaProvider>
         <StatusBar barStyle="light-content" backgroundColor="#000000" />
         <ThemeProvider>
