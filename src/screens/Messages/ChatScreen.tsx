@@ -12,6 +12,7 @@ import {
   Platform,
   Keyboard,
   Alert,
+  AppState,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
@@ -23,6 +24,28 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
+
+/** `delivered` only after recipient app acks (WhatsApp-style). Legacy docs without field: treat as delivered. */
+function isOutgoingDeliveredForTicks(item: any) {
+  if (item.seen) return true;
+  if (item.delivered === true) return true;
+  if (item.delivered === false) return false;
+  return true;
+}
+
+function collectUndeliveredIncomingIds(
+  messagesData: any[],
+  currentUserIdStr: string,
+  getSenderId: (s: any) => string
+): string[] {
+  const ids: string[] = [];
+  for (const m of messagesData) {
+    if (!m?._id || m.delivered !== false) continue;
+    const sid = getSenderId(m.sender);
+    if (sid && sid !== currentUserIdStr) ids.push(String(m._id));
+  }
+  return ids.slice(0, 50);
+}
 
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser } = route.params || {};
@@ -40,6 +63,8 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { colors } = useTheme();
   const { t } = useLanguage();
   const [messages, setMessages] = useState<any[]>([]);
+  const messagesRef = useRef<any[]>([]);
+  messagesRef.current = messages;
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false); // Start false to avoid flash
   const [sending, setSending] = useState(false);
@@ -56,19 +81,44 @@ const ChatScreen = ({ route, navigation }: any) => {
   const shouldAutoScrollRef = useRef(true);
   const isSendingRef = useRef(false);
   const hasMarkedSeenRef = useRef(false); // Prevent duplicate markmessageasSeen emits
+  const lastForegroundRefreshAtRef = useRef(0); // Debounce app-active refresh
   const lastScrollOffsetRef = useRef(0);
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
   const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
   const estimatedMessageHeight = 72; // For scroll position after prepending (same as web pagination)
+  const typingStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const partnerTypingClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
   const currentUserIdStr = useMemo(() => (user?._id?.toString?.() ?? String(user?._id ?? '')), [user?._id]);
   
   // Track current conversation ID with ref (like web version)
   const currentConversationIdRef = useRef<string | null>(null);
 
-  const getSenderId = (sender: any) => {
+  const getSenderId = useCallback((sender: any) => {
     return sender?._id?.toString?.() ?? sender?.toString?.() ?? (sender ? String(sender) : '');
-  };
+  }, []);
+
+  const isPartnerOnline = useMemo(() => {
+    const partner =
+      otherUser?._id != null
+        ? String(otherUser._id)
+        : userId != null
+          ? String(userId)
+          : '';
+    if (!partner || !onlineUsers || !Array.isArray(onlineUsers)) return false;
+    return onlineUsers.some((online: any) => {
+      let onlineUserId: string | null = null;
+      if (typeof online === 'object' && online !== null) {
+        onlineUserId =
+          online.userId?.toString?.() || online._id?.toString?.() || String(online);
+      } else if (online != null) {
+        onlineUserId = String(online);
+      }
+      return onlineUserId === partner;
+    });
+  }, [otherUser?._id, userId, onlineUsers]);
 
   const isVideoUrl = (url: string) => {
     if (!url) return false;
@@ -100,8 +150,25 @@ const ChatScreen = ({ route, navigation }: any) => {
 
     // Handle messages for current conversation - Use REF (like web version)
     const currentConvId = currentConversationIdRef.current;
-    if (data.conversationId === currentConvId || 
-        (data.conversationId && !currentConvId && data.sender === userId)) {
+    const msgConvId =
+      data.conversationId != null
+        ? (typeof data.conversationId === 'string' ? data.conversationId : data.conversationId.toString?.() ?? String(data.conversationId))
+        : '';
+    const curConvStr =
+      currentConvId != null
+        ? typeof currentConvId === 'string' ? currentConvId : currentConvId.toString?.() ?? String(currentConvId)
+        : '';
+    const partnerIdStr = (otherUser?._id?.toString?.() ?? (userId != null ? String(userId) : '')) || '';
+    const senderRaw = data.sender;
+    const senderStr =
+      typeof senderRaw === 'string' || typeof senderRaw === 'number'
+        ? String(senderRaw)
+        : senderRaw?._id?.toString?.() ?? (senderRaw ? String(senderRaw) : '');
+
+    if (
+      (msgConvId && msgConvId === curConvStr) ||
+      (msgConvId && !curConvStr && partnerIdStr && senderStr === partnerIdStr)
+    ) {
       // If this is the first message and we didn't have a conversationId, set it now
       if (!currentConvId && data.conversationId) {
         console.log('💬 [ChatScreen] handleNewMessage: Setting conversationId', data.conversationId);
@@ -125,7 +192,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     } else {
       console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
     }
-  }, [user?._id, userId]);
+  }, [user?._id, userId, otherUser?._id]);
 
   // Real-time: reaction on a message – backend emits messageReactionUpdated with { conversationId, messageId } (same as web)
   const handleMessageReactionUpdated = useCallback(async (data: { conversationId?: string; messageId?: string }) => {
@@ -147,6 +214,58 @@ const ChatScreen = ({ route, navigation }: any) => {
   }, [otherUser?._id, userId]);
 
   // Real-time: message deleted – backend emits messageDeleted with { conversationId, messageId } (same as web)
+  const handleMessagesSeen = useCallback(
+    (data: { conversationId?: string }) => {
+      const cid = data?.conversationId != null ? String(data.conversationId) : '';
+      const myConv =
+        (currentConversationIdRef.current ?? conversationId) != null
+          ? String(currentConversationIdRef.current ?? conversationId)
+          : '';
+      if (cid && myConv && cid !== myConv) return;
+
+      setMessages((prev) =>
+        prev.map((msg) => {
+          const sid = getSenderId(msg.sender);
+          if (sid === currentUserIdStr && !msg.seen) {
+            return { ...msg, seen: true };
+          }
+          return msg;
+        })
+      );
+    },
+    [conversationId, currentUserIdStr, getSenderId]
+  );
+
+  const handleUserTyping = useCallback(
+    (data: { userId?: string; conversationId?: string; isTyping?: boolean }) => {
+      const partnerStr = (otherUser?._id?.toString?.() ?? (userId != null ? String(userId) : '')) || '';
+      const fromStr = data?.userId != null ? String(data.userId) : '';
+      if (!partnerStr || fromStr !== partnerStr) return;
+
+      const evtConv = data.conversationId != null ? String(data.conversationId) : '';
+      const myConv =
+        (currentConversationIdRef.current ?? conversationId) != null
+          ? String(currentConversationIdRef.current ?? conversationId)
+          : '';
+      if (evtConv && myConv && evtConv !== myConv) return;
+      if (evtConv && !myConv) return;
+
+      if (partnerTypingClearTimeoutRef.current) {
+        clearTimeout(partnerTypingClearTimeoutRef.current);
+        partnerTypingClearTimeoutRef.current = null;
+      }
+
+      setIsPartnerTyping(!!data.isTyping);
+      if (data.isTyping) {
+        partnerTypingClearTimeoutRef.current = setTimeout(() => {
+          setIsPartnerTyping(false);
+          partnerTypingClearTimeoutRef.current = null;
+        }, 6000);
+      }
+    },
+    [otherUser?._id, userId, conversationId]
+  );
+
   const handleMessageDeleted = useCallback((data: { conversationId?: string; messageId?: string }) => {
     const convId = data?.conversationId?.toString?.() ?? data?.conversationId;
     const currentConvId = currentConversationIdRef.current?.toString?.() ?? currentConversationIdRef.current;
@@ -158,6 +277,27 @@ const ChatScreen = ({ route, navigation }: any) => {
     setMessages((prev) => prev.filter((m) => (m._id?.toString?.() ?? String(m._id)) !== messageId));
   }, []);
 
+  const handleMessageDelivered = useCallback(
+    (data: { messageId?: string; conversationId?: string }) => {
+      const cid = data?.conversationId != null ? String(data.conversationId) : '';
+      const myConv =
+        (currentConversationIdRef.current ?? conversationId) != null
+          ? String(currentConversationIdRef.current ?? conversationId)
+          : '';
+      if (cid && myConv && cid !== myConv) return;
+
+      const mid = data?.messageId != null ? String(data.messageId) : '';
+      if (!mid) return;
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          (m._id?.toString?.() ?? String(m._id)) === mid ? { ...m, delivered: true } : m
+        )
+      );
+    },
+    [conversationId]
+  );
+
   // Update current conversation ID ref whenever it changes
   useEffect(() => {
     currentConversationIdRef.current = currentConversationId || conversationId || null;
@@ -167,16 +307,95 @@ const ChatScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     if (!socket || !user?._id) return;
 
-    socket.on('newMessage', handleNewMessage);
-    socket.on('messageReactionUpdated', handleMessageReactionUpdated);
-    socket.on('messageDeleted', handleMessageDeleted);
-
-    return () => {
+    const bind = () => {
+      // If the socket instance was recreated on reconnect, ensure our listeners are attached to the new one.
       socket.off('newMessage', handleNewMessage);
       socket.off('messageReactionUpdated', handleMessageReactionUpdated);
       socket.off('messageDeleted', handleMessageDeleted);
+      socket.off('messagesSeen', handleMessagesSeen);
+      socket.off('userTyping', handleUserTyping);
+      socket.off('messageDelivered', handleMessageDelivered);
+      socket.on('newMessage', handleNewMessage);
+      socket.on('messageReactionUpdated', handleMessageReactionUpdated);
+      socket.on('messageDeleted', handleMessageDeleted);
+      socket.on('messagesSeen', handleMessagesSeen);
+      socket.on('userTyping', handleUserTyping);
+      socket.on('messageDelivered', handleMessageDelivered);
     };
-  }, [socket, user?._id, handleNewMessage, handleMessageReactionUpdated, handleMessageDeleted]);
+
+    // Bind now (current socket instance)
+    bind();
+
+    // Re-bind on every new socket instance created by SocketService.connect()
+    const removeReady =
+      (socket as any)?.addSocketReadyListener?.(bind) ?? null;
+
+    return () => {
+      removeReady?.();
+      socket.off('newMessage', handleNewMessage);
+      socket.off('messageReactionUpdated', handleMessageReactionUpdated);
+      socket.off('messageDeleted', handleMessageDeleted);
+      socket.off('messagesSeen', handleMessagesSeen);
+      socket.off('userTyping', handleUserTyping);
+      socket.off('messageDelivered', handleMessageDelivered);
+    };
+  }, [
+    socket,
+    user?._id,
+    handleNewMessage,
+    handleMessageReactionUpdated,
+    handleMessageDeleted,
+    handleMessagesSeen,
+    handleUserTyping,
+    handleMessageDelivered,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (typingStopTimeoutRef.current) {
+        clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+      if (partnerTypingClearTimeoutRef.current) {
+        clearTimeout(partnerTypingClearTimeoutRef.current);
+        partnerTypingClearTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const emitTypingStop = useCallback(() => {
+    const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
+    if (!socket || !user?._id || !toId) return;
+    const conv = currentConversationIdRef.current || conversationId;
+    socket.emit('typingStop', {
+      from: user._id,
+      to: toId,
+      conversationId: conv || undefined,
+    });
+  }, [socket, user?._id, otherUser?._id, userId, conversationId]);
+
+  const handleMessageTextChange = useCallback(
+    (text: string) => {
+      setNewMessage(text);
+      const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
+      if (!socket || !user?._id || !toId) return;
+      const conv = currentConversationIdRef.current || conversationId;
+      socket.emit('typingStart', {
+        from: user._id,
+        to: toId,
+        conversationId: conv || undefined,
+      });
+      if (typingStopTimeoutRef.current) {
+        clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+      typingStopTimeoutRef.current = setTimeout(() => {
+        emitTypingStop();
+        typingStopTimeoutRef.current = null;
+      }, 2000);
+    },
+    [socket, user?._id, otherUser?._id, userId, conversationId, emitTypingStop]
+  );
 
   useEffect(() => {
     console.log('💬 [ChatScreen] useEffect: Mount/Update', { 
@@ -284,6 +503,14 @@ const ChatScreen = ({ route, navigation }: any) => {
             if (combined.length > 200) return combined.slice(0, 200);
             return combined;
           });
+          const ackIds = collectUndeliveredIncomingIds(
+            messagesData,
+            currentUserIdStr,
+            getSenderId
+          );
+          if (socket && ackIds.length) {
+            socket.emit('ackMessageDelivered', { messageIds: ackIds });
+          }
           const prependedCount = messagesData.length;
           setTimeout(() => {
             messagesEndRef.current?.scrollToOffset({
@@ -296,6 +523,10 @@ const ChatScreen = ({ route, navigation }: any) => {
       }
 
       setMessages(messagesData);
+      const ackIds = collectUndeliveredIncomingIds(messagesData, currentUserIdStr, getSenderId);
+      if (socket && ackIds.length) {
+        socket.emit('ackMessageDelivered', { messageIds: ackIds });
+      }
       setHasMoreMessages(hasMore);
 
       const convId = currentConversationId || conversationId;
@@ -318,7 +549,56 @@ const ChatScreen = ({ route, navigation }: any) => {
     } finally {
       if (!loadMore) setLoading(false);
     }
-  }, [otherUser?._id, userId, conversationId, currentConversationId, socket, user?._id]);
+  }, [
+    otherUser?._id,
+    userId,
+    conversationId,
+    currentConversationId,
+    socket,
+    user?._id,
+    currentUserIdStr,
+    getSenderId,
+  ]);
+
+  // After socket connects/reconnects, ack any incoming messages we already have (fetch may have run while offline).
+  useEffect(() => {
+    const sk = socket as any;
+    if (!sk || typeof sk.addConnectListener !== 'function') return;
+    const remove = sk.addConnectListener(() => {
+      const ackIds = collectUndeliveredIncomingIds(
+        messagesRef.current,
+        currentUserIdStr,
+        getSenderId
+      );
+      if (!ackIds.length) return;
+      setTimeout(() => {
+        sk.emit?.('ackMessageDelivered', { messageIds: ackIds });
+      }, 500);
+    });
+    return () => remove?.();
+  }, [socket, currentUserIdStr, getSenderId]);
+
+  // When returning from background, refresh messages + re-mark as seen.
+  // This prevents "push stops but chat list still stale until I leave and come back".
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return;
+      if (!socket || !user?._id) return;
+      if (isCalling || callAccepted) return;
+
+      const now = Date.now();
+      if (now - lastForegroundRefreshAtRef.current < 800) return;
+      lastForegroundRefreshAtRef.current = now;
+
+      hasMarkedSeenRef.current = false;
+      // When returning from background, jump to latest message (WhatsApp-like).
+      shouldAutoScrollRef.current = true;
+      setTimeout(() => {
+        fetchMessages(false);
+      }, 150);
+    });
+    return () => sub.remove();
+  }, [socket, user?._id, isCalling, callAccepted, fetchMessages]);
 
   const loadOlderMessages = useCallback(() => {
     if (!hasMoreMessages || loadingMoreMessages || loadingMoreRef.current || messages.length === 0) return;
@@ -331,12 +611,50 @@ const ChatScreen = ({ route, navigation }: any) => {
   // Message send timeout (e.g. backend cold start); same as web expectations
   const SEND_MESSAGE_TIMEOUT_MS = 20000;
 
-  const handleSend = async (attempt = 0) => {
+  const handleSend = async (attempt = 0, clientMsgIdArg?: string) => {
     if (!newMessage.trim() && !pendingMedia) return;
 
     const recipientIdRaw = otherUser?._id ?? userId;
     const recipientId = recipientIdRaw != null ? String(recipientIdRaw) : '';
     if (!recipientId.trim()) return;
+
+    if (typingStopTimeoutRef.current) {
+      clearTimeout(typingStopTimeoutRef.current);
+      typingStopTimeoutRef.current = null;
+    }
+    emitTypingStop();
+
+    const clientMsgId = clientMsgIdArg || `client-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const textSnapshot = newMessage.trim();
+    const mediaSnapshot = pendingMedia;
+    const replySnapshot = replyingTo;
+
+    if (attempt === 0) {
+      const optimistic: any = {
+        _id: clientMsgId,
+        _clientMsgId: clientMsgId,
+        _pending: true,
+        text: textSnapshot || (mediaSnapshot ? (mediaSnapshot.type?.startsWith('video') ? '📹' : '📷') : ''),
+        sender: {
+          _id: user?._id,
+          name: user?.name,
+          username: user?.username,
+          profilePic: user?.profilePic,
+        },
+        createdAt: new Date().toISOString(),
+        seen: false,
+        ...(replySnapshot?._id ? { replyTo: replySnapshot } : {}),
+        ...(mediaSnapshot?.uri ? { img: mediaSnapshot.uri } : {}),
+      };
+      setMessages((prev) => {
+        const updated = [...prev, optimistic];
+        if (updated.length > 200) return updated.slice(-200);
+        return updated;
+      });
+      setNewMessage('');
+      setPendingMedia(null);
+      setReplyingTo(null);
+    }
 
     setSending(true);
     isSendingRef.current = true;
@@ -344,17 +662,17 @@ const ChatScreen = ({ route, navigation }: any) => {
     try {
       let response: any = null;
 
-      if (pendingMedia) {
+      if (mediaSnapshot) {
         const formData = new FormData();
         formData.append('recipientId', recipientId);
-        formData.append('message', newMessage.trim());
-        if (replyingTo?._id) {
-          formData.append('replyTo', String(replyingTo._id));
+        formData.append('message', textSnapshot);
+        if (replySnapshot?._id) {
+          formData.append('replyTo', String(replySnapshot._id));
         }
 
-        const uri = pendingMedia.uri;
-        const name = pendingMedia.fileName || `upload_${Date.now()}`;
-        const type = pendingMedia.type || 'application/octet-stream';
+        const uri = mediaSnapshot.uri;
+        const name = mediaSnapshot.fileName || `upload_${Date.now()}`;
+        const type = mediaSnapshot.type || 'application/octet-stream';
 
         // @ts-ignore - RN FormData file shape
         formData.append('file', { uri, name, type });
@@ -365,8 +683,8 @@ const ChatScreen = ({ route, navigation }: any) => {
           ENDPOINTS.SEND_MESSAGE,
           {
             recipientId,
-            message: newMessage.trim(),
-            replyTo: replyingTo?._id != null ? String(replyingTo._id) : null,
+            message: textSnapshot,
+            replyTo: replySnapshot?._id != null ? String(replySnapshot._id) : null,
           },
           { timeout: SEND_MESSAGE_TIMEOUT_MS }
         );
@@ -375,27 +693,32 @@ const ChatScreen = ({ route, navigation }: any) => {
       if (response) {
         const messageWithSender = {
           ...response,
+          _pending: false,
           sender: response.sender || {
             _id: user?._id,
             name: user?.name,
             username: user?.username,
-            profilePic: user?.profilePic
-          }
+            profilePic: user?.profilePic,
+          },
         };
-        
+
         setMessages((prev) => {
-          const updated = [...prev, messageWithSender];
-          if (updated.length > 200) return updated.slice(-200);
-          return updated;
+          const idx = prev.findIndex((m) => m._clientMsgId === clientMsgId);
+          let next: any[];
+          if (idx >= 0) {
+            next = [...prev];
+            next[idx] = messageWithSender;
+          } else {
+            next = [...prev, messageWithSender];
+          }
+          if (next.length > 200) return next.slice(-200);
+          return next;
         });
-        
+
         if (!currentConversationId && response.conversationId) {
           setCurrentConversationId(response.conversationId);
         }
-        
-        setNewMessage('');
-        setPendingMedia(null);
-        setReplyingTo(null);
+
         setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 120);
       }
     } catch (error) {
@@ -404,11 +727,12 @@ const ChatScreen = ({ route, navigation }: any) => {
         const delayMs = attempt === 0 ? 800 : 1500;
         try {
           await new Promise((r) => setTimeout(r, delayMs));
-          await handleSend(attempt + 1);
+          await handleSend(attempt + 1, clientMsgId);
           return;
         } catch (_) {}
       }
       console.error('❌ [ChatScreen] handleSend: Error', error);
+      setMessages((prev) => prev.filter((m) => m._clientMsgId !== clientMsgId));
       Alert.alert(
         t('error') || 'Error',
         t('messageSendFailed') || 'Message could not be sent. Please try again.'
@@ -441,7 +765,19 @@ const ChatScreen = ({ route, navigation }: any) => {
     try {
       const updated = await apiService.post(`${ENDPOINTS.SEND_MESSAGE}/reaction/${messageId}`, { emoji });
       // Backend returns updated message with populated reactions.userId
-      setMessages((prev) => prev.map((m) => (m._id?.toString?.() === messageId.toString() ? { ...m, ...updated } : m)));
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m._id?.toString?.() !== messageId.toString()) return m;
+          return {
+            ...m,
+            ...updated,
+            delivered:
+              (updated as any).delivered !== undefined && (updated as any).delivered !== null
+                ? (updated as any).delivered
+                : m.delivered,
+          };
+        })
+      );
     } catch (e) {
       console.error('❌ [ChatScreen] toggleReaction error:', e);
     } finally {
@@ -577,22 +913,6 @@ const ChatScreen = ({ route, navigation }: any) => {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata" src="${safe}"></video></body></html>`;
   };
 
-  // Check if the other user is online
-  const isOtherUserOnline = () => {
-    if (!otherUser?._id || !onlineUsers || !Array.isArray(onlineUsers)) return false;
-    
-    const otherUserIdStr = otherUser._id?.toString();
-    return onlineUsers.some((online: any) => {
-      let onlineUserId = null;
-      if (typeof online === 'object' && online !== null) {
-        onlineUserId = online.userId?.toString() || online._id?.toString() || online.toString();
-      } else {
-        onlineUserId = online?.toString();
-      }
-      return onlineUserId === otherUserIdStr;
-    });
-  };
-
   const renderMessage = ({ item }: { item: any }) => {
     const senderId = getSenderId(item.sender);
     const isOwn = senderId === currentUserIdStr;
@@ -606,7 +926,9 @@ const ChatScreen = ({ route, navigation }: any) => {
     const senderName = isOwn 
       ? (user?.name || user?.username) 
       : (item.sender?.name || item.sender?.username || otherUser?.name || otherUser?.username);
-    
+
+    const outgoingDelivered = isOutgoingDeliveredForTicks(item);
+
     return (
       <View style={[styles.messageRow, isSenderLeft ? styles.leftRow : styles.rightRow]}>
         {/* Profile picture - on left for sender, on right for receiver */}
@@ -694,13 +1016,47 @@ const ChatScreen = ({ route, navigation }: any) => {
             </View>
           )}
 
-          <Text style={[
-            styles.messageTime, 
-            isSenderLeft ? styles.senderTime : styles.receiverTime,
-            isSenderLeft ? { color: colors.buttonText } : { color: colors.textGray }
-          ]}>
-            {formatTime(item.createdAt)}
-          </Text>
+          <View
+            style={[
+              styles.messageMetaRow,
+              isSenderLeft ? styles.messageMetaRowOwn : styles.messageMetaRowOther,
+            ]}
+          >
+            <Text
+              style={[
+                styles.messageTime,
+                isSenderLeft ? styles.senderTime : styles.receiverTime,
+                isSenderLeft ? { color: colors.buttonText } : { color: colors.textGray },
+              ]}
+            >
+              {formatTime(item.createdAt)}
+            </Text>
+            {isSenderLeft ? (
+              <Text
+                style={[
+                  styles.deliveryTicks,
+                  item._pending
+                    ? { color: 'rgba(255,255,255,0.45)' }
+                    : item.seen
+                      ? { color: '#7DD3FC' }
+                      : outgoingDelivered
+                        ? { color: 'rgba(255,255,255,0.65)' }
+                        : { color: 'rgba(255,255,255,0.65)' },
+                ]}
+                accessibilityLabel={
+                  item._pending
+                    ? 'Sending'
+                    : item.seen
+                      ? 'Read'
+                      : outgoingDelivered
+                        ? 'Delivered'
+                        : 'Sent'
+                }
+              >
+                {item._pending || (!item.seen && !outgoingDelivered) ? '✓' : '✓✓'}
+              </Text>
+            ) : null}
+          </View>
 
           {/* Reactions (simple display) */}
           {Array.isArray(item.reactions) && item.reactions.length > 0 && (
@@ -766,7 +1122,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             <Text style={[styles.headerTitle, { color: colors.text }]}>
               {otherUser?.name || 'User'}
             </Text>
-            {isOtherUserOnline() && (
+            {isPartnerOnline && (
               <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
@@ -784,6 +1140,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       <FlatList
         ref={messagesEndRef}
         data={messages}
+        extraData={messages.length}
         renderItem={renderMessage}
         keyExtractor={(item, index) => item._id || index.toString()}
         contentContainerStyle={styles.messagesList}
@@ -815,6 +1172,22 @@ const ChatScreen = ({ route, navigation }: any) => {
           ) : null
         }
       />
+
+      {isPartnerTyping ? (
+        <View
+          style={[
+            styles.typingRow,
+            { borderTopColor: colors.border, backgroundColor: colors.background },
+          ]}
+        >
+          <Text style={[styles.typingText, { color: colors.textGray }]}>
+            {otherUser?.name
+              ? `${(otherUser.name as string).split(/\s+/)[0]} `
+              : ''}
+            {t('typing')}…
+          </Text>
+        </View>
+      ) : null}
 
       {/* Reaction picker (minimal) */}
       {reactionTargetId && actionTarget && (
@@ -887,7 +1260,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           placeholder={t('typeMessage')}
           placeholderTextColor={colors.textGray}
           value={newMessage}
-          onChangeText={setNewMessage}
+          onChangeText={handleMessageTextChange}
           multiline
           onFocus={() => {
             // When keyboard opens, ensure input and latest message are visible
@@ -897,7 +1270,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         />
         <TouchableOpacity
           style={[styles.sendButton, { backgroundColor: colors.primary }, sending && styles.sendButtonDisabled]}
-          onPress={handleSend}
+          onPress={() => handleSend()}
           disabled={sending || (!newMessage.trim() && !pendingMedia)}
         >
           {sending ? (
@@ -1036,6 +1409,25 @@ const styles = StyleSheet.create({
   receiverText: {
     color: '#FFFFFF',
   },
+  messageMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  messageMetaRowOwn: {
+    alignSelf: 'flex-end',
+  },
+  messageMetaRowOther: {
+    alignSelf: 'flex-end',
+  },
+  deliveryTicks: {
+    fontSize: 13,
+    marginLeft: 6,
+    letterSpacing: -3,
+    fontWeight: '600',
+  },
   messageTime: {
     fontSize: 12,
     color: COLORS.textGray,
@@ -1166,6 +1558,15 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontSize: 13,
     fontWeight: 'bold',
+  },
+  typingRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  typingText: {
+    fontSize: 13,
+    fontStyle: 'italic',
   },
   inputContainer: {
     flexDirection: 'row',

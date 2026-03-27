@@ -1,5 +1,8 @@
-import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback, useRef, ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from './UserContext';
+
+const feedHiddenStorageKey = (userId: string) => `feed_hidden_post_ids_${userId}`;
 
 export interface Post {
   _id: string;
@@ -36,6 +39,10 @@ interface PostContextType {
   likePost: (postId: string, userId: string) => void;
   unlikePost: (postId: string, userId: string) => void;
   addComment: (postId: string, comment: any) => void;
+  /** Post IDs the user hid from feed (Football / Weather / channel cards); persisted per account. */
+  hiddenFeedPostIds: Set<string>;
+  hideFeedPostFromFeed: (postId: string) => void;
+  filterPostsForFeed: (list: Post[]) => Post[];
 }
 
 const PostContext = createContext<PostContextType | undefined>(undefined);
@@ -43,6 +50,40 @@ const PostContext = createContext<PostContextType | undefined>(undefined);
 export const PostProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
   const [posts, setPosts] = useState<Post[]>([]);
+  const [hiddenFeedPostIds, setHiddenFeedPostIds] = useState<Set<string>>(new Set());
+  const hiddenFeedPostIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    hiddenFeedPostIdsRef.current = hiddenFeedPostIds;
+  }, [hiddenFeedPostIds]);
+
+  // Load dismissed feed cards (Football / Weather / channels) per user
+  useEffect(() => {
+    if (!user?._id) {
+      setHiddenFeedPostIds(new Set());
+      hiddenFeedPostIdsRef.current = new Set();
+      return;
+    }
+    let cancelled = false;
+    AsyncStorage.getItem(feedHiddenStorageKey(String(user._id)))
+      .then((raw) => {
+        if (cancelled || !raw) return;
+        try {
+          const ids: string[] = JSON.parse(raw);
+          if (Array.isArray(ids)) {
+            const next = new Set(ids.map(String));
+            setHiddenFeedPostIds(next);
+            hiddenFeedPostIdsRef.current = next;
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [user?._id]);
 
   // Drop feed when logged out or between accounts so a new session never flashes the prior user's posts.
   useEffect(() => {
@@ -51,6 +92,33 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
+  const filterPostsForFeed = useCallback((list: Post[]) => {
+    const hidden = hiddenFeedPostIdsRef.current;
+    return list.filter((p) => p?._id && !hidden.has(String(p._id)));
+  }, []);
+
+  // When hidden IDs load from storage (or change), drop those posts from the current feed list
+  useEffect(() => {
+    setPosts((prev) => filterPostsForFeed(prev));
+  }, [hiddenFeedPostIds, filterPostsForFeed]);
+
+  const hideFeedPostFromFeed = useCallback(
+    (postId: string) => {
+      const id = String(postId);
+      setHiddenFeedPostIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        hiddenFeedPostIdsRef.current = next;
+        if (user?._id) {
+          AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+        }
+        return next;
+      });
+      setPosts((prev) => prev.filter((p) => String(p._id) !== id));
+    },
+    [user?._id]
+  );
+
   const addPost = (post: Post) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
@@ -58,6 +126,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
       const newId = post?._id?.toString?.() ?? String(post?._id);
       if (!newId) return safeArray;
+      if (hiddenFeedPostIdsRef.current.has(newId)) return safeArray;
 
       // Prevent duplicates
       const withoutDup = safeArray.filter((p) => {
@@ -92,8 +161,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       });
 
       fromSameAuthor.sort((a: any, b: any) => {
-        const dateA = new Date(a.createdAt).getTime();
-        const dateB = new Date(b.createdAt).getTime();
+        const dateA = new Date(a.updatedAt || a.createdAt).getTime();
+        const dateB = new Date(b.updatedAt || b.createdAt).getTime();
         return dateB - dateA;
       });
 
@@ -113,11 +182,17 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
   const updatePost = (postId: string, updates: Partial<Post>) => {
     setPosts((prevPosts) => {
-      // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
-      return safeArray.map((post) =>
-        post._id === postId ? { ...post, ...updates } : post
+      const target = String(postId);
+      const next = safeArray.map((post) =>
+        String(post._id) === target ? { ...post, ...updates } : post
       );
+      // Re-sort so edited / contributor-updated posts rise like the server feed (updatedAt)
+      return [...next].sort((a: any, b: any) => {
+        const da = new Date(a.updatedAt || a.createdAt).getTime();
+        const db = new Date(b.updatedAt || b.createdAt).getTime();
+        return db - da;
+      });
     });
   };
 
@@ -262,6 +337,9 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         likePost,
         unlikePost,
         addComment,
+        hiddenFeedPostIds,
+        hideFeedPostFromFeed,
+        filterPostsForFeed,
       }}
     >
       {children}

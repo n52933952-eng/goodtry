@@ -6,8 +6,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.content.Context.RECEIVER_EXPORTED
+import android.app.KeyguardManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -16,6 +18,30 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.bridge.WritableMap
 
 class MainActivity : ReactActivity() {
+
+  private fun ensureVisibleOverLockScreenForIncomingCall() {
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+      }
+      window.addFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+      )
+      try {
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && km != null) {
+          km.requestDismissKeyguard(this, null)
+        }
+      } catch (_: Exception) {}
+      android.util.Log.e("MainActivity", "🔓 [MainActivity] ensureVisibleOverLockScreenForIncomingCall applied")
+    } catch (e: Exception) {
+      android.util.Log.e("MainActivity", "❌ [MainActivity] ensureVisibleOverLockScreenForIncomingCall failed", e)
+    }
+  }
   
   // BroadcastReceiver to listen for pending cancel check trigger
   private val pendingCancelReceiver = object : BroadcastReceiver() {
@@ -55,6 +81,11 @@ class MainActivity : ReactActivity() {
     android.util.Log.e("MainActivity", "Intent callerName: ${intent.getStringExtra("callerName")}")
     android.util.Log.e("MainActivity", "Intent callType: ${intent.getStringExtra("callType")}")
     setIntent(intent)
+
+    // If we're being brought up for an incoming call answer, ensure we can show over lockscreen.
+    if (intent.getBooleanExtra("shouldAutoAnswer", false) || intent.getBooleanExtra("isFromNotification", false)) {
+      ensureVisibleOverLockScreenForIncomingCall()
+    }
     
     // CRITICAL: If shouldCancelCall is true, handle it immediately and DON'T navigate
     // This prevents the app from navigating to home screen
@@ -141,6 +172,7 @@ class MainActivity : ReactActivity() {
     
     // Handle shouldAutoAnswer from IncomingCallActivity
     if (shouldAutoAnswer) {
+      ensureVisibleOverLockScreenForIncomingCall()
       val callerId = intent.getStringExtra("callerId")
       val callerName = intent.getStringExtra("callerName")
       val callType = intent.getStringExtra("callType")
@@ -351,6 +383,9 @@ class MainActivity : ReactActivity() {
     
     // Handle intent immediately - React Native will be ready soon
     if (intent != null) {
+      if (intent.getBooleanExtra("shouldAutoAnswer", false) || intent.getBooleanExtra("isFromNotification", false)) {
+        ensureVisibleOverLockScreenForIncomingCall()
+      }
       android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] Intent found in onCreate")
       android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] Intent screen: ${intent.getStringExtra("screen")}")
       android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] Intent callerId: ${intent.getStringExtra("callerId")}")

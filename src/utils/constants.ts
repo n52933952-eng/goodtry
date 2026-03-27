@@ -40,6 +40,8 @@ export const ENDPOINTS = {
   // Posts
   GET_FEED: '/api/post/feed/feedpost',
   CREATE_POST: '/api/post/create',
+  /** PUT /api/post/:id — update text (owner or collaborative contributor) */
+  UPDATE_POST: '/api/post',
   DELETE_POST: '/api/post',
   // Backend route is /api/post/likes/:id
   LIKE_POST: '/api/post/likes',
@@ -122,6 +124,8 @@ export const STORAGE_KEYS = {
   // Keep the key reserved to avoid breaking older installs, but we no longer use it.
   TOKEN: '@token',
   THEME: '@theme',
+  /** Pending delivery acks from FCM (messageId[]), flushed on next socket connect. */
+  PENDING_DELIVERY_ACKS: '@pending_delivery_acks',
 };
 
 // Colors

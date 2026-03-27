@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import React, { createContext, useState, useContext, useEffect, ReactNode, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
@@ -33,6 +33,7 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 export const UserProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUserState] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persisted setter: keeps AsyncStorage in sync whenever someone calls setUser from context.
   // This prevents "must logout/login to see changes" after profile updates.
@@ -104,19 +105,45 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user]);
 
-  // Background/inactive → disconnect immediately (offline, FCM for calls). Active → reconnect (online).
+  // Presence should flip to offline quickly when user leaves the app, otherwise calling/presence feels wrong.
+  // We still keep a small delay to avoid flapping during quick Android activity transitions.
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background' || nextState === 'inactive') {
-        socketService.disconnect();
-        console.log('📴 [UserContext] App backgrounded/inactive – socket disconnected (offline, FCM for calls)');
+        // Mark offline immediately for instant presence updates (without waiting for socket disconnect).
+        socketService.emit('clientPresence', { status: 'offline' });
+
+        // Some Android flows can briefly flip active -> inactive/background -> active during handoff.
+        // Delay disconnect a bit; cancel if we return quickly.
+        if (disconnectTimerRef.current) {
+          clearTimeout(disconnectTimerRef.current);
+          disconnectTimerRef.current = null;
+        }
+        // Keep socket alive briefly (helps delivery acks/call cleanup) but presence is already offline.
+        const delayMs = nextState === 'inactive' ? 1200 : 6000;
+        disconnectTimerRef.current = setTimeout(() => {
+          socketService.disconnect();
+          console.log(`📴 [UserContext] App ${nextState} – socket disconnected (offline, FCM for calls)`);
+          disconnectTimerRef.current = null;
+        }, delayMs);
       } else if (nextState === 'active' && user?._id) {
+        if (disconnectTimerRef.current) {
+          clearTimeout(disconnectTimerRef.current);
+          disconnectTimerRef.current = null;
+        }
         socketService.connect(user._id);
+        socketService.emit('clientPresence', { status: 'online' });
         console.log('📱 [UserContext] App active – socket reconnected (online)');
       }
     };
     const sub = AppState.addEventListener('change', handleAppStateChange);
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+    };
   }, [user?._id]);
 
   const loadUserFromStorage = async () => {

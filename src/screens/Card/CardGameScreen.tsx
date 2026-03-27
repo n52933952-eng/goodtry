@@ -9,6 +9,8 @@ import {
   Dimensions,
   ScrollView,
   Modal,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import Sound from 'react-native-sound';
 import { useUser } from '../../context/UserContext';
@@ -1024,10 +1026,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 8,
     paddingHorizontal: 15,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 8,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
     backgroundColor: COLORS.background,
-    height: 50, // Fixed compact height
+    minHeight: 50,
   },
   backButton: {
     padding: 8,

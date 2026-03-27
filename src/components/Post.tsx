@@ -9,6 +9,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Linking,
+  ScrollView,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
@@ -20,7 +21,15 @@ import { useSocket } from '../context/SocketContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
+import { useLanguage } from '../context/LanguageContext';
 import VideoFeedPreview from './VideoFeedPreview';
+import AddContributorModal from './AddContributorModal';
+import ManageContributorsModal from './ManageContributorsModal';
+import EditPostModal from './EditPostModal';
+
+// Fallback: if the realtime accept event is missed, we still navigate when the
+// backend creates the chess/card game post in the feed.
+const autoChessNavigateDone = new Set<string>(); // key = `${userId}:${roomId}`
 
 interface PostProps {
   post: any;
@@ -28,9 +37,18 @@ interface PostProps {
   fromScreen?: string; // Screen name where Post is rendered (e.g., 'UserProfile')
   userProfileParams?: any; // Params to pass when navigating back to UserProfile
   autoPlayMedia?: boolean; // Force media autoplay (used in PostDetail)
+  /** When the post is updated in-place (e.g. contributors), parent can sync local state (Post detail). */
+  onPostUpdated?: (updated: any) => void;
 }
 
-const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen, userProfileParams, autoPlayMedia = false }) => {
+const Post: React.FC<PostProps> = ({
+  post,
+  disableNavigation = false,
+  fromScreen,
+  userProfileParams,
+  autoPlayMedia = false,
+  onPostUpdated,
+}) => {
   const navigation = useNavigation<any>();
   
   // Helper function to navigate to PostDetail (ensures tab bar is visible)
@@ -57,10 +75,15 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
     }
   };
   const { user } = useUser();
-  const { likePost, unlikePost, deletePost: deletePostContext } = usePost();
+  const { likePost, unlikePost, deletePost: deletePostContext, updatePost, hideFeedPostFromFeed } = usePost();
+  const { t } = useLanguage();
   const { colors } = useTheme();
   const { socket } = useSocket();
   const showToast = useShowToast();
+
+  const [addContribOpen, setAddContribOpen] = useState(false);
+  const [manageContribOpen, setManageContribOpen] = useState(false);
+  const [editPostOpen, setEditPostOpen] = useState(false);
 
   const [isLiking, setIsLiking] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -115,6 +138,52 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
       setChessGameData(null);
     }
   }, [isChessPost, post?.chessGameData]);
+
+  // Fallback navigation for chess: if this feed post represents a game the current user is part of,
+  // auto-open ChessGame so the user can play even if acceptChessChallenge was missed.
+  useEffect(() => {
+    if (!isChessPost || disableNavigation) return;
+    if (!chessGameData?.roomId) return;
+    const currentUserId = user?._id?.toString();
+    if (!currentUserId) return;
+
+    const roomId = chessGameData.roomId;
+    const player1Id = chessGameData?.player1?._id?.toString?.() ?? chessGameData?.player1?._id;
+    const player2Id = chessGameData?.player2?._id?.toString?.() ?? chessGameData?.player2?._id;
+    if (!player1Id || !player2Id) return;
+
+    const isPlayer1 = currentUserId === player1Id?.toString();
+    const isPlayer2 = currentUserId === player2Id?.toString();
+    if (!isPlayer1 && !isPlayer2) return;
+
+    const key = `${currentUserId}:${roomId}`;
+    if (autoChessNavigateDone.has(key)) return;
+
+    // Guard: don't push the user again if they are already watching the same game.
+    const cur = (navigation as any)?.getCurrentRoute?.();
+    if (cur?.name === 'ChessGame' && cur?.params?.roomId === roomId) {
+      autoChessNavigateDone.add(key);
+      return;
+    }
+
+    autoChessNavigateDone.add(key);
+
+    const color = isPlayer1 ? 'white' : 'black';
+    const opponentId = isPlayer1 ? player2Id?.toString() : player1Id?.toString();
+
+    console.log('♟️ [Post] Auto-navigating to ChessGame (participant fallback):', {
+      roomId,
+      color,
+      opponentId,
+    });
+
+    navigation.navigate('ChessGame', {
+      roomId,
+      opponentId,
+      color,
+      isSpectator: false,
+    });
+  }, [isChessPost, disableNavigation, chessGameData, user?._id, navigation]);
 
   // Fetch football matches for football posts (reusable function)
   const fetchFootballMatches = React.useCallback(async (silent = false) => {
@@ -346,6 +415,21 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
     return !!cId && !!currentUserId && cId === currentUserId;
   });
 
+  const canAddCollaborator =
+    !!post.isCollaborative && (isOwner || !!isContributor);
+  const canManageContributorsList =
+    isOwner &&
+    !!post.isCollaborative &&
+    Array.isArray(post.contributors) &&
+    post.contributors.length > 0;
+
+  const onCollaborativePostUpdated = (updated: any) => {
+    if (updated?._id) {
+      updatePost(updated._id, updated);
+      onPostUpdated?.(updated);
+    }
+  };
+
   const handleLike = async () => {
     if (isLiking || !user) return;
 
@@ -447,6 +531,41 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
     'NatGeoKids', 'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 'MBCDrama', 'Fox11'];
   const isChannelPost = isYouTubePost || !!post?.channelAddedBy || 
     channelUsernames.includes(post.postedBy?.username);
+
+  const isCardPost = !!post?.cardGameData;
+
+  const isMyChannelFeedCard =
+    !!post?.channelAddedBy && String(post.channelAddedBy) === String(user?._id);
+  const showDismissFromFeed =
+    (isFootballPost || isWeatherPost || isMyChannelFeedCard) && !isChessPost && !isCardPost;
+
+  const handleDismissFromFeed = () => {
+    Alert.alert(
+      t('removeFromFeed'),
+      t('removeFromFeedHint'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('removeFromFeedConfirm'),
+          style: 'destructive',
+          onPress: () => {
+            hideFeedPostFromFeed(String(post._id));
+            showToast(t('success'), t('removedFromFeed'), 'success');
+          },
+        },
+      ]
+    );
+  };
+
+  const canEditPostText =
+    !!user &&
+    !isChannelPost &&
+    !isWeatherPost &&
+    !isFootballPost &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.channelAddedBy &&
+    (isOwner || (!!post.isCollaborative && isContributor));
   
   // Debug log for channel detection
   if (isYouTubePost) {
@@ -532,12 +651,109 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
           <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
         </View>
 
-        {isOwner && (
-          <TouchableOpacity onPress={handleDelete} disabled={isDeleting}>
-            <Text style={styles.deleteButton}>🗑️</Text>
-          </TouchableOpacity>
-        )}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {showDismissFromFeed && (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                handleDismissFromFeed();
+              }}
+              style={{ padding: 6, marginRight: 2 }}
+              accessibilityLabel={t('removeFromFeed')}
+            >
+              <Text style={{ fontSize: 18, color: colors.textGray }}>✕</Text>
+            </TouchableOpacity>
+          )}
+          {canEditPostText && (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                setEditPostOpen(true);
+              }}
+              style={{ padding: 5, marginRight: 4 }}
+            >
+              <Text style={styles.editButton}>✏️</Text>
+            </TouchableOpacity>
+          )}
+          {isOwner && (
+            <TouchableOpacity onPress={handleDelete} disabled={isDeleting}>
+              <Text style={styles.deleteButton}>🗑️</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
+
+      {post.isCollaborative &&
+        Array.isArray(post.contributors) &&
+        post.contributors.length > 0 &&
+        (() => {
+          const ownerId = postedById;
+          const displayContributors = post.contributors.filter((c: any) => {
+            const cid = (typeof c === 'string' ? c : c?._id)?.toString?.();
+            return cid && cid !== ownerId;
+          });
+          if (displayContributors.length === 0) return null;
+          return (
+            <View style={{ marginBottom: 10 }}>
+              <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textGray }}>{t('contributors')}</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ marginTop: 6 }}
+                contentContainerStyle={{ alignItems: 'center' }}
+              >
+                {displayContributors.map((contributor: any, idx: number) => {
+                  const cid = (contributor?._id || contributor)?.toString();
+                  const label = contributor?.name || contributor?.username || '?';
+                  return (
+                    <View key={cid || String(idx)} style={{ marginRight: 8 }}>
+                      {contributor?.profilePic ? (
+                        <Image source={{ uri: contributor.profilePic }} style={styles.contribAvatar} />
+                      ) : (
+                        <View
+                          style={[
+                            styles.contribAvatar,
+                            {
+                              backgroundColor: colors.avatarBg,
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                            },
+                          ]}
+                        >
+                          <Text style={{ color: '#fff', fontWeight: '700' }}>{label[0]?.toUpperCase()}</Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          );
+        })()}
+
+      {canAddCollaborator && (
+        <View style={styles.collabActions}>
+          <TouchableOpacity
+            style={{ marginRight: 16 }}
+            onPress={(e) => {
+              e.stopPropagation();
+              setAddContribOpen(true);
+            }}
+          >
+            <Text style={[styles.collabActionText, { color: colors.primary }]}>+ {t('addContributor')}</Text>
+          </TouchableOpacity>
+          {canManageContributorsList && (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                setManageContribOpen(true);
+              }}
+            >
+              <Text style={[styles.collabActionText, { color: colors.text }]}>{t('manageContributors')}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {/* Hide post text for football posts if we have matches (from API or post data) */}
       {!(isFootballPost && (footballMatches.length > 0 || post.liveMatches?.length > 0 || post.matches?.length > 0 || post.todayMatches?.length > 0)) && (
@@ -558,11 +774,7 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
 
       {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
-          <View 
-            style={styles.videoContainer}
-            onStartShouldSetResponder={() => true}
-            onMoveShouldSetResponder={() => false}
-          >
+          <View style={styles.videoContainer}>
             <YoutubePlayer
             height={styles.videoContainer.height}
             videoId={youtubeVideoId}
@@ -579,14 +791,14 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
               autoplay: 1,
               mute: 0,
             }}
-            onError={(error) => {
+            onError={(error: unknown) => {
               console.error('❌ [Post] YouTube player error:', error);
             }}
             onReady={() => {
               console.log('✅ [Post] YouTube player ready - auto-playing');
               setYoutubePlaying(true);
             }}
-            onChangeState={(state) => {
+            onChangeState={(state: string) => {
               console.log('📺 [Post] YouTube state:', state);
               // Update state based on player state
               if (state === 'playing') {
@@ -784,18 +996,6 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
 
       {isFootballPost && (
         <View style={{ marginBottom: 10 }}>
-          {/* Debug: Log football post data */}
-          {console.log('⚽ [Post] Football post data:', { 
-            hasLiveMatches: !!post.liveMatches, 
-            liveMatchesLength: post.liveMatches?.length,
-            hasMatches: !!post.matches,
-            matchesLength: post.matches?.length,
-            hasTodayMatches: !!post.todayMatches,
-            todayMatchesLength: post.todayMatches?.length,
-            hasFootballData: !!post.footballData,
-            allKeys: Object.keys(post),
-            text: post.text?.substring(0, 100)
-          })}
           {/* Check if we have matches from API fetch or post data */}
           {footballLoading ? (
             <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
@@ -1008,7 +1208,27 @@ const Post: React.FC<PostProps> = ({ post, disableNavigation = false, fromScreen
         </TouchableOpacity>
 
       </View>
-      
+
+      <AddContributorModal
+        visible={addContribOpen}
+        onClose={() => setAddContribOpen(false)}
+        post={post}
+        onContributorAdded={onCollaborativePostUpdated}
+      />
+      <ManageContributorsModal
+        visible={manageContribOpen}
+        onClose={() => setManageContribOpen(false)}
+        post={post}
+        onContributorRemoved={onCollaborativePostUpdated}
+      />
+      <EditPostModal
+        visible={editPostOpen}
+        onClose={() => setEditPostOpen(false)}
+        post={post}
+        onSaved={(updated) => {
+          onCollaborativePostUpdated(updated);
+        }}
+      />
     </View>
   );
 };
@@ -1056,6 +1276,20 @@ const styles = StyleSheet.create({
     marginLeft: 5,
     fontSize: 14,
   },
+  contribAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  collabActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 10,
+  },
+  collabActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
   time: {
     fontSize: 14,
     color: COLORS.textGray,
@@ -1066,6 +1300,10 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
   },
   deleteButton: {
+    fontSize: 18,
+    padding: 5,
+  },
+  editButton: {
     fontSize: 18,
     padding: 5,
   },

@@ -366,7 +366,12 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         }
         keyboardShouldPersistTaps="handled"
       >
-        <Post post={post} disableNavigation={true} autoPlayMedia={true} />
+        <Post
+          post={post}
+          disableNavigation={true}
+          autoPlayMedia={true}
+          onPostUpdated={setPost}
+        />
 
         <View style={styles.repliesSection}>
           <Text style={[styles.repliesTitle, { color: colors.text }]}>{t('comments')} ({post.replies?.length || 0})</Text>

@@ -110,6 +110,14 @@ const CallScreen = () => {
     }
   }, [callEnded, navigation]);
 
+  const isReceiving = call.isReceivingCall && !callAccepted;
+  const isVideo = (paramCallType || callType || call.callType) === 'video';
+  // When user answered from NATIVE UI (app was off), don't show in-app Answer/Decline — show Connecting until call is up.
+  const answeredFromNative = !!shouldAutoAnswer;
+  // Receiver (answered from notification): use connectionState so we show video + Connected when peer connects
+  const isConnected =
+    displayConnectedFromPeer || (answeredFromNative && connectionState === 'connected');
+
   // FIRM: Receiver (answered from notification) stuck on "Connecting" – end call after 12s if no connection
   const connectionFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -134,6 +142,36 @@ const CallScreen = () => {
     };
   }, [answeredFromNative, isConnected, leaveCall, navigation]);
 
+  // FIRM: Caller stuck on "Ringing…" – auto-cancel after 35s (prevents stale UI/state if callee never answers)
+  const outgoingRingFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const isOutgoingRinging =
+      (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
+
+    if (!isOutgoingRinging) {
+      if (outgoingRingFailsafeRef.current) {
+        clearTimeout(outgoingRingFailsafeRef.current);
+        outgoingRingFailsafeRef.current = null;
+      }
+      return;
+    }
+
+    if (outgoingRingFailsafeRef.current) return;
+    outgoingRingFailsafeRef.current = setTimeout(() => {
+      outgoingRingFailsafeRef.current = null;
+      console.warn('⚠️ [CallScreen] Outgoing ring failsafe – no answer after 35s, ending call');
+      leaveCall();
+      if (navigation.canGoBack()) navigation.goBack();
+    }, 35000);
+
+    return () => {
+      if (outgoingRingFailsafeRef.current) {
+        clearTimeout(outgoingRingFailsafeRef.current);
+        outgoingRingFailsafeRef.current = null;
+      }
+    };
+  }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, leaveCall, navigation]);
+
   const handleAnswer = async () => {
     try {
       await answerCall();
@@ -152,13 +190,6 @@ const CallScreen = () => {
     const s = sec % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
-
-  const isReceiving = call.isReceivingCall && !callAccepted;
-  const isVideo = (paramCallType || callType || call.callType) === 'video';
-  // When user answered from NATIVE UI (app was off), don't show in-app Answer/Decline — show Connecting until call is up.
-  const answeredFromNative = !!shouldAutoAnswer;
-  // Receiver (answered from notification): use connectionState so we show video + Connected when peer connects
-  const isConnected = displayConnectedFromPeer || (answeredFromNative && connectionState === 'connected');
 
   // ——— User B (receiver): incoming call — show Decline + Answer (only when NOT already answered from native) ———
   if (isReceiving && !answeredFromNative) {
@@ -201,7 +232,7 @@ const CallScreen = () => {
   // ——— User B answered from native UI (app was off): show avatars + Connecting… until connected, then fall through to video UI ———
   if (isReceiving && answeredFromNative && !isConnected) {
     const callerName = call.name || userName || 'Unknown';
-    const callerAvatar = userProfilePic || call.profilePic;
+    const callerAvatar = userProfilePic || (call as any).profilePic;
     const myName = user?.name || user?.username || 'You';
     const myAvatar = user?.profilePic;
     return (
@@ -251,7 +282,7 @@ const CallScreen = () => {
   const isOutgoingRinging = (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
   if (isOutgoingRinging) {
     const calleeName = call.name || userName || '...';
-    const avatarUri = userProfilePic || call.profilePic;
+    const avatarUri = userProfilePic || (call as any).profilePic;
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Avatar - large, centered like WhatsApp */}
@@ -281,7 +312,7 @@ const CallScreen = () => {
 
   // In-call: video/audio UI
   const otherName = call.name || userName || 'User';
-  const otherAvatar = userProfilePic || call.profilePic;
+  const otherAvatar = userProfilePic || (call as any).profilePic;
   const myName = user?.name || user?.username || 'You';
   const myAvatar = user?.profilePic;
 

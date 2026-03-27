@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Vibration } from 'react-native';
+import { DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
-import { SOCKET_EVENTS, API_URL } from '../utils/constants';
+import { SOCKET_EVENTS, API_URL, STORAGE_KEYS } from '../utils/constants';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -22,6 +22,7 @@ interface SocketContextType {
   setSelectedConversationId: (id: string | null) => void;
   selectedConversationPartnerId: string | null;
   setSelectedConversationPartnerId: (userId: string | null) => void;
+  setPresenceWatchUserIds: (userIds: string[]) => void;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -37,6 +38,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const selectedConversationIdRef = useRef<string | null>(null);
   const [selectedConversationPartnerId, setSelectedConversationPartnerId] = useState<string | null>(null);
   const selectedConversationPartnerIdRef = useRef<string | null>(null);
+  const [presenceWatchUserIds, setPresenceWatchUserIdsState] = useState<string[]>([]);
+  const presenceWatchUserIdsRef = useRef<string[]>([]);
   const presenceSubscribeRef = useRef<(() => void) | null>(null);
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
   const newMessageHandlerBodyRef = useRef<(data: any) => void>(() => {});
@@ -44,6 +47,18 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     newMessageHandlerBodyRef.current?.(data);
   }, []);
   const [isNotificationCountLoaded, setIsNotificationCountLoaded] = useState(false);
+  const setPresenceWatchUserIds = useCallback((userIds: string[]) => {
+    const normalized = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((id: any) => id?._id?.toString?.() ?? id?.toString?.() ?? String(id))
+          .map((id: string) => id.trim())
+          .filter((id: string) => /^[0-9a-fA-F]{24}$/.test(id))
+      )
+    );
+    presenceWatchUserIdsRef.current = normalized;
+    setPresenceWatchUserIdsState(normalized);
+  }, []);
   
   // Notification sounds
   const notificationSounds = useRef<{
@@ -225,6 +240,14 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
       const isFromCurrentUser = messageSenderId !== '' && currentUserId !== '' && messageSenderId === currentUserId;
 
+      if (!isFromCurrentUser && messageData._id) {
+        try {
+          socketService.emit('ackMessageDelivered', { messageId: String(messageData._id) });
+        } catch (_) {
+          /* ignore */
+        }
+      }
+
       const conversationId = messageData.conversationId?.toString();
       const openId = selectedConversationIdRef.current;
       const isFromOpenConversation =
@@ -373,6 +396,24 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       // For regular posts, check if user follows the author
       if (post?.postedBy?._id || post?.postedBy) {
         const authorId = post.postedBy._id?.toString?.() || post.postedBy.toString?.() || post.postedBy;
+        // Own posts: only prepend if collaborative with at least one other contributor (matches getFeedPost)
+        if (myId && authorId === myId) {
+          const contributors = post.contributors;
+          const hasOtherContributor =
+            !!post.isCollaborative &&
+            Array.isArray(contributors) &&
+            contributors.some((c: any) => {
+              const cid = (c?._id != null ? c._id : c)?.toString?.() ?? String(c);
+              return cid && cid !== myId;
+            });
+          if (!hasOtherContributor) {
+            console.log('⚠️ [SocketContext] Ignoring own post for feed:', post._id);
+            return;
+          }
+          console.log('✅ [SocketContext] Adding own collaborative post to feed:', post._id);
+          addPost(post);
+          return;
+        }
         const userFollowing = user?.following || [];
         const isFollowing = userFollowing.some((f: any) => {
           const followId = f?._id?.toString?.() || f?.toString?.() || f;
@@ -391,9 +432,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           console.log('⚠️ [SocketContext] Ignoring post from user not followed:', authorId);
         }
       } else {
-        // If no author info, add it anyway (shouldn't happen, but be safe)
-        console.warn('⚠️ [SocketContext] Post missing postedBy field, adding anyway:', post._id);
-        addPost(post);
+        console.warn('⚠️ [SocketContext] Post missing postedBy field, ignoring:', post._id);
       }
     });
 
@@ -559,7 +598,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         const followingIds = (user?.following || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
         const followerIds = (user?.followers || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
         const partnerUserId = selectedConversationPartnerIdRef.current;
-        const allIds = [...followingIds, ...followerIds];
+        const watchedIds = presenceWatchUserIdsRef.current || [];
+        const allIds = [...followingIds, ...followerIds, ...watchedIds];
         if (partnerUserId) {
           const s = partnerUserId.toString();
           if (!allIds.includes(s)) allIds.push(s);
@@ -567,7 +607,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         const uniqueIds = Array.from(new Set(allIds)).filter(Boolean);
         
         if (uniqueIds.length > 0) {
-          console.log(`📡 [SocketContext] Subscribing to presence for ${uniqueIds.length} users (following: ${followingIds.length}, followers: ${followerIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`);
+          console.log(`📡 [SocketContext] Subscribing to presence for ${uniqueIds.length} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`);
           socketService.emit('presenceSubscribe', { userIds: uniqueIds });
         }
       } catch (e) {
@@ -583,9 +623,46 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const removeConnectListener = socketService.addConnectListener(() => {
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       subscribeToPresence();
+
+      // Flush pending delivery acks queued from FCM (push arrived while socket was disconnected).
+      (async () => {
+        try {
+          const raw = await AsyncStorage.getItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
+          if (!raw) return;
+          const ids = (JSON.parse(raw) as any) as string[];
+          const uniqueIds = Array.from(new Set((Array.isArray(ids) ? ids : []).map((x) => String(x).trim()).filter(Boolean))).slice(0, 50);
+          if (!uniqueIds.length) return;
+          socketService.emit('ackMessageDelivered', { messageIds: uniqueIds });
+          await AsyncStorage.removeItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
+        } catch (e) {
+          // keep for next connect
+        }
+      })();
+    });
+
+    // If an FCM message arrives while socket is already connected, flush delivery acks immediately
+    // so sender ticks update ASAP (✓ -> ✓✓).
+    const fcmSub = DeviceEventEmitter.addListener('MessageFromFCM', () => {
+      if (!socketService.isSocketConnected()) return;
+      (async () => {
+        try {
+          const raw = await AsyncStorage.getItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
+          if (!raw) return;
+          const ids = (JSON.parse(raw) as any) as string[];
+          const uniqueIds = Array.from(
+            new Set((Array.isArray(ids) ? ids : []).map((x) => String(x).trim()).filter(Boolean))
+          ).slice(0, 50);
+          if (!uniqueIds.length) return;
+          socketService.emit('ackMessageDelivered', { messageIds: uniqueIds });
+          await AsyncStorage.removeItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
+        } catch {
+          // best-effort
+        }
+      })();
     });
 
     return () => {
+      fcmSub.remove();
       removeSocketReady();
       removeConnectListener();
       socketService.off('getOnlineUser');
@@ -609,7 +686,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     if (!user?._id) return;
     const sub = presenceSubscribeRef.current;
     if (sub) sub();
-  }, [user?._id, user?.following, user?.followers, selectedConversationPartnerId]);
+  }, [user?._id, user?.following, user?.followers, selectedConversationPartnerId, presenceWatchUserIds]);
 
   const clearChessChallenge = (challengeFrom?: string) => {
     if (challengeFrom) {
@@ -641,6 +718,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setSelectedConversationId,
       selectedConversationPartnerId,
       setSelectedConversationPartnerId,
+      setPresenceWatchUserIds,
     }}>
       {children}
     </SocketContext.Provider>

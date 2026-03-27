@@ -13,8 +13,12 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
+import CollaboratorPicker from '../../components/CollaboratorPicker';
+import {
+  buildInitialContributorIds,
+  CollaboratorUser,
+} from '../../utils/collaborators';
 import { useUser } from '../../context/UserContext';
-import { usePost } from '../../context/PostContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -24,7 +28,6 @@ import { useTheme } from '../../context/ThemeContext';
 
 const CreatePostScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { addPost } = usePost();
   const showToast = useShowToast();
   const {
     imageUri,
@@ -41,6 +44,7 @@ const CreatePostScreen = ({ navigation }: any) => {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [isCollaborative, setIsCollaborative] = useState(false);
+  const [selectedCollaborators, setSelectedCollaborators] = useState<CollaboratorUser[]>([]);
 
   const handleMediaPick = () => {
     Alert.alert(
@@ -70,8 +74,15 @@ const CreatePostScreen = ({ navigation }: any) => {
         const formData = new FormData();
         formData.append('text', text.trim() || '');
         formData.append('postedBy', user?._id || '');
-        formData.append('isCollaborative', isCollaborative ? 'true' : 'false');
-        
+        // Match web: only send collaborative flags when enabled (avoids string "false" being truthy on the server)
+        if (isCollaborative) {
+          formData.append('isCollaborative', 'true');
+          formData.append(
+            'contributors',
+            JSON.stringify(buildInitialContributorIds(user?._id, selectedCollaborators))
+          );
+        }
+
         const mime =
           imageData?.type ||
           (isVideo ? 'video/mp4' : 'image/jpeg');
@@ -103,9 +114,10 @@ const CreatePostScreen = ({ navigation }: any) => {
           setText('');
           clearImage();
           setIsCollaborative(false);
-          
+          setSelectedCollaborators([]);
+
           // Force a small delay to ensure UI updates
-          await new Promise(resolve => setTimeout(resolve, 50));
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
         } else {
           console.warn('⚠️ [CreatePost] Response missing _id:', response);
           showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
@@ -114,8 +126,11 @@ const CreatePostScreen = ({ navigation }: any) => {
         const postData: any = {
           text: text.trim(),
           postedBy: user?._id,
-          isCollaborative,
         };
+        if (isCollaborative) {
+          postData.isCollaborative = true;
+          postData.contributors = buildInitialContributorIds(user?._id, selectedCollaborators);
+        }
         const response = await apiService.post(ENDPOINTS.CREATE_POST, postData);
         console.log('📝 [CreatePost] Post response:', response);
         
@@ -133,9 +148,10 @@ const CreatePostScreen = ({ navigation }: any) => {
           setText('');
           clearImage(); // Clear image even if not used (in case user removed it)
           setIsCollaborative(false);
-          
+          setSelectedCollaborators([]);
+
           // Force a small delay to ensure UI updates
-          await new Promise(resolve => setTimeout(resolve, 50));
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
         } else {
           console.warn('⚠️ [CreatePost] Response missing _id:', response);
           showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
@@ -248,7 +264,11 @@ const CreatePostScreen = ({ navigation }: any) => {
         <View style={styles.options}>
           <TouchableOpacity
             style={styles.option}
-            onPress={() => setIsCollaborative(!isCollaborative)}
+            onPress={() => {
+              const next = !isCollaborative;
+              setIsCollaborative(next);
+              if (!next) setSelectedCollaborators([]);
+            }}
           >
             <Text style={styles.optionIcon}>
               {isCollaborative ? '✅' : '☑️'}
@@ -256,6 +276,47 @@ const CreatePostScreen = ({ navigation }: any) => {
             <Text style={[styles.optionText, { color: colors.text }]}>{t('collaborativePost')}</Text>
           </TouchableOpacity>
         </View>
+
+        {isCollaborative && (
+          <View style={styles.collabSection}>
+            <Text style={[styles.collabHint, { color: colors.textGray }]}>{t('addContributors')}</Text>
+            <CollaboratorPicker
+              excludeUserIds={[
+                user?._id?.toString(),
+                ...selectedCollaborators.map((s) => String(s._id)),
+              ].filter(Boolean) as string[]}
+              onSelectUser={(u) => {
+                if (!selectedCollaborators.some((x) => x._id === u._id)) {
+                  setSelectedCollaborators((p) => [...p, u]);
+                }
+              }}
+            />
+            {selectedCollaborators.length > 0 && (
+              <View style={styles.selectedChips}>
+                <Text style={[styles.selectedLabel, { color: colors.textGray }]}>
+                  {t('selected')} ({selectedCollaborators.length})
+                </Text>
+                {selectedCollaborators.map((su) => (
+                  <View
+                    key={su._id}
+                    style={[styles.chipRow, { borderColor: colors.border, backgroundColor: colors.background }]}
+                  >
+                    <Text style={[styles.chipText, { color: colors.text }]} numberOfLines={1}>
+                      {su.name || su.username}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() =>
+                        setSelectedCollaborators((p) => p.filter((x) => x._id !== su._id))
+                      }
+                    >
+                      <Text style={{ color: colors.primary }}>{t('remove')}</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       <View
@@ -397,6 +458,38 @@ const styles = StyleSheet.create({
   },
   optionText: {
     fontSize: 16,
+  },
+  collabSection: {
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  collabHint: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  selectedChips: {
+    marginTop: 12,
+  },
+  selectedLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 6,
+  },
+  chipText: {
+    flex: 1,
+    fontSize: 14,
+    marginRight: 8,
   },
   toolbar: {
     flexDirection: 'row',

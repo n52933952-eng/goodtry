@@ -1,8 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity } from 'react-native';
 import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../context/UserContext';
 import { useWebRTC } from '../context/WebRTCContext';
 import { useTheme } from '../context/ThemeContext';
@@ -89,6 +90,8 @@ const FeedStack = () => {
 // Main Tab Navigator (after login)
 const MainTabs = () => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 60 + Math.max(0, insets.bottom);
   
   return (
   <Tab.Navigator
@@ -100,8 +103,8 @@ const MainTabs = () => {
         backgroundColor: colors.backgroundLight,
         borderTopColor: colors.border,
         borderTopWidth: 1,
-        height: 60,
-        paddingBottom: 0,
+        height: tabBarHeight,
+        paddingBottom: Math.max(0, insets.bottom),
         paddingTop: 0,
         paddingHorizontal: 0,
         elevation: 8,
@@ -136,7 +139,8 @@ const MainTabs = () => {
           backgroundColor: colors.backgroundLight,
           borderTopWidth: 1,
           borderTopColor: colors.border,
-          height: 60,
+          height: tabBarHeight,
+          paddingBottom: Math.max(0, insets.bottom),
           width: '100%',
           elevation: 8,
           shadowColor: '#000',
@@ -185,7 +189,7 @@ const MainTabs = () => {
                   flex: 1,
                   justifyContent: 'center',
                   alignItems: 'center',
-                  height: 60,
+                  height: tabBarHeight,
                   width: '100%',
                 }}
                 onTouchEnd={onPress}
@@ -410,6 +414,8 @@ const AppNavigator = () => {
   const navReadyRef = useRef(false);
   const [navReady, setNavReady] = useState(false);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
+  const pendingChessAcceptNavRef = useRef<any>(null);
+  const pendingCardAcceptNavRef = useRef<any>(null);
   const lastNavigateToCallRef = useRef<{ callerId: string; ts: number } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x)
   const lastIncomingOfferSdpRef = useRef<string | undefined>(undefined); // New offer SDP = new call session (same caller after decline)
   const prevIsReceivingRef = useRef(false);
@@ -687,39 +693,54 @@ const AppNavigator = () => {
     }
   }, [navReady, user, setIncomingCallFromNotification]);
 
-  // Chess / Go Fish: server emits accept*Challenge to both players — navigate from root so the
-  // challenger opens the game even when not on the Feed tab (previously only FeedScreen listened).
+  // Chess / Go Fish: attach listeners as soon as socket + user exist — NOT gated on navReady.
+  // Otherwise server can emit (or pending deliver) before NavigationContainer is ready → event lost (common after Google login).
+  const tryNavigateChessAccept = useCallback((data: any) => {
+    console.log('🧩 [AppNavigator] acceptChessChallenge event received:', data);
+    if (!data?.roomId || !data?.yourColor || !data?.opponentId) return;
+    const nav = navigationRef.current;
+    if (!nav?.navigate || !navReadyRef.current) {
+      pendingChessAcceptNavRef.current = data;
+      return;
+    }
+    const cur = nav.getCurrentRoute?.();
+    if (cur?.name === 'ChessGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
+      pendingChessAcceptNavRef.current = null;
+      return;
+    }
+    pendingChessAcceptNavRef.current = null;
+    nav.navigate('ChessGame', {
+      roomId: data.roomId,
+      color: data.yourColor,
+      opponentId: data.opponentId,
+    });
+  }, []);
+
+  const tryNavigateCardAccept = useCallback((data: any) => {
+    console.log('🧩 [AppNavigator] acceptCardChallenge event received:', data);
+    if (!data?.roomId || !data?.opponentId) return;
+    const nav = navigationRef.current;
+    if (!nav?.navigate || !navReadyRef.current) {
+      pendingCardAcceptNavRef.current = data;
+      return;
+    }
+    const cur = nav.getCurrentRoute?.();
+    if (cur?.name === 'CardGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
+      pendingCardAcceptNavRef.current = null;
+      return;
+    }
+    pendingCardAcceptNavRef.current = null;
+    nav.navigate('CardGame', {
+      roomId: data.roomId,
+      opponentId: data.opponentId,
+    });
+  }, []);
+
   useEffect(() => {
-    if (!navReady || !socket || !user?._id) return;
+    if (!socket || !user?._id) return;
 
-    const goChess = (data: any) => {
-      if (!data?.roomId || !data?.yourColor || !data?.opponentId) return;
-      const nav = navigationRef.current;
-      if (!nav?.navigate) return;
-      const cur = nav.getCurrentRoute?.();
-      if (cur?.name === 'ChessGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
-        return;
-      }
-      nav.navigate('ChessGame', {
-        roomId: data.roomId,
-        color: data.yourColor,
-        opponentId: data.opponentId,
-      });
-    };
-
-    const goCard = (data: any) => {
-      if (!data?.roomId || !data?.opponentId) return;
-      const nav = navigationRef.current;
-      if (!nav?.navigate) return;
-      const cur = nav.getCurrentRoute?.();
-      if (cur?.name === 'CardGame' && (cur.params as { roomId?: string })?.roomId === data.roomId) {
-        return;
-      }
-      nav.navigate('CardGame', {
-        roomId: data.roomId,
-        opponentId: data.opponentId,
-      });
-    };
+    const goChess = (data: any) => tryNavigateChessAccept(data);
+    const goCard = (data: any) => tryNavigateCardAccept(data);
 
     socket.on('acceptChessChallenge', goChess);
     socket.on('acceptCardChallenge', goCard);
@@ -727,7 +748,22 @@ const AppNavigator = () => {
       socket.off('acceptChessChallenge', goChess);
       socket.off('acceptCardChallenge', goCard);
     };
-  }, [navReady, socket, user?._id]);
+  }, [socket, user?._id, tryNavigateChessAccept, tryNavigateCardAccept]);
+
+  // Flush game navigations that arrived before NavigationContainer was ready
+  useEffect(() => {
+    if (!navReady) return;
+    const pChess = pendingChessAcceptNavRef.current;
+    if (pChess) {
+      pendingChessAcceptNavRef.current = null;
+      tryNavigateChessAccept(pChess);
+    }
+    const pCard = pendingCardAcceptNavRef.current;
+    if (pCard) {
+      pendingCardAcceptNavRef.current = null;
+      tryNavigateCardAccept(pCard);
+    }
+  }, [navReady, tryNavigateChessAccept, tryNavigateCardAccept]);
 
   // Listen for navigation events from native code (e.g., from IncomingCallActivity via MainActivity)
   useEffect(() => {

@@ -5,9 +5,46 @@
  */
 
 import messaging from '@react-native-firebase/messaging';
-import { DeviceEventEmitter, Alert, Platform, PermissionsAndroid } from 'react-native';
+import { DeviceEventEmitter, Platform, PermissionsAndroid } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from './api';
 import { navigateFromPushData } from './pushNavigation';
+import { API_URL, STORAGE_KEYS } from '../utils/constants';
+
+async function ackDeliveredViaHttp(messageId: string) {
+  try {
+    const rawUser = await AsyncStorage.getItem(STORAGE_KEYS.USER);
+    const user = rawUser ? JSON.parse(rawUser) : null;
+    const recipientUserId = user?._id ? String(user._id) : null;
+    if (!recipientUserId) return;
+
+    await fetch(`${API_URL}/api/message/ack-delivered`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageId, recipientUserId }),
+    }).catch(() => {});
+  } catch {
+    // best-effort
+  }
+}
+
+async function queueDeliveryAckFromFcm(data: Record<string, string> | undefined) {
+  try {
+    if (data?.type !== 'message') return;
+    const messageId = (data?.messageId || '').toString().trim();
+    if (!messageId) return;
+    const raw = await AsyncStorage.getItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
+    const arr: string[] = raw ? (JSON.parse(raw) as any) : [];
+    const next = Array.from(new Set([...(Array.isArray(arr) ? arr : []), messageId])).slice(-200);
+    await AsyncStorage.setItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS, JSON.stringify(next));
+
+    // Best-effort HTTP ack so sender ticks can update even if socket isn't connected.
+    // Don't block foreground UI.
+    void ackDeliveredViaHttp(messageId);
+  } catch {
+    // best-effort
+  }
+}
 
 class FCMService {
   private fcmToken: string | null = null;
@@ -182,11 +219,10 @@ class FCMService {
       }
 
       if (data?.type === 'message') {
-        const title = remoteMessage.notification?.title || data.title || 'Message';
-        const body = remoteMessage.notification?.body || data.body || '';
-        if (title || body) {
-          Alert.alert(title || 'Message', body || '');
-        }
+        // Do NOT pop an Alert in foreground — it feels like a "ring" when user returns to the app.
+        // Instead, let chat screens refresh quietly (ChatScreen listens to AppState active and refetches).
+        await queueDeliveryAckFromFcm(data);
+        DeviceEventEmitter.emit('MessageFromFCM', { data, remoteMessage });
         return;
       }
 

@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
+  AppState,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
@@ -21,7 +23,7 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { onlineUsers, socket, selectedConversationId } = useSocket();
+  const { onlineUsers, socket, selectedConversationId, setPresenceWatchUserIds } = useSocket();
   const { colors } = useTheme();
   const { t } = useLanguage();
   const [conversations, setConversations] = useState<any[]>([]);
@@ -232,6 +234,46 @@ const MessagesScreen = ({ navigation }: any) => {
   useEffect(() => {
     fetchConversationsRef.current = fetchConversations;
   }, [fetchConversations]);
+
+  // When returning from background, refresh conversations (push may arrive while offline/reconnecting).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return;
+      fetchConversationsRef.current?.(false, { silent: true });
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Watch presence for all users in current conversations so status updates in real time
+  // without needing to open an individual chat first.
+  useEffect(() => {
+    if (!user?._id) {
+      setPresenceWatchUserIds([]);
+      return;
+    }
+
+    const myId = user._id?.toString?.() ?? String(user._id);
+    const partnerIds = conversations
+      .map((conversation: any) => {
+        const participants = Array.isArray(conversation?.participants) ? conversation.participants : [];
+        const other = participants.find((p: any) => {
+          const pid = p?._id?.toString?.() ?? p?.toString?.() ?? String(p);
+          return pid && pid !== myId;
+        });
+        return other?._id?.toString?.() ?? other?.toString?.() ?? (other != null ? String(other) : '');
+      })
+      .filter((id: string) => !!id);
+
+    setPresenceWatchUserIds(partnerIds);
+  }, [conversations, user?._id, setPresenceWatchUserIds]);
+
+  // Foreground FCM "message" should not pop an Alert; we refresh the list instead.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('MessageFromFCM', () => {
+      fetchConversationsRef.current?.(false, { silent: true });
+    });
+    return () => sub.remove();
+  }, []);
 
   const fetchFollowingUsers = async () => {
     if (!user?._id) {

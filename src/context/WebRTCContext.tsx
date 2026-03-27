@@ -151,6 +151,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const getUserMediaInProgressRef = useRef<boolean>(false); // Mutex: only one getUserMedia at a time (Android can hang with concurrent)
   const mediaWarmupTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Debounced post-call media warmup
   const cameraWarmupDoneForActiveRef = useRef<boolean>(false); // One-time warmup per app foreground when pending notification call
+  const lastLockScreenSignalReRequestAtRef = useRef<number>(0); // Throttle requestCallSignal when app becomes active (lock-screen answer)
   const lastCallEndedAtRef = useRef<number>(0); // When call/cleanup last ran – Android needs time to release camera
   const lastCallStateResetAtRef = useRef<number>(0); // When resetAllCallState last ran – allow next incoming call even if state stale
   const lastCallTypeRef = useRef<'audio' | 'video'>('video'); // Track last call type for warmup
@@ -1991,17 +1992,18 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const isConnected = socketInstance?.connected === true || socket?.isSocketConnected?.() === true;
     
     const currentUserId = userIdRef.current || user?._id;
-    if (isConnected && currentUserId) {
+    const receiverIdStr = currentUserId != null ? String(currentUserId) : '';
+    if (isConnected && receiverIdStr) {
       // Emit request only once
       console.log('📡 [NotificationCall] ✅ Socket connected! Requesting call signal...');
       try {
         socket.emit('requestCallSignal', {
           callerId: callerId,
-          receiverId: currentUserId,
+          receiverId: receiverIdStr,
         });
         // Mark that we've requested signal for this caller
         hasRequestedSignalRef.current = { callerId, timestamp: now };
-        pendingSignalRequestRef.current = { callerId, receiverId: currentUserId };
+        pendingSignalRequestRef.current = { callerId, receiverId: receiverIdStr };
         console.log('✅ [NotificationCall] Signal request sent - waiting for response via callUser event');
         console.log('✅ [NotificationCall] Request details:', {
           callerId,
@@ -2019,7 +2021,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           const alreadyInCall = pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed';
           if (stillPending && noSignalYet && !alreadyInCall && socket?.isSocketConnected?.()) {
             console.warn('⚠️ [NotificationCall] Signal request timeout - retrying...');
-            socket.emit('requestCallSignal', { callerId, receiverId: currentUserId });
+            socket.emit('requestCallSignal', { callerId, receiverId: receiverIdStr });
             console.log('🔄 [NotificationCall] Signal request retried');
           }
           requestSignalTimeoutRef.current = null;
@@ -2028,13 +2030,13 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.error('❌ [NotificationCall] Error emitting requestCallSignal:', error);
         // Store as pending if socket not ready
         if (user) {
-          pendingSignalRequestRef.current = { callerId, receiverId: user._id };
+          pendingSignalRequestRef.current = { callerId, receiverId: String(user._id) };
         }
       }
     } else {
       // Socket not connected yet - always store as pending so "after connect" effect will send (fixes: decline then answer again)
       if (user) {
-        pendingSignalRequestRef.current = { callerId, receiverId: user._id };
+        pendingSignalRequestRef.current = { callerId, receiverId: String(user._id) };
         console.log('⏳ [NotificationCall] Socket not connected - will request when connected');
       }
     }
@@ -2074,10 +2076,10 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return;
     }
     console.log('📡 [requestCallSignalForCaller] Requesting signal for caller:', callerId);
-    socket.emit('requestCallSignal', { callerId, receiverId: uid });
+    socket.emit('requestCallSignal', { callerId, receiverId: String(uid) });
     hasRequestedSignalRef.current = { callerId, timestamp: Date.now() };
     if (!pendingSignalRequestRef.current) {
-      pendingSignalRequestRef.current = { callerId, receiverId: uid };
+      pendingSignalRequestRef.current = { callerId, receiverId: String(uid) };
     }
   }, [socket, user]);
 
@@ -2439,10 +2441,13 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.log('📞 [IncomingCall] Requesting call signal (no signal in data)');
         const connected = socket?.getSocket?.()?.connected === true || socket?.isSocketConnected?.();
         if (connected && !pendingSignalRequestRef.current) {
-          pendingSignalRequestRef.current = { callerId: data.from, receiverId: user?._id || '' };
+          pendingSignalRequestRef.current = {
+            callerId: data.from,
+            receiverId: String(user?._id || ''),
+          };
           socket.emit('requestCallSignal', {
             callerId: data.from,
-            receiverId: user?._id,
+            receiverId: String(user?._id || ''),
           });
         }
       } else {
@@ -2866,7 +2871,9 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (sock?.connected && pendingSignalRequestRef.current) {
       const payload = pendingSignalRequestRef.current;
       const uid = userIdRef.current || user?._id;
-      if (payload && uid && payload.receiverId === uid) {
+      const sameReceiver =
+        uid != null && String(payload.receiverId) === String(uid);
+      if (payload && uid && sameReceiver) {
         const { callerId } = payload;
         const alreadyReceivedSignal = hasReceivedSignalForCallerRef.current === callerId;
         const requestedRecently = hasRequestedSignalRef.current?.callerId === callerId &&
@@ -2875,7 +2882,7 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setTimeout(() => {
             if (!pendingSignalRequestRef.current) return;
             const p = pendingSignalRequestRef.current;
-            if (userIdRef.current && p.receiverId === userIdRef.current) {
+            if (userIdRef.current && String(p.receiverId) === String(userIdRef.current)) {
               console.log('📡 [WebRTC] Sending pending signal request (after listeners attached)');
               socket.emit('requestCallSignal', p);
               hasRequestedSignalRef.current = { callerId: p.callerId, timestamp: Date.now() };
@@ -3418,6 +3425,28 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setTimeout(() => {
           checkAndHandlePendingCancel();
         }, 100); // Small delay to ensure everything is ready
+        // Lock screen → Answer: socket/signal may still be catching up; re-request once (throttled).
+        setTimeout(() => {
+          const callerId =
+            incomingCallFromNotificationCallerIdRef.current || persistentCallerIdRef.current;
+          const snap = callStateSnapshotRef.current;
+          if (!callerId || snap.callAccepted) return;
+          if (hasReceivedSignalForCallerRef.current === callerId) return;
+          const connected =
+            socket?.isSocketConnected?.() || socket?.getSocket?.()?.connected === true;
+          if (!connected) return;
+          const uid = userIdRef.current;
+          if (!uid) return;
+          const now = Date.now();
+          if (now - lastLockScreenSignalReRequestAtRef.current < 4000) return;
+          lastLockScreenSignalReRequestAtRef.current = now;
+          console.log('📡 [WebRTC] App active – re-request call signal (lock-screen / cold start recovery)');
+          try {
+            socket.emit('requestCallSignal', { callerId, receiverId: String(uid) });
+          } catch (_) {
+            /* best-effort */
+          }
+        }, 650);
         // Camera warmup when returning with pending incoming call from notification (speeds up getUserMedia on answer)
         const pendingNotificationCall = !!incomingCallFromNotificationCallerIdRef.current;
         // DISABLED: Media warmup causes camera lock conflicts
@@ -3454,6 +3483,25 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         // call gets canceled while backgrounded, but call state persists
         // CRITICAL: Add delay to allow state to stabilize and new calls to process
         setTimeout(() => {
+          const snap = callStateSnapshotRef.current;
+          // User opened app from lock-screen call UI: WebRTC signal often arrives after foreground.
+          // This "stale call" pass used to run ~800ms later and cleared pendingSignalRequestRef + call state
+          // → no audio/video. Skip while notification-answer flow is still in progress.
+          const waitingLockScreenCall =
+            pendingSignalRequestRef.current != null ||
+            shouldAutoAnswerRef.current != null ||
+            (incomingCallFromNotificationCallerIdRef.current != null &&
+              !!snap.call?.isReceivingCall &&
+              !snap.callAccepted);
+          if (waitingLockScreenCall) {
+            console.log('✅ [WebRTC] AppState: skip stale-call cleanup (lock-screen / pending call signal)', {
+              pendingSignal: pendingSignalRequestRef.current?.callerId,
+              shouldAutoAnswer: shouldAutoAnswerRef.current,
+              fromNotifRef: incomingCallFromNotificationCallerIdRef.current,
+            });
+            return;
+          }
+
           console.log('🔍 [WebRTC] AppState handler: Checking for stale calls after foreground...');
           console.log('🔍 [WebRTC] Current call state:', {
             isReceivingCall: call.isReceivingCall,
@@ -3703,6 +3751,19 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const isRingingIncoming = !!(snap.call?.isReceivingCall && !snap.callAccepted && !snap.isCalling);
         if (isRingingIncoming) {
           const callerId = (snap.call?.from != null ? String(snap.call.from).trim() : '') || persistentCallerIdRef.current || '';
+          // IMPORTANT: During "answer from lock-screen notification", Android briefly transitions
+          // through background/inactive while handing off IncomingCallActivity -> MainActivity.
+          // In that window we must NOT clear call state, otherwise the WebRTC negotiation never completes.
+          const autoAnswerCaller = shouldAutoAnswerRef.current != null ? String(shouldAutoAnswerRef.current).trim() : '';
+          const isNotificationAnswerHandoff = !!autoAnswerCaller && (!!callerId ? autoAnswerCaller === callerId : true);
+          if (isNotificationAnswerHandoff) {
+            console.log('📴 [WebRTC] App background/inactive during notification-answer handoff - skip ringing-clear', {
+              nextAppState,
+              callerId,
+              autoAnswerCaller,
+            });
+            return;
+          }
           console.log('📴 [WebRTC] Receiver went offline during ringing incoming call - clearing immediately', {
             nextAppState,
             callerId,

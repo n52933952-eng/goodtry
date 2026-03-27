@@ -275,26 +275,28 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
      */
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            val existing = notificationManager.getNotificationChannel("call_notifications")
+            // Keep call channel silent. We play ringtone/vibration via RingtoneService only.
+            // If an old channel has sound enabled, delete and recreate to apply silent behavior.
+            if (existing != null && existing.sound != null) {
+                notificationManager.deleteNotificationChannel("call_notifications")
+                Log.w(TAG, "Recreating call_notifications channel as silent (old channel had sound)")
+            }
+
             val channel = NotificationChannel(
                 "call_notifications",
                 "Call Notifications",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Incoming call notifications"
-                enableVibration(true)
+                enableVibration(false)
                 enableLights(true)
                 // Critical for full-screen intents to work
                 setBypassDnd(true) // Bypass Do Not Disturb
-                setSound(
-                    android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE),
-                    android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
+                setSound(null, null) // silent channel (RingtoneService handles audio)
             }
             
-            val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
             Log.d(TAG, "Notification channel created")
         }

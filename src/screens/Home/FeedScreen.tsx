@@ -31,7 +31,7 @@ interface AvailableUser {
 }
 
 const FeedScreen = ({ navigation }: any) => {
-  const { posts, setPosts } = usePost();
+  const { posts, setPosts, filterPostsForFeed } = usePost();
   const { user, logout } = useUser();
   const { socket, onlineUsers, notificationCount } = useSocket();
   const { t, isRTL } = useLanguage();
@@ -214,12 +214,12 @@ const FeedScreen = ({ navigation }: any) => {
             const postId = post._id?.toString?.() ?? String(post._id);
             return postId && !existingIds.has(postId);
           });
-          return [...prevPosts, ...newUniquePosts];
+          return filterPostsForFeed([...prevPosts, ...newUniquePosts]);
         });
         setLoadingMore(false);
       } else {
         // Replace all posts (initial load or refresh)
-        setPosts(uniquePosts);
+        setPosts(filterPostsForFeed(uniquePosts));
         setLoading(false);
         setRefreshing(false);
       }
