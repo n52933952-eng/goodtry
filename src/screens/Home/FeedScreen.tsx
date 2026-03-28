@@ -33,7 +33,7 @@ interface AvailableUser {
 const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts, filterPostsForFeed } = usePost();
   const { user, logout } = useUser();
-  const { socket, onlineUsers, notificationCount } = useSocket();
+  const { socket, isUserOnline, notificationCount } = useSocket();
   const { t, isRTL } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
   const showToast = useShowToast();
@@ -325,26 +325,17 @@ const FeedScreen = ({ navigation }: any) => {
 
       // 5) Filter to only online users who are NOT busy, and not self (same as web)
       const onlineAvailableUsers = allUsers.filter((u: any) => {
-        if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
         const userIdStr = u._id?.toString();
         const currentUserIdStr = user._id?.toString();
         if (!userIdStr || !currentUserIdStr) return false;
 
-        const isOnline = onlineUsers.some((online: any) => {
-          let onlineUserId = null;
-          if (typeof online === 'object' && online !== null) {
-            onlineUserId = online.userId?.toString() || online.toString();
-          } else {
-            onlineUserId = online?.toString();
-          }
-          return onlineUserId === userIdStr;
-        });
+        const online = isUserOnline(userIdStr);
 
         const isNotSelf = userIdStr !== currentUserIdStr;
         const isNotBusyChess = !busyChessUserIds.some((busyId) => busyId?.toString() === userIdStr);
         const isNotBusyCard = !busyCardUserIds.some((busyId) => busyId?.toString() === userIdStr);
 
-        return isOnline && isNotSelf && isNotBusyChess && isNotBusyCard;
+        return online && isNotSelf && isNotBusyChess && isNotBusyCard;
       });
 
       setAvailableUsers(onlineAvailableUsers);

@@ -112,6 +112,10 @@ const CallScreen = () => {
 
   const isReceiving = call.isReceivingCall && !callAccepted;
   const isVideo = (paramCallType || callType || call.callType) === 'video';
+
+  /** Light pill (backgroundLight) needs dark text; primary/error pills use white. */
+  const controlLabelColor = (lightBackground: boolean) =>
+    lightBackground ? colors.text : colors.buttonText;
   // When user answered from NATIVE UI (app was off), don't show in-app Answer/Decline — show Connecting until call is up.
   const answeredFromNative = !!shouldAutoAnswer;
   // Receiver (answered from notification): use connectionState so we show video + Connected when peer connects
@@ -456,7 +460,9 @@ const CallScreen = () => {
           style={[styles.controlBtn, { backgroundColor: isMuted ? colors.error : colors.backgroundLight }]}
           onPress={toggleMute}
         >
-          <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
+          <Text style={[styles.controlLabel, { color: controlLabelColor(!isMuted) }]}>
+            {isMuted ? 'Unmute' : 'Mute'}
+          </Text>
         </TouchableOpacity>
 
         {isVideo && (
@@ -465,13 +471,15 @@ const CallScreen = () => {
               style={[styles.controlBtn, { backgroundColor: isCameraOff ? colors.error : colors.backgroundLight }]}
               onPress={toggleCamera}
             >
-              <Text style={styles.controlLabel}>{isCameraOff ? 'Camera On' : 'Camera Off'}</Text>
+              <Text style={[styles.controlLabel, { color: controlLabelColor(!isCameraOff) }]}>
+                {isCameraOff ? 'Camera On' : 'Camera Off'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.controlBtn, { backgroundColor: colors.backgroundLight }]}
               onPress={switchCamera}
             >
-              <Text style={styles.controlLabel}>Flip</Text>
+              <Text style={[styles.controlLabel, { color: controlLabelColor(true) }]}>Flip</Text>
             </TouchableOpacity>
           </>
         )}
@@ -480,7 +488,7 @@ const CallScreen = () => {
           style={[styles.controlBtn, { backgroundColor: isSpeakerOn ? colors.primary : colors.backgroundLight }]}
           onPress={toggleSpeaker}
         >
-          <Text style={styles.controlLabel}>Speaker</Text>
+          <Text style={[styles.controlLabel, { color: controlLabelColor(!isSpeakerOn) }]}>Speaker</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={[styles.hangUpControlBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
@@ -688,7 +696,6 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
   controlLabel: {
-    color: '#FFF',
     fontSize: 12,
     fontWeight: '600',
   },

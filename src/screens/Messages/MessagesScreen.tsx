@@ -23,7 +23,7 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { onlineUsers, socket, selectedConversationId, setPresenceWatchUserIds } = useSocket();
+  const { socket, selectedConversationId, setPresenceWatchUserIds, isUserOnline, refreshPresenceSubscription } = useSocket();
   const { colors } = useTheme();
   const { t } = useLanguage();
   const [conversations, setConversations] = useState<any[]>([]);
@@ -140,21 +140,32 @@ const MessagesScreen = ({ navigation }: any) => {
     });
   }, []);
 
-  // Listen for real-time message updates - ONCE (like web version)
+  // Re-bind after every new Socket.IO instance: connect() replaces the client and drops old listeners,
+  // but this effect’s deps don’t change — without this, list only updates after focus refetch.
   useEffect(() => {
     if (!socket || !user?._id) return;
 
-    console.log('✅ [MessagesScreen] Setting up socket listeners (persistent)');
-
-    socket.on('newMessage', handleNewMessage);
-    socket.on('unreadCountUpdate', handleUnreadCountUpdate);
-    socket.on('messagesSeen', handleMessagesSeen);
-
-    return () => {
-      console.log('🔌 [MessagesScreen] Removing socket listeners');
+    const bindConversationListeners = () => {
+      if (!socket.getSocket?.()) return;
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
-      socket.off('messagesSeen', handleMessagesSeen);
+      socket.off('conversationMarkedRead', handleMessagesSeen);
+      socket.on('newMessage', handleNewMessage);
+      socket.on('unreadCountUpdate', handleUnreadCountUpdate);
+      socket.on('conversationMarkedRead', handleMessagesSeen);
+      console.log('✅ [MessagesScreen] Conversation socket listeners bound');
+    };
+
+    bindConversationListeners();
+    const removeSocketReady = socket.addSocketReadyListener(bindConversationListeners);
+    const removeConnect = socket.addConnectListener(bindConversationListeners);
+
+    return () => {
+      removeSocketReady();
+      removeConnect();
+      socket.off('newMessage', handleNewMessage);
+      socket.off('unreadCountUpdate', handleUnreadCountUpdate);
+      socket.off('conversationMarkedRead', handleMessagesSeen);
     };
   }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen]);
 
@@ -172,7 +183,8 @@ const MessagesScreen = ({ navigation }: any) => {
       
       // Refresh following users list so newly followed users appear in search
       fetchFollowingUsers();
-    }, [])
+      refreshPresenceSubscription();
+    }, [refreshPresenceSubscription])
   );
 
   const fetchConversations = async (
@@ -369,22 +381,6 @@ const MessagesScreen = ({ navigation }: any) => {
     return conversation.participants.find((p: any) => {
       const pId = typeof p === 'string' ? p : p._id;
       return pId !== user._id;
-    });
-  };
-
-  // Check if a user is online
-  const isUserOnline = (userId: string) => {
-    if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
-    
-    const userIdStr = userId?.toString();
-    return onlineUsers.some((online: any) => {
-      let onlineUserId = null;
-      if (typeof online === 'object' && online !== null) {
-        onlineUserId = online.userId?.toString() || online._id?.toString() || online.toString();
-      } else {
-        onlineUserId = online?.toString();
-      }
-      return onlineUserId === userIdStr;
     });
   };
 

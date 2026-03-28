@@ -33,7 +33,7 @@ interface AvailableUser {
 
 const ChessScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { socket, onlineUsers } = useSocket();
+  const { socket, isUserOnline } = useSocket();
   const showToast = useShowToast();
 
   const [challenges, setChallenges] = useState<ChessChallenge[]>([]);
@@ -84,11 +84,7 @@ const ChessScreen = ({ navigation }: any) => {
     if (!data?.roomId || !data?.yourColor) return;
 
     showToast('Challenge Accepted', 'Game started!', 'success');
-    navigation.navigate('ChessGame', {
-      roomId: data.roomId,
-      color: data.yourColor, // 'white' for challenger, 'black' for accepter
-      opponentId: data.opponentId,
-    });
+    // Navigation: AppNavigator listens for `acceptChessChallenge` (single source)
 
     // Remove any pending challenge card for that opponent (best-effort)
     if (data.opponentId) {
@@ -116,6 +112,21 @@ const ChessScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
+      let busyChessUserIds: string[] = [];
+      let busyCardUserIds: string[] = [];
+      try {
+        const busyRes = await apiService.get('/api/user/busyChessUsers');
+        busyChessUserIds = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+      try {
+        const busyCardRes = await apiService.get('/api/user/busyCardUsers');
+        busyCardUserIds = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+
       // 1) Fetch fresh current user profile to get latest following/followers (same as FeedScreen / web)
       let freshUserData: any = user;
       try {
@@ -156,24 +167,15 @@ const ChessScreen = ({ navigation }: any) => {
 
       const allUsers = (await Promise.all(userPromises)).filter((u): u is AvailableUser => u !== null);
 
-      // 4) Filter to online users only (and exclude self)
+      // 4) Online, not self, not in an active chess or card game (same rules as Feed modals)
       const onlineAvailableUsers = allUsers.filter((u) => {
-        if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
         const userIdStr = u._id?.toString();
         const currentUserIdStr = user._id?.toString();
         if (!userIdStr || !currentUserIdStr) return false;
 
-        const isOnline = onlineUsers.some((online: any) => {
-          let onlineUserId = null;
-          if (typeof online === 'object' && online !== null) {
-            onlineUserId = online.userId?.toString() || online.toString();
-          } else {
-            onlineUserId = online?.toString();
-          }
-          return onlineUserId === userIdStr;
-        });
-
-        return isOnline && userIdStr !== currentUserIdStr;
+        const notBusyChess = !busyChessUserIds.some((id) => id === userIdStr);
+        const notBusyCard = !busyCardUserIds.some((id) => id === userIdStr);
+        return isUserOnline(userIdStr) && userIdStr !== currentUserIdStr && notBusyChess && notBusyCard;
       });
 
       setAvailableUsers(onlineAvailableUsers);
@@ -223,10 +225,7 @@ const ChessScreen = ({ navigation }: any) => {
     });
 
     setChallenges(prev => prev.filter(c => c._id !== challenge._id));
-    navigation.navigate('ChessGame', { 
-      roomId: roomId,
-      color: 'black'
-    });
+    // Navigation: AppNavigator handles `acceptChessChallenge` (avoids double-push + stale reopen)
     showToast('Success', 'Challenge accepted!', 'success');
   };
 

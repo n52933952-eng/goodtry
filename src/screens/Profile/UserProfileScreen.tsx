@@ -410,6 +410,14 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               post={item}
               fromScreen="UserProfile"
               userProfileParams={{ username }}
+              onPostUpdated={(updated) => {
+                if (!updated?._id) return;
+                setPosts((prev) =>
+                  prev.map((p) =>
+                    String(p._id) === String(updated._id) ? { ...p, ...updated } : p
+                  )
+                );
+              }}
             />
           </View>
         )}

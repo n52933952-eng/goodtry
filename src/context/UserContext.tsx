@@ -34,6 +34,8 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUserState] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Avoid marking "online" on brief active↔inactive flaps (volume HUD, permission sheets, task-switch animation). */
+  const onlinePresenceDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persisted setter: keeps AsyncStorage in sync whenever someone calls setUser from context.
   // This prevents "must logout/login to see changes" after profile updates.
@@ -105,43 +107,58 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user]);
 
-  // Presence should flip to offline quickly when user leaves the app, otherwise calling/presence feels wrong.
-  // We still keep a small delay to avoid flapping during quick Android activity transitions.
+  // Presence: only treat true background as "left the app". `inactive` fires for volume UI, overlays, and
+  // task-switcher transitions — emitting offline there makes friends see you flip offline/online (green dot flashing).
   useEffect(() => {
+    if (!user?._id) return;
+
     const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === 'background' || nextState === 'inactive') {
-        // Mark offline immediately for instant presence updates (without waiting for socket disconnect).
+      if (nextState === 'background') {
+        if (onlinePresenceDebounceRef.current) {
+          clearTimeout(onlinePresenceDebounceRef.current);
+          onlinePresenceDebounceRef.current = null;
+        }
         socketService.emit('clientPresence', { status: 'offline' });
 
-        // Some Android flows can briefly flip active -> inactive/background -> active during handoff.
-        // Delay disconnect a bit; cancel if we return quickly.
         if (disconnectTimerRef.current) {
           clearTimeout(disconnectTimerRef.current);
           disconnectTimerRef.current = null;
         }
-        // Keep socket alive briefly (helps delivery acks/call cleanup) but presence is already offline.
-        const delayMs = nextState === 'inactive' ? 1200 : 6000;
         disconnectTimerRef.current = setTimeout(() => {
           socketService.disconnect();
-          console.log(`📴 [UserContext] App ${nextState} – socket disconnected (offline, FCM for calls)`);
+          console.log('📴 [UserContext] App background – socket disconnected (FCM for calls)');
           disconnectTimerRef.current = null;
-        }, delayMs);
-      } else if (nextState === 'active' && user?._id) {
+        }, 1500);
+      } else if (nextState === 'active') {
         if (disconnectTimerRef.current) {
           clearTimeout(disconnectTimerRef.current);
           disconnectTimerRef.current = null;
         }
-        socketService.connect(user._id);
-        socketService.emit('clientPresence', { status: 'online' });
-        console.log('📱 [UserContext] App active – socket reconnected (online)');
+        if (onlinePresenceDebounceRef.current) {
+          clearTimeout(onlinePresenceDebounceRef.current);
+        }
+        const uid = user._id;
+        onlinePresenceDebounceRef.current = setTimeout(() => {
+          onlinePresenceDebounceRef.current = null;
+          if (AppState.currentState !== 'active') return;
+          socketService.connect(uid);
+          socketService.emit('clientPresence', { status: 'online' });
+          console.log('📱 [UserContext] App active – online presence (debounced)');
+        }, 450);
       }
+      // `inactive`: intentionally no presence/socket change (see comment above).
     };
+
     const sub = AppState.addEventListener('change', handleAppStateChange);
     return () => {
       sub.remove();
       if (disconnectTimerRef.current) {
         clearTimeout(disconnectTimerRef.current);
         disconnectTimerRef.current = null;
+      }
+      if (onlinePresenceDebounceRef.current) {
+        clearTimeout(onlinePresenceDebounceRef.current);
+        onlinePresenceDebounceRef.current = null;
       }
     };
   }, [user?._id]);

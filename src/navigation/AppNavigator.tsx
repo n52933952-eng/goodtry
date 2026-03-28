@@ -45,6 +45,7 @@ const AuthStack = () => {
   
   return (
     <Stack.Navigator
+      detachInactiveScreens={false}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -62,6 +63,7 @@ const FeedStack = () => {
   
   return (
     <Stack.Navigator
+      detachInactiveScreens={false}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -271,6 +273,7 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
   
   return (
     <Stack.Navigator
+      detachInactiveScreens={false}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -348,6 +351,7 @@ const MainStack = () => {
   
   return (
     <Stack.Navigator
+      detachInactiveScreens={false}
       screenOptions={{
         headerShown: false,
         presentation: 'card',
@@ -1016,7 +1020,7 @@ const AppNavigator = () => {
         console.log('✅ [AppNavigator] NavigationContainer ref ready');
       }}
     >
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         {user ? <MainStack /> : <AuthStack />}
         {user && (
           <ChessChallengeNotification

@@ -13,6 +13,7 @@ import {
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
+import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 
 interface CardChallenge {
@@ -32,7 +33,7 @@ interface AvailableUser {
 
 const CardScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { socket, onlineUsers } = useSocket();
+  const { socket, isUserOnline } = useSocket();
   const showToast = useShowToast();
 
   const [challenges, setChallenges] = useState<CardChallenge[]>([]);
@@ -83,10 +84,7 @@ const CardScreen = ({ navigation }: any) => {
     if (!data?.roomId) return;
 
     showToast('Challenge Accepted', 'Game started!', 'success');
-    navigation.navigate('CardGame', {
-      roomId: data.roomId,
-      opponentId: data.opponentId,
-    });
+    // Navigation: AppNavigator listens for `acceptCardChallenge`
 
     // Remove any pending challenge card for that opponent
     if (data.opponentId) {
@@ -114,6 +112,21 @@ const CardScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
+      let busyChessUserIds: string[] = [];
+      let busyCardUserIds: string[] = [];
+      try {
+        const busyRes = await apiService.get('/api/user/busyChessUsers');
+        busyChessUserIds = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+      try {
+        const busyCardRes = await apiService.get('/api/user/busyCardUsers');
+        busyCardUserIds = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+
       const baseUrl = API_URL;
       
       const allConnectionIds = [
@@ -152,22 +165,13 @@ const CardScreen = ({ navigation }: any) => {
       const allUsers = (await Promise.all(userPromises)).filter((u) => u !== null);
 
       const onlineAvailableUsers = allUsers.filter((u) => {
-        if (!onlineUsers || !Array.isArray(onlineUsers)) return false;
         const userIdStr = u._id?.toString();
         const currentUserIdStr = user._id?.toString();
         if (!userIdStr || !currentUserIdStr) return false;
 
-        const isOnline = onlineUsers.some((online: any) => {
-          let onlineUserId = null;
-          if (typeof online === 'object' && online !== null) {
-            onlineUserId = online.userId?.toString() || online.toString();
-          } else {
-            onlineUserId = online?.toString();
-          }
-          return onlineUserId === userIdStr;
-        });
-
-        return isOnline && userIdStr !== currentUserIdStr;
+        const notBusyChess = !busyChessUserIds.some((id) => id === userIdStr);
+        const notBusyCard = !busyCardUserIds.some((id) => id === userIdStr);
+        return isUserOnline(userIdStr) && userIdStr !== currentUserIdStr && notBusyChess && notBusyCard;
       });
 
       setAvailableUsers(onlineAvailableUsers);
@@ -217,10 +221,6 @@ const CardScreen = ({ navigation }: any) => {
     });
 
     setChallenges(prev => prev.filter(c => c._id !== challenge._id));
-    navigation.navigate('CardGame', { 
-      roomId: roomId,
-      opponentId: challenge.challenger._id,
-    });
     showToast('Success', 'Challenge accepted!', 'success');
   };
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -25,12 +26,12 @@ import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 
-/** `delivered` only after recipient app acks (WhatsApp-style). Legacy docs without field: treat as delivered. */
+/** `delivered` only after recipient app acks (WhatsApp-style). Missing field should stay conservative (sent). */
 function isOutgoingDeliveredForTicks(item: any) {
-  if (item.seen) return true;
+  if (item.seen === true) return true;
   if (item.delivered === true) return true;
   if (item.delivered === false) return false;
-  return true;
+  return false;
 }
 
 function collectUndeliveredIncomingIds(
@@ -47,6 +48,21 @@ function collectUndeliveredIncomingIds(
   return ids.slice(0, 50);
 }
 
+/** WhatsApp-style: light green outgoing, white incoming; tick colors match WA semantics */
+const WA = {
+  outgoingBg: '#DCF8C6',
+  incomingBg: '#FFFFFF',
+  outgoingText: '#111B21',
+  metaTimeOwn: '#667781',
+  /** Sent (✓) & delivered-not-read (✓✓): same gray; blue only after read */
+  tickUnseen: '#54656F',
+  tickRead: '#53BDEB',
+  incomingBorder: '#E5E5EA',
+  replyBgOwn: 'rgba(0, 0, 0, 0.06)',
+  replyBgOther: '#F0F2F5',
+  replyBarOwn: '#128C7E',
+} as const;
+
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser } = route.params || {};
   const lastLogKeyRef = useRef<string | null>(null);
@@ -58,9 +74,28 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
   }
   const { user } = useUser();
-  const { socket, onlineUsers, setSelectedConversationId, setSelectedConversationPartnerId } = useSocket();
+  const { socket, isUserOnline, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+
+  /** Incoming bubbles are fixed white in WA; in dark theme that forced white-on-white with `colors.text`. */
+  const incomingBubbleStyle = useMemo(
+    () =>
+      theme === 'dark'
+        ? {
+            backgroundColor: colors.backgroundLight,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: colors.border,
+          }
+        : {
+            backgroundColor: WA.incomingBg,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: WA.incomingBorder,
+          },
+    [theme, colors.backgroundLight, colors.border]
+  );
+  const incomingMainTextColor = theme === 'dark' ? colors.text : WA.outgoingText;
+  const incomingReplySurfaceColor = theme === 'dark' ? 'rgba(255,255,255,0.08)' : WA.replyBgOther;
   const { t } = useLanguage();
   const [messages, setMessages] = useState<any[]>([]);
   const messagesRef = useRef<any[]>([]);
@@ -100,25 +135,19 @@ const ChatScreen = ({ route, navigation }: any) => {
     return sender?._id?.toString?.() ?? sender?.toString?.() ?? (sender ? String(sender) : '');
   }, []);
 
-  const isPartnerOnline = useMemo(() => {
-    const partner =
+  const partnerPresenceId = useMemo(
+    () =>
       otherUser?._id != null
         ? String(otherUser._id)
         : userId != null
           ? String(userId)
-          : '';
-    if (!partner || !onlineUsers || !Array.isArray(onlineUsers)) return false;
-    return onlineUsers.some((online: any) => {
-      let onlineUserId: string | null = null;
-      if (typeof online === 'object' && online !== null) {
-        onlineUserId =
-          online.userId?.toString?.() || online._id?.toString?.() || String(online);
-      } else if (online != null) {
-        onlineUserId = String(online);
-      }
-      return onlineUserId === partner;
-    });
-  }, [otherUser?._id, userId, onlineUsers]);
+          : '',
+    [otherUser?._id, userId]
+  );
+  const isPartnerOnline = useMemo(
+    () => isUserOnline(partnerPresenceId),
+    [isUserOnline, partnerPresenceId]
+  );
 
   const isVideoUrl = (url: string) => {
     if (!url) return false;
@@ -447,6 +476,12 @@ const ChatScreen = ({ route, navigation }: any) => {
       setSelectedConversationPartnerId(null);
     };
   }, [setSelectedConversationId, setSelectedConversationPartnerId, currentConversationId, conversationId, otherUser?._id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshPresenceSubscription();
+    }, [refreshPresenceSubscription])
+  );
   
   // Reset call in progress flag when call ends or is canceled so user can call again
   useEffect(() => {
@@ -961,28 +996,51 @@ const ChatScreen = ({ route, navigation }: any) => {
             setActionTarget(item);
           }}
           style={[
-            styles.messageContainer, 
+            styles.messageContainer,
             isSenderLeft ? styles.senderMessage : styles.receiverMessage,
-            isSenderLeft ? { backgroundColor: colors.primary } : { backgroundColor: colors.backgroundLight }
+            isSenderLeft ? { backgroundColor: WA.outgoingBg } : incomingBubbleStyle,
           ]}
         >
           {item.replyTo && (
-            <View style={[styles.replyPreviewInBubble, { backgroundColor: colors.border }]}>
-              <Text style={[styles.replyPreviewLabel, { color: isSenderLeft ? colors.buttonText : colors.text }]}>
+            <View
+              style={[
+                styles.replyPreviewInBubble,
+                {
+                  backgroundColor: isSenderLeft ? WA.replyBgOwn : incomingReplySurfaceColor,
+                  borderLeftColor: isSenderLeft ? WA.replyBarOwn : colors.primary,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.replyPreviewLabel,
+                  { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor },
+                ]}
+              >
                 Reply to {item.replyTo?.sender?.name || item.replyTo?.sender?.username || 'message'}
               </Text>
-              <Text numberOfLines={2} style={[styles.replyPreviewText, { color: isSenderLeft ? colors.buttonText : colors.textGray }]}>
+              <Text
+                numberOfLines={2}
+                style={[
+                  styles.replyPreviewText,
+                  {
+                    color: isSenderLeft ? WA.metaTimeOwn : theme === 'dark' ? colors.textGray : WA.metaTimeOwn,
+                  },
+                ]}
+              >
                 {item.replyTo?.text || (item.replyTo?.img ? '📎 Attachment' : '')}
               </Text>
             </View>
           )}
 
           {!!item.text && (
-            <Text style={[
-              styles.messageText, 
-              isSenderLeft ? styles.senderText : styles.receiverText,
-              isSenderLeft ? { color: colors.buttonText } : { color: colors.text }
-            ]}>
+            <Text
+              style={[
+                styles.messageText,
+                isSenderLeft ? styles.senderText : styles.receiverText,
+                { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor },
+              ]}
+            >
               {item.text}
             </Text>
           )}
@@ -1026,7 +1084,7 @@ const ChatScreen = ({ route, navigation }: any) => {
               style={[
                 styles.messageTime,
                 isSenderLeft ? styles.senderTime : styles.receiverTime,
-                isSenderLeft ? { color: colors.buttonText } : { color: colors.textGray },
+                { color: isSenderLeft ? WA.metaTimeOwn : colors.textGray },
               ]}
             >
               {formatTime(item.createdAt)}
@@ -1035,25 +1093,19 @@ const ChatScreen = ({ route, navigation }: any) => {
               <Text
                 style={[
                   styles.deliveryTicks,
-                  item._pending
-                    ? { color: 'rgba(255,255,255,0.45)' }
-                    : item.seen
-                      ? { color: '#7DD3FC' }
-                      : outgoingDelivered
-                        ? { color: 'rgba(255,255,255,0.65)' }
-                        : { color: 'rgba(255,255,255,0.65)' },
+                  item.seen === true ? { color: WA.tickRead } : { color: WA.tickUnseen },
                 ]}
                 accessibilityLabel={
                   item._pending
                     ? 'Sending'
-                    : item.seen
+                    : item.seen === true
                       ? 'Read'
                       : outgoingDelivered
                         ? 'Delivered'
                         : 'Sent'
                 }
               >
-                {item._pending || (!item.seen && !outgoingDelivered) ? '✓' : '✓✓'}
+                {item._pending || (item.seen !== true && !outgoingDelivered) ? '✓' : '✓✓'}
               </Text>
             ) : null}
           </View>
@@ -1126,6 +1178,9 @@ const ChatScreen = ({ route, navigation }: any) => {
               <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
+          <Text style={[styles.headerSubtitle, { color: colors.textGray }]} numberOfLines={1}>
+            {isPartnerOnline ? t('online') : t('offline')}
+          </Text>
         </View>
 
         {/* Call Buttons */}
@@ -1330,6 +1385,10 @@ const styles = StyleSheet.create({
   headerInfo: {
     flex: 1,
   },
+  headerSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
   headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1390,13 +1449,13 @@ const styles = StyleSheet.create({
     maxWidth: '75%',
     padding: 12,
     borderRadius: 12,
-    backgroundColor: COLORS.backgroundLight,
+    backgroundColor: WA.incomingBg,
   },
   senderMessage: {
-    backgroundColor: COLORS.backgroundLight,
+    backgroundColor: WA.outgoingBg,
   },
   receiverMessage: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: WA.incomingBg,
   },
   messageText: {
     fontSize: 16,
@@ -1404,10 +1463,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   senderText: {
-    color: COLORS.text,
+    color: WA.outgoingText,
   },
   receiverText: {
-    color: '#FFFFFF',
+    color: COLORS.text,
   },
   messageMetaRow: {
     flexDirection: 'row',
@@ -1433,10 +1492,10 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
   },
   senderTime: {
-    color: COLORS.textGray,
+    color: WA.metaTimeOwn,
   },
   receiverTime: {
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: COLORS.textGray,
   },
   chatImage: {
     width: 220,
@@ -1518,19 +1577,16 @@ const styles = StyleSheet.create({
   },
   replyPreviewInBubble: {
     borderLeftWidth: 3,
-    borderLeftColor: 'rgba(255,255,255,0.4)',
     paddingLeft: 8,
     marginBottom: 6,
-    opacity: 0.95,
+    borderRadius: 4,
   },
   replyPreviewLabel: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.85)',
     fontWeight: 'bold',
   },
   replyPreviewText: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.8)',
     marginTop: 2,
   },
   reactionPickBtn: {

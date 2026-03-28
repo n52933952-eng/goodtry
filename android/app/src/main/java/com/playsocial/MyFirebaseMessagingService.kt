@@ -1,5 +1,6 @@
 package com.playsocial
 
+import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -11,6 +12,10 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import java.io.OutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
 
 /**
  * Firebase Messaging Service
@@ -88,6 +93,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
                 // Launch IncomingCallActivity (full-screen UI + ringtone) - like thredmobile
                 launchIncomingCallActivity(callerId, callerName, callType)
+            } else if (type == "message") {
+                handleMessagePush(data)
             } else if (type == "call_ended") {
                 Log.d(TAG, "🔕 [FCM] Call ended notification received")
                 Log.e(TAG, "🔕 [FCM] Stopping ringtone and closing incoming call UI")
@@ -115,7 +122,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                     Log.w(TAG, "🔕 [FCM] Error dismissing notification:", e)
                 }
             } else {
-                Log.d(TAG, "⚠️ [FCM] Not a call notification, type: $type")
+                Log.d(TAG, "⚠️ [FCM] Not handled FCM type: $type")
             }
         } finally {
             // Release wake lock after a delay
@@ -271,6 +278,121 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     }
     
     /**
+     * Data-only message FCM: ack delivery so sender sees ✓✓, then show tray notification.
+     */
+    private fun handleMessagePush(data: Map<String, String>) {
+        val messageId = data["messageId"]?.trim().orEmpty()
+        val title = data["title"]?.trim().orEmpty().ifEmpty { data["senderName"]?.trim().orEmpty().ifEmpty { "PlaySocial" } }
+        val body = data["body"]?.trim().orEmpty().ifEmpty { "sent you a message" }
+        val conversationId = data["conversationId"]?.trim().orEmpty()
+
+        val prefs = getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
+        val recipientUserId = prefs.getString("currentUserId", null)?.trim().orEmpty()
+
+        if (messageId.isNotEmpty() && recipientUserId.isNotEmpty()) {
+            postAckDelivered(messageId, recipientUserId)
+        } else {
+            Log.w(TAG, "⚠️ [FCM] message push: skip ack (messageId or currentUserId missing)")
+        }
+
+        createGeneralNotificationChannel()
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val tapIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("conversationId", conversationId)
+            putExtra("fromPush", true)
+        }
+        val reqCode = (messageId.hashCode() and 0x7FFF) + 50000
+        val contentPending = PendingIntent.getActivity(
+            this,
+            reqCode,
+            tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notifId = (messageId.hashCode() and 0x0FFFFFFF) + 0x30000000
+        val notification = NotificationCompat.Builder(this, PLAYSOC_GENERAL_CHANNEL)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(R.drawable.ic_stat_ic_launcher)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(contentPending)
+            .build()
+
+        // Foreground: JS onMessage already handles UI; avoid duplicate tray noise.
+        if (!isAppInForeground()) {
+            notificationManager.notify(notifId, notification)
+            Log.d(TAG, "✅ [FCM] Message tray notification posted")
+        } else {
+            Log.d(TAG, "✅ [FCM] App foreground — tray skipped, ack still sent")
+        }
+    }
+
+    private fun isAppInForeground(): Boolean {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val appProcesses = activityManager.runningAppProcesses ?: return false
+        val pkg = packageName
+        for (appProcess in appProcesses) {
+            if (appProcess.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
+                appProcess.processName == pkg
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun postAckDelivered(messageId: String, recipientUserId: String) {
+        Thread {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("$API_URL/api/message/ack-delivered")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                val json = JSONObject().apply {
+                    put("messageId", messageId)
+                    put("recipientUserId", recipientUserId)
+                }
+                conn.outputStream.use { os: OutputStream ->
+                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    Log.w(TAG, "ack-delivered HTTP $code")
+                } else {
+                    Log.d(TAG, "✅ [FCM] ack-delivered ok for $messageId")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ack-delivered failed: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
+        }.start()
+    }
+
+    private fun createGeneralNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            if (notificationManager.getNotificationChannel(PLAYSOC_GENERAL_CHANNEL) == null) {
+                val channel = NotificationChannel(
+                    PLAYSOC_GENERAL_CHANNEL,
+                    "Messages & activity",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Direct messages and social notifications"
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+        }
+    }
+
+    /**
      * Create notification channel for call notifications
      */
     private fun createNotificationChannel() {
@@ -309,5 +431,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         private const val TAG = "MyFirebaseMessaging"
+        /** Must match backend fcmNotifications.js PLAYSOC_GENERAL_CHANNEL */
+        private const val PLAYSOC_GENERAL_CHANNEL = "playsocial_general"
+        private const val API_URL = "https://media-1-aue5.onrender.com"
     }
 }

@@ -82,11 +82,21 @@ export const apiService = {
 
   upload: async (url: string, formData: FormData, method: 'POST' | 'PUT' = 'POST', config?: AxiosRequestConfig) => {
     try {
-      const headers = { 'Content-Type': 'multipart/form-data' };
-      const mergedConfig = config ? { ...config, headers: { ...headers, ...config.headers } } : { headers };
-      const res = method === 'PUT'
-        ? await client.put(url, formData, mergedConfig)
-        : await client.post(url, formData, mergedConfig);
+      // Instance default is `application/json`. For FormData, axios must set multipart boundary;
+      // `Content-Type: false` tells axios to skip the default and attach the correct multipart header.
+      const mergedConfig: AxiosRequestConfig = {
+        ...config,
+        headers: {
+          ...config?.headers,
+          'Content-Type': false as unknown as string,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      };
+      const res =
+        method === 'PUT'
+          ? await client.put(url, formData, mergedConfig)
+          : await client.post(url, formData, mergedConfig);
       return res.data;
     } catch (e) {
       throw new Error(getErrorMessage(e));

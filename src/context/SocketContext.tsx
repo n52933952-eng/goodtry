@@ -12,6 +12,10 @@ const NOTIFICATION_COUNT_KEY = '@notification_count';
 interface SocketContextType {
   socket: typeof socketService;
   onlineUsers: any[];
+  /** Single source for UI dots/labels: merges targeted `presenceMap` + legacy `onlineUsers`; false when socket is down. */
+  isUserOnline: (userId: unknown) => boolean;
+  /** Re-send presenceSubscribe (e.g. when opening a chat) so partner offline/online is fresh. */
+  refreshPresenceSubscription: () => void;
   chessChallenges: any[];
   cardChallenges: any[];
   clearChessChallenge: (challengeFrom?: string) => void;
@@ -40,6 +44,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const selectedConversationPartnerIdRef = useRef<string | null>(null);
   const [presenceWatchUserIds, setPresenceWatchUserIdsState] = useState<string[]>([]);
   const presenceWatchUserIdsRef = useRef<string[]>([]);
+  /** User ids we send in `presenceSubscribe` — never use legacy `onlineUsers` fallback for these (avoids "offline on list, online in chat"). */
+  const presenceSubscribedUserIdsRef = useRef<Set<string>>(new Set());
   const presenceSubscribeRef = useRef<(() => void) | null>(null);
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
   const newMessageHandlerBodyRef = useRef<(data: any) => void>(() => {});
@@ -212,6 +218,65 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   // - Prefer `presenceSnapshot` + `presenceUpdate` for a targeted list of users (followers/following)
   // - Keep legacy `getOnlineUser` as fallback for old server/client behavior
   const [presenceMap, setPresenceMap] = useState<Record<string, boolean>>({});
+  /** False while disconnected — do not show peers as "online" from stale lists. */
+  const [socketReachable, setSocketReachable] = useState(() => socketService.isSocketConnected());
+  /** Synchronous: users marked offline via `presenceUpdate` until `getOnlineUser` would wrongly resurrect them (socket still open briefly). */
+  const presenceExplicitOfflineRef = useRef<Set<string>>(new Set());
+
+  const extractOnlineEntryUserId = (u: any): string => {
+    if (u == null) return '';
+    if (typeof u === 'object') {
+      return (u.userId?.toString?.() ?? u._id?.toString?.() ?? '').trim();
+    }
+    return String(u).trim();
+  };
+
+  const normalizePresenceUserId = (raw: unknown): string => {
+    if (raw == null) return '';
+    if (typeof raw === 'object') {
+      const o = raw as { _id?: unknown; userId?: unknown };
+      const x = o._id ?? o.userId;
+      if (x != null && typeof x === 'object' && x !== null && typeof (x as { toString?: () => string }).toString === 'function') {
+        return String((x as { toString: () => string }).toString()).trim();
+      }
+      if (x != null) return String(x).trim();
+    }
+    return String(raw).trim();
+  };
+
+  const isUserOnline = useCallback(
+    (rawUserId: unknown): boolean => {
+      if (!socketReachable) return false;
+      const id = normalizePresenceUserId(rawUserId);
+      if (!id) return false;
+
+      const subscribed = presenceSubscribedUserIdsRef.current;
+      if (subscribed.has(id)) {
+        if (Object.prototype.hasOwnProperty.call(presenceMap, id)) {
+          return presenceMap[id] === true;
+        }
+        return false;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(presenceMap, id)) {
+        return presenceMap[id] === true;
+      }
+      const list = onlineUsers;
+      if (!Array.isArray(list) || list.length === 0) return false;
+      return list.some((entry: unknown) => extractOnlineEntryUserId(entry as any) === id);
+    },
+    [socketReachable, presenceMap, onlineUsers]
+  );
+
+  useEffect(() => {
+    return socketService.addDisconnectListener(() => {
+      setSocketReachable(false);
+      setOnlineUsers([]);
+      setPresenceMap({});
+      presenceExplicitOfflineRef.current.clear();
+      presenceSubscribedUserIdsRef.current = new Set();
+    });
+  }, []);
 
   // Clear notification count when user logs out
   useEffect(() => {
@@ -220,6 +285,11 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setNotificationCount(0);
       AsyncStorage.removeItem(NOTIFICATION_COUNT_KEY).catch(() => {});
       setIsNotificationCountLoaded(false);
+      setOnlineUsers([]);
+      setPresenceMap({});
+      setSocketReachable(false);
+      presenceExplicitOfflineRef.current.clear();
+      presenceSubscribedUserIdsRef.current = new Set();
       return;
     }
 
@@ -294,19 +364,41 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       const users = payload?.onlineUsers;
       if (!users || !Array.isArray(users)) return;
 
-      setPresenceMap(() => {
-        const next: Record<string, boolean> = {};
-        users.forEach((u: any) => {
-          const id = (typeof u === 'object' && u !== null)
-            ? (u.userId?.toString?.() ?? u._id?.toString?.() ?? u.toString?.())
-            : u?.toString?.();
-          if (id) next[id] = true;
-        });
+      const subscribedRaw = payload?.subscribedUserIds;
+      const subscribed: string[] = Array.isArray(subscribedRaw)
+        ? subscribedRaw
+            .map((x: unknown) => normalizePresenceUserId(x))
+            .filter((id: string) => /^[0-9a-fA-F]{24}$/.test(id))
+        : [];
+
+      const onlineInSnap = new Set<string>();
+      users.forEach((u: any) => {
+        const id = extractOnlineEntryUserId(u);
+        if (id) onlineInSnap.add(id);
+      });
+
+      setPresenceMap((prev) => {
+        const next = { ...prev };
+        if (subscribed.length > 0) {
+          for (const id of subscribed) {
+            const on = onlineInSnap.has(id);
+            next[id] = on;
+            if (on) presenceExplicitOfflineRef.current.delete(id);
+            else presenceExplicitOfflineRef.current.add(id);
+          }
+        } else {
+          users.forEach((u: any) => {
+            const id = extractOnlineEntryUserId(u);
+            if (id) {
+              next[id] = true;
+              presenceExplicitOfflineRef.current.delete(id);
+            }
+          });
+        }
         return next;
       });
 
-      // Keep `onlineUsers` array populated so existing UI helpers keep working
-      setOnlineUsers(users);
+      // Do not replace global `onlineUsers` here — snapshot is only the subscribed subset; full list comes from `getOnlineUser`.
     });
 
     // New: targeted presence delta updates (preferred)
@@ -314,6 +406,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       const id = payload?.userId?.toString?.() ?? payload?.userId;
       const online = payload?.online === true;
       if (!id) return;
+
+      if (online) {
+        presenceExplicitOfflineRef.current.delete(id);
+      } else {
+        presenceExplicitOfflineRef.current.add(id);
+      }
 
       setPresenceMap((prev) => ({ ...prev, [id]: online }));
       setOnlineUsers((prev) => {
@@ -329,11 +427,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       });
     });
 
-    // Legacy: Listen for online users updates (global list)
+    // Legacy: global online list — filter out explicit clientPresence-offline (see server `getOnlineUser` + ref)
     socketService.on('getOnlineUser', (users) => {
-      console.log('👥 Online users event received!', users?.length || 0, 'users');
-      setOnlineUsers(users || []);
-     
+      const incoming = Array.isArray(users) ? users : [];
+      const off = presenceExplicitOfflineRef.current;
+      const filtered = incoming.filter((u: any) => {
+        const uid = extractOnlineEntryUserId(u);
+        return uid && !off.has(uid);
+      });
+      console.log('👥 Online users event received!', incoming.length, '→', filtered.length, 'after offline filter');
+      setOnlineUsers(filtered);
     });
 
     // Listen for new posts
@@ -589,11 +692,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Subscribe to targeted presence updates (followers + following + conversation partner USER ID)
     // Backend expects userIds (user _id), not conversation doc ids. Partner = other user in chat.
     const subscribeToPresence = () => {
-      if (!socketService.isSocketConnected()) {
-        console.log('⏳ [SocketContext] Socket not connected yet, will subscribe on connect');
-        return;
-      }
-      
       try {
         const followingIds = (user?.following || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
         const followerIds = (user?.followers || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
@@ -605,7 +703,19 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           if (!allIds.includes(s)) allIds.push(s);
         }
         const uniqueIds = Array.from(new Set(allIds)).filter(Boolean);
-        
+
+        const nextSubscribed = new Set<string>();
+        for (const raw of uniqueIds) {
+          const nid = normalizePresenceUserId(raw);
+          if (nid && /^[0-9a-fA-F]{24}$/.test(nid)) nextSubscribed.add(nid);
+        }
+        presenceSubscribedUserIdsRef.current = nextSubscribed;
+
+        if (!socketService.isSocketConnected()) {
+          console.log('⏳ [SocketContext] Socket not connected yet, will subscribe on connect');
+          return;
+        }
+
         if (uniqueIds.length > 0) {
           console.log(`📡 [SocketContext] Subscribing to presence for ${uniqueIds.length} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`);
           socketService.emit('presenceSubscribe', { userIds: uniqueIds });
@@ -621,6 +731,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     subscribeToPresence();
 
     const removeConnectListener = socketService.addConnectListener(() => {
+      setSocketReachable(true);
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       subscribeToPresence();
 
@@ -639,6 +750,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         }
       })();
     });
+    setSocketReachable(socketService.isSocketConnected());
 
     // If an FCM message arrives while socket is already connected, flush delivery acks immediately
     // so sender ticks update ASAP (✓ -> ✓✓).
@@ -704,10 +816,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const refreshPresenceSubscription = useCallback(() => {
+    presenceSubscribeRef.current?.();
+  }, []);
+
   return (
     <SocketContext.Provider value={{ 
       socket: socketService, 
-      onlineUsers, 
+      onlineUsers,
+      isUserOnline,
+      refreshPresenceSubscription,
       chessChallenges,
       cardChallenges,
       clearChessChallenge,

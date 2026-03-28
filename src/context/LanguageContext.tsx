@@ -125,6 +125,12 @@ const translations: Record<Language, Record<string, string>> = {
     'postUpdatedSuccessfully': 'Post updated!',
     'failedToUpdatePost': 'Failed to update post',
     'postTextTooLong': 'Post must be 500 characters or less',
+    'media': 'Media',
+    'replaceMediaHint': 'Pick a new photo or video to replace the current one.',
+    'changeMedia': 'Change photo or video',
+    'addPhotoOrVideo': 'Add photo or video',
+    'video': 'Video',
+    'editedPost': 'Edited',
     
     // Weather Screen
     'weather': 'Weather',
@@ -370,6 +376,12 @@ const translations: Record<Language, Record<string, string>> = {
     'postUpdatedSuccessfully': 'تم تحديث المنشور!',
     'failedToUpdatePost': 'فشل تحديث المنشور',
     'postTextTooLong': 'يجب ألا يتجاوز المنشور 500 حرفاً',
+    'media': 'الوسائط',
+    'replaceMediaHint': 'اختر صورة أو فيديو جديداً لاستبدال الحالي.',
+    'changeMedia': 'تغيير الصورة أو الفيديو',
+    'addPhotoOrVideo': 'إضافة صورة أو فيديو',
+    'video': 'فيديو',
+    'editedPost': 'تم التعديل',
     
     // Weather Screen
     'weather': 'الطقس',

@@ -6,6 +6,7 @@ class SocketService {
   private isConnected: boolean = false;
   private pendingListeners: Array<{ event: string; callback: (data: any) => void }> = [];
   private connectListeners: Array<() => void> = [];
+  private disconnectListeners: Array<() => void> = [];
   /** Re-run after each new Socket.IO instance so app listeners (chess, posts, …) attach to the current socket. */
   private socketReadyListeners: Array<() => void> = [];
 
@@ -14,6 +15,23 @@ class SocketService {
     return () => {
       this.connectListeners = this.connectListeners.filter((f) => f !== fn);
     };
+  }
+
+  addDisconnectListener(fn: () => void): () => void {
+    this.disconnectListeners.push(fn);
+    return () => {
+      this.disconnectListeners = this.disconnectListeners.filter((f) => f !== fn);
+    };
+  }
+
+  private notifyDisconnectListeners() {
+    this.disconnectListeners.forEach((f) => {
+      try {
+        f();
+      } catch (e) {
+        console.warn('[Socket] Disconnect listener error:', e);
+      }
+    });
   }
 
   /** Register a callback to run whenever `connect()` creates a new Socket.IO instance (reconnect / new session). */
@@ -80,6 +98,13 @@ class SocketService {
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket?.id);
       this.isConnected = true;
+      // UserContext often calls emit('clientPresence', online) right after connect(); emit() no-ops until
+      // the socket is connected, so this guarantees the server (and friends) see online immediately.
+      try {
+        this.socket?.emit('clientPresence', { status: 'online' });
+      } catch (_) {
+        /* ignore */
+      }
       this.connectListeners.forEach((f) => {
         try {
           f();
@@ -92,6 +117,7 @@ class SocketService {
     this.socket.on('disconnect', (reason) => {
       console.log('❌ Socket disconnected:', reason);
       this.isConnected = false;
+      this.notifyDisconnectListeners();
     });
 
     this.socket.on('connect_error', (error) => {
@@ -117,6 +143,7 @@ class SocketService {
       this.socket.disconnect();
       this.socket = null;
       this.isConnected = false;
+      // `disconnect` event also runs notifyDisconnectListeners; avoid double-fire
     }
   }
 

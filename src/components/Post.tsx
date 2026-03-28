@@ -27,10 +27,6 @@ import AddContributorModal from './AddContributorModal';
 import ManageContributorsModal from './ManageContributorsModal';
 import EditPostModal from './EditPostModal';
 
-// Fallback: if the realtime accept event is missed, we still navigate when the
-// backend creates the chess/card game post in the feed.
-const autoChessNavigateDone = new Set<string>(); // key = `${userId}:${roomId}`
-
 interface PostProps {
   post: any;
   disableNavigation?: boolean; // If true, disable navigation to PostDetail (for PostDetailScreen)
@@ -139,51 +135,8 @@ const Post: React.FC<PostProps> = ({
     }
   }, [isChessPost, post?.chessGameData]);
 
-  // Fallback navigation for chess: if this feed post represents a game the current user is part of,
-  // auto-open ChessGame so the user can play even if acceptChessChallenge was missed.
-  useEffect(() => {
-    if (!isChessPost || disableNavigation) return;
-    if (!chessGameData?.roomId) return;
-    const currentUserId = user?._id?.toString();
-    if (!currentUserId) return;
-
-    const roomId = chessGameData.roomId;
-    const player1Id = chessGameData?.player1?._id?.toString?.() ?? chessGameData?.player1?._id;
-    const player2Id = chessGameData?.player2?._id?.toString?.() ?? chessGameData?.player2?._id;
-    if (!player1Id || !player2Id) return;
-
-    const isPlayer1 = currentUserId === player1Id?.toString();
-    const isPlayer2 = currentUserId === player2Id?.toString();
-    if (!isPlayer1 && !isPlayer2) return;
-
-    const key = `${currentUserId}:${roomId}`;
-    if (autoChessNavigateDone.has(key)) return;
-
-    // Guard: don't push the user again if they are already watching the same game.
-    const cur = (navigation as any)?.getCurrentRoute?.();
-    if (cur?.name === 'ChessGame' && cur?.params?.roomId === roomId) {
-      autoChessNavigateDone.add(key);
-      return;
-    }
-
-    autoChessNavigateDone.add(key);
-
-    const color = isPlayer1 ? 'white' : 'black';
-    const opponentId = isPlayer1 ? player2Id?.toString() : player1Id?.toString();
-
-    console.log('♟️ [Post] Auto-navigating to ChessGame (participant fallback):', {
-      roomId,
-      color,
-      opponentId,
-    });
-
-    navigation.navigate('ChessGame', {
-      roomId,
-      opponentId,
-      color,
-      isSpectator: false,
-    });
-  }, [isChessPost, disableNavigation, chessGameData, user?._id, navigation]);
+  // Do not auto-navigate from the feed into ChessGame — it caused false opens after cancel/reconnect
+  // and duplicated AppNavigator's acceptChessChallenge handling. Players open the game from the modal / socket.
 
   // Fetch football matches for football posts (reusable function)
   const fetchFootballMatches = React.useCallback(async (silent = false) => {
@@ -646,7 +599,13 @@ const Post: React.FC<PostProps> = ({
             {post.isCollaborative && (
               <Text style={styles.collaborativeBadge}>👥</Text>
             )}
-            <Text style={[styles.time, { color: colors.textGray }]}>· {formatTime(post.createdAt)}</Text>
+            <Text style={[styles.time, { color: colors.textGray }]}>
+              {`· ${formatTime(post.createdAt)}${
+                post.editedAt
+                  ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
+                  : ''
+              }`}
+            </Text>
           </View>
           <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
         </View>
@@ -1123,9 +1082,15 @@ const Post: React.FC<PostProps> = ({
                 <Text style={[styles.chessSubtitle, { color: colors.cardText, opacity: 0.6 }]}>Tap to watch</Text>
               </View>
             </View>
-            <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
-              <Text style={styles.chessLiveText}>Live</Text>
-            </View>
+            {(chessGameData.gameStatus === 'active' || chessGameData.gameStatus == null) ? (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
+                <Text style={styles.chessLiveText}>Live</Text>
+              </View>
+            ) : (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.textGray }]}>
+                <Text style={styles.chessLiveText}>Ended</Text>
+              </View>
+            )}
           </View>
           
           <View style={styles.chessPlayers}>

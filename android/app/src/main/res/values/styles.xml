@@ -2,7 +2,9 @@
 
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- Align with JS dark theme default — avoids brief light flash when opening Chat / Profile -->
+        <item name="android:windowBackground">@color/app_window_background</item>
+        <item name="android:navigationBarColor">@color/app_window_background</item>
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
     </style>
     

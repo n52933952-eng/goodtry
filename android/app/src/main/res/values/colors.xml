@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Match default in-app dark theme so push transitions don’t flash white/light behind cards -->
+    <color name="app_window_background">#000000</color>
+    <color name="splash_background_solid">#E8EAED</color>
+</resources>

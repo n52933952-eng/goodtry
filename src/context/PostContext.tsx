@@ -21,6 +21,7 @@ export interface Post {
   replies: any[];
   createdAt: string;
   updatedAt: string;
+  editedAt?: string | null;
   // Special post types
   isWeatherPost?: boolean;
   isFootballPost?: boolean;
