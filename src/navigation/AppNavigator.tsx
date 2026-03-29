@@ -34,6 +34,8 @@ import CardChallengeNotification from '../components/CardChallengeNotification';
 import CardScreen from '../screens/Card/CardScreen';
 import CardGameScreen from '../screens/Card/CardGameScreen';
 import ActivityScreen from '../screens/Activity/ActivityScreen';
+import CreateStoryScreen from '../screens/Stories/CreateStoryScreen';
+import StoryViewerScreen from '../screens/Stories/StoryViewerScreen';
 import { useSocket } from '../context/SocketContext';
 
 const Stack = createStackNavigator();
@@ -363,6 +365,19 @@ const MainStack = () => {
         name="CreatePost" 
         component={CreatePostScreen}
         options={{ presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="CreateStory"
+        component={CreateStoryScreen}
+        options={{ presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="StoryViewer"
+        component={StoryViewerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          headerShown: false,
+        }}
       />
       <Stack.Screen name="Activity" component={ActivityScreen} />
       <Stack.Screen 

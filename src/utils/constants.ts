@@ -98,7 +98,18 @@ export const ENDPOINTS = {
   
   // User Profile
   UPDATE_USER_PROFILE: '/api/user/update',
+
+  // Stories (24h, multi-slide — backend /api/story)
+  STORY_CREATE: '/api/story/create',
+  STORY_FEED_STRIP: '/api/story/feed-strip',
+  STORY_DELETE_MINE: '/api/story/mine',
+  STORY_BY_USER: '/api/story/user',
+  STORY_STATUS: '/api/story/status',
+  STORY_VIEWERS: '/api/story',
 };
+
+/** DeviceEventEmitter — refetch `/api/story/feed-strip` (rings red/gray, new slides) */
+export const STORY_STRIP_SHOULD_REFRESH = 'StoryStripShouldRefresh';
 
 // Socket Events
 export const SOCKET_EVENTS = {
@@ -115,6 +126,7 @@ export const SOCKET_EVENTS = {
   // Messages (real-time reaction + delete – match backend thredtrain)
   MESSAGE_REACTION_UPDATED: 'messageReactionUpdated',
   MESSAGE_DELETED: 'messageDeleted',
+  STORY_STRIP_CHANGED: 'storyStripChanged',
 };
 
 // Storage Keys

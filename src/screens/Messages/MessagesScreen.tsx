@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,8 +18,15 @@ import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
-import { ENDPOINTS } from '../../utils/constants';
+import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
+import StoryAvatarRing from '../../components/StoryAvatarRing';
+import StoryOrProfileSheet from '../../components/StoryOrProfileSheet';
+import { navigateToMainStack } from '../../utils/navigationHelpers';
+
+const LIST_AVATAR = 50;
+const LIST_RING_OUTER = 56;
+const LIST_RING_STROKE = 2;
 
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
@@ -36,6 +43,12 @@ const MessagesScreen = ({ navigation }: any) => {
   const [searching, setSearching] = useState(false);
   const [followingUsers, setFollowingUsers] = useState<any[]>([]);
   const isFirstLoadRef = useRef(true);
+  /** userId -> story ring (same source as feed post avatars) */
+  const [storyByUserId, setStoryByUserId] = useState<
+    Record<string, { storyId: string; hasUnviewed: boolean }>
+  >({});
+  const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
+  const [storySheet, setStorySheet] = useState<{ userId: string; username: string } | null>(null);
   
   // Track selected conversation with ref (like web version)
   const selectedConversationIdRef = useRef<string | null>(null);
@@ -169,10 +182,41 @@ const MessagesScreen = ({ navigation }: any) => {
     };
   }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen]);
 
+  const fetchStoryStrip = useCallback(async () => {
+    if (!user?._id) return;
+    try {
+      const data = await apiService.get(ENDPOINTS.STORY_FEED_STRIP);
+      const m: Record<string, { storyId: string; hasUnviewed: boolean }> = {};
+      for (const s of data.stories || []) {
+        const uid = s.user?._id?.toString?.();
+        if (uid && s.storyId) {
+          m[uid] = { storyId: String(s.storyId), hasUnviewed: !!s.hasUnviewed };
+        }
+      }
+      setStoryByUserId(m);
+    } catch (_) {
+      /* optional */
+    }
+  }, [user?._id]);
+
+  useEffect(() => {
+    fetchStoryStrip();
+  }, [fetchStoryStrip]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(STORY_STRIP_SHOULD_REFRESH, () => {
+      setStoryRingReplayKey((k) => k + 1);
+      fetchStoryStrip();
+    });
+    return () => sub.remove();
+  }, [fetchStoryStrip]);
+
   // Refresh conversations and following users when screen comes into focus 
   // (e.g., when returning from ChatScreen or after following a new user)
   useFocusEffect(
     React.useCallback(() => {
+      setStoryRingReplayKey((k) => k + 1);
+      fetchStoryStrip();
       // On first load, show loading spinner if no conversations yet
       // On subsequent loads (returning from ChatScreen), refresh silently
       const isFirstLoad = isFirstLoadRef.current;
@@ -184,7 +228,7 @@ const MessagesScreen = ({ navigation }: any) => {
       // Refresh following users list so newly followed users appear in search
       fetchFollowingUsers();
       refreshPresenceSubscription();
-    }, [refreshPresenceSubscription])
+    }, [refreshPresenceSubscription, fetchStoryStrip])
   );
 
   const fetchConversations = async (
@@ -384,6 +428,29 @@ const MessagesScreen = ({ navigation }: any) => {
     });
   };
 
+  const onMessagingAvatarPress = useCallback(
+    (
+      userId: string | undefined,
+      userObj: { username?: string; name?: string } | null | undefined,
+    ) => {
+      const uid = userId?.toString();
+      if (!uid) return;
+      const ring = storyByUserId[uid];
+      const username = (userObj?.username || '').trim();
+      if (ring?.storyId) {
+        setStorySheet({ userId: uid, username });
+        return;
+      }
+      if (username) {
+        navigation.navigate('Profile', {
+          screen: 'UserProfile',
+          params: { username },
+        });
+      }
+    },
+    [navigation, storyByUserId, t],
+  );
+
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -443,15 +510,36 @@ const MessagesScreen = ({ navigation }: any) => {
         onLongPress={confirmDeleteConversation}
       >
         <View style={styles.avatarContainer}>
-          {otherUserData?.profilePic ? (
-            <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-              <Text style={styles.avatarText}>
-                {otherUserData?.name?.[0]?.toUpperCase() || '?'}
-              </Text>
-            </View>
-          )}
+          {(() => {
+            const uid = otherUserId?.toString?.() ?? String(otherUserId);
+            const ring = storyByUserId[uid];
+            const showRing = !!ring?.storyId;
+            return (
+              <StoryAvatarRing
+                visible={showRing}
+                showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
+                replayKey={storyRingReplayKey}
+                ringOuterSize={LIST_RING_OUTER}
+                avatarSize={LIST_AVATAR}
+                strokeWidth={LIST_RING_STROKE}
+              >
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => onMessagingAvatarPress(uid, otherUserData)}
+                >
+                  {otherUserData?.profilePic ? (
+                    <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
+                  ) : (
+                    <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                      <Text style={styles.avatarText}>
+                        {otherUserData?.name?.[0]?.toUpperCase() || '?'}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </StoryAvatarRing>
+            );
+          })()}
           {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
         </View>
         <View style={styles.conversationInfo}>
@@ -543,15 +631,36 @@ const MessagesScreen = ({ navigation }: any) => {
                     onPress={() => handleStartConversation(item)}
                   >
                     <View style={styles.avatarContainer}>
-                      {item.profilePic ? (
-                        <Image source={{ uri: item.profilePic }} style={styles.avatar} />
-                      ) : (
-                        <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                          <Text style={styles.avatarText}>
-                            {item.name?.[0]?.toUpperCase() || '?'}
-                          </Text>
-                        </View>
-                      )}
+                      {(() => {
+                        const uid = item._id?.toString?.() ?? String(item._id);
+                        const ring = storyByUserId[uid];
+                        const showRing = !!ring?.storyId;
+                        return (
+                          <StoryAvatarRing
+                            visible={showRing}
+                            showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
+                            replayKey={storyRingReplayKey}
+                            ringOuterSize={LIST_RING_OUTER}
+                            avatarSize={LIST_AVATAR}
+                            strokeWidth={LIST_RING_STROKE}
+                          >
+                            <TouchableOpacity
+                              activeOpacity={0.7}
+                              onPress={() => onMessagingAvatarPress(uid, item)}
+                            >
+                              {item.profilePic ? (
+                                <Image source={{ uri: item.profilePic }} style={styles.avatar} />
+                              ) : (
+                                <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                                  <Text style={styles.avatarText}>
+                                    {item.name?.[0]?.toUpperCase() || '?'}
+                                  </Text>
+                                </View>
+                              )}
+                            </TouchableOpacity>
+                          </StoryAvatarRing>
+                        );
+                      })()}
                       {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
                     </View>
                     <View style={styles.searchResultInfo}>
@@ -601,6 +710,25 @@ const MessagesScreen = ({ navigation }: any) => {
           }
         />
       )}
+      <StoryOrProfileSheet
+        visible={!!storySheet}
+        onClose={() => setStorySheet(null)}
+        username={storySheet?.username}
+        onSeeStory={() => {
+          if (storySheet?.userId) {
+            navigateToMainStack(navigation, 'StoryViewer', { userId: storySheet.userId });
+          }
+        }}
+        onGoToProfile={
+          storySheet?.username
+            ? () =>
+                navigation.navigate('Profile', {
+                  screen: 'UserProfile',
+                  params: { username: storySheet.username },
+                })
+            : undefined
+        }
+      />
     </View>
   );
 };

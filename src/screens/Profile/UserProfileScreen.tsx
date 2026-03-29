@@ -10,15 +10,19 @@ import {
   Image,
   RefreshControl,
   FlatList,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
+import StoryAvatarRing from '../../components/StoryAvatarRing';
 import { apiService } from '../../services/api';
-import { ENDPOINTS } from '../../utils/constants';
+import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
+import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
+import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
@@ -35,6 +39,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [refreshing, setRefreshing] = useState(false);
   const [following, setFollowing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
+  const [storyMeta, setStoryMeta] = useState<{
+    active?: boolean;
+    storyId?: string;
+    hasUnviewed?: boolean;
+  } | null>(null);
+  /** Each profile focus: replay gray → red ring fill */
+  const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   
   // Pagination state
   const [loadingMore, setLoadingMore] = useState(false);
@@ -74,6 +85,34 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   }, [profileUser?._id, currentUser?.following]);
 
+  useEffect(() => {
+    if (!profileUser?._id) {
+      setStoryMeta(null);
+      return;
+    }
+    apiService
+      .get(`${ENDPOINTS.STORY_STATUS}/${profileUser._id}`)
+      .then((d) => setStoryMeta(d))
+      .catch(() => setStoryMeta({ active: false }));
+  }, [profileUser?._id]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(STORY_STRIP_SHOULD_REFRESH, () => {
+      if (!profileUser?._id) return;
+      setStoryRingReplayKey((k) => k + 1);
+      apiService
+        .get(`${ENDPOINTS.STORY_STATUS}/${profileUser._id}`)
+        .then((d) => setStoryMeta(d))
+        .catch(() => setStoryMeta({ active: false }));
+    });
+    return () => sub.remove();
+  }, [profileUser?._id]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      setStoryRingReplayKey((k) => k + 1);
+    }, [])
+  );
 
   // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile or CreatePost)
   useFocusEffect(
@@ -87,8 +126,14 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         setLoading(true);
         fetchUserProfile();
         fetchUserPosts(false); // Also refresh posts to show newly created posts
+        if (currentUser?._id) {
+          apiService
+            .get(`${ENDPOINTS.STORY_STATUS}/${currentUser._id}`)
+            .then((d) => setStoryMeta(d))
+            .catch(() => setStoryMeta({ active: false }));
+        }
       }
-    }, [username, currentUser?.username])
+    }, [username, currentUser?.username, currentUser?._id])
   );
 
   // Update profile display immediately when user context changes (e.g., after profile update)
@@ -285,6 +330,97 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   const isOwnProfile = profileUser._id === currentUser?._id;
 
+  const PROFILE_AVATAR = 96;
+  /** Tight ring: thin stroke + ~3px gap to avatar edge */
+  const PROFILE_RING = 102;
+  const OTHER_AVATAR = 88;
+  const OTHER_RING = 94;
+
+  const openMyStory = () => {
+    if (!profileUser?._id) return;
+    navigateToMainStack(navigation, 'StoryViewer', { userId: profileUser._id });
+  };
+
+  const openCreateStory = () => navigateToMainStack(navigation, 'CreateStory');
+
+  const renderProfileAvatar = () => {
+    if (isOwnProfile && !storyMeta?.active) {
+      return (
+        <View
+          style={[
+            styles.profileAvatarBig,
+            { width: PROFILE_AVATAR, height: PROFILE_AVATAR, borderRadius: PROFILE_AVATAR / 2 },
+          ]}
+        >
+          {profileUser.profilePic ? (
+            <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
+          ) : (
+            <View
+              style={[
+                styles.profileAvatarImageFill,
+                styles.avatarPlaceholder,
+                { backgroundColor: colors.avatarBg },
+              ]}
+            >
+              <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    if (storyMeta?.active) {
+      return (
+        <StoryAvatarRing
+          visible
+          showAnimatedRedFill={!!storyMeta?.hasUnviewed}
+          replayKey={storyRingReplayKey}
+          ringOuterSize={isOwnProfile ? PROFILE_RING : OTHER_RING}
+          avatarSize={isOwnProfile ? PROFILE_AVATAR : OTHER_AVATAR}
+          strokeWidth={2}
+        >
+          <TouchableOpacity
+            activeOpacity={0.88}
+            onPress={openMyStory}
+            style={styles.profileAvatarTouchFill}
+          >
+            {profileUser.profilePic ? (
+              <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
+            ) : (
+              <View
+                style={[
+                  styles.profileAvatarImageFill,
+                  styles.avatarPlaceholder,
+                  { backgroundColor: colors.avatarBg },
+                ]}
+              >
+                <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </StoryAvatarRing>
+      );
+    }
+
+    const sz = OTHER_AVATAR;
+    return (
+      <View
+        style={[
+          styles.profileAvatarOtherPlain,
+          { width: sz, height: sz, borderRadius: sz / 2, backgroundColor: colors.avatarBg },
+        ]}
+      >
+        {profileUser.profilePic ? (
+          <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
+        ) : (
+          <View style={[styles.profileAvatarImageFill, styles.avatarPlaceholder]}>
+            <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
@@ -318,47 +454,77 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
               ]}
             >
-              {profileUser.profilePic ? (
-                <Image source={{ uri: profileUser.profilePic }} style={styles.avatar} />
-              ) : (
-                <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                  <Text style={styles.avatarText}>
-                    {profileUser.name?.[0]?.toUpperCase() || '?'}
+              <View style={styles.profileTopRow}>
+                <View style={styles.profileAvatarCol}>{renderProfileAvatar()}</View>
+                <View style={styles.profileTextCol}>
+                  <Text style={[styles.name, { color: colors.text, marginBottom: 4 }]} numberOfLines={2}>
+                    {profileUser.name}
+                  </Text>
+                  <Text style={[styles.username, { color: colors.textGray, marginBottom: 0 }]} numberOfLines={1}>
+                    @{profileUser.username}
                   </Text>
                 </View>
+              </View>
+              {!!profileUser.bio && (
+                <Text style={[styles.bio, { color: colors.text, marginTop: 12 }]}>{profileUser.bio}</Text>
               )}
-              <Text style={[styles.name, { color: colors.text }]}>{profileUser.name}</Text>
-              <Text style={[styles.username, { color: colors.textGray }]}>@{profileUser.username}</Text>
-              {profileUser.bio && <Text style={[styles.bio, { color: colors.text }]}>{profileUser.bio}</Text>}
-              
+
               {isOwnProfile && (
-                <TouchableOpacity
-                  style={[styles.updateButton, { backgroundColor: colors.primary }]}
-                  onPress={() => navigation.navigate('UpdateProfile')}
-                >
-                  <Text style={[styles.updateButtonText, { color: colors.buttonText }]}>{t('updateProfile')}</Text>
-                </TouchableOpacity>
+                <View style={styles.buttonRow}>
+                  <TouchableOpacity
+                    style={[styles.halfButton, { backgroundColor: colors.primary }]}
+                    onPress={() => navigation.navigate('UpdateProfile')}
+                  >
+                    <Text style={[styles.halfButtonText, { color: colors.buttonText }]}>{t('updateProfile')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.halfButton, { backgroundColor: colors.border }]}
+                    onPress={openCreateStory}
+                  >
+                    <View style={styles.halfButtonWithIcon}>
+                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                        <Path
+                          d="M12 5v14M5 12h14"
+                          stroke={colors.text}
+                          strokeWidth={2.5}
+                          strokeLinecap="round"
+                        />
+                      </Svg>
+                      <Text style={[styles.halfButtonText, { color: colors.text }]}>Add story</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
               )}
               
               {!isOwnProfile && (
-                <TouchableOpacity
-                  style={[
-                    styles.followButton, 
-                    { backgroundColor: colors.primary },
-                    following && styles.followingButton,
-                    following && { backgroundColor: colors.border }
-                  ]}
-                  onPress={handleFollow}
-                  disabled={followLoading}
-                >
-                  {followLoading ? (
-                    <ActivityIndicator color={colors.buttonText} />
-                  ) : (
-                    <Text style={[styles.followButtonText, { color: colors.buttonText }, following && styles.followingButtonText]}>
-                      {following ? t('following') : t('follow')}
-                    </Text>
-                  )}
-                </TouchableOpacity>
+                <View style={styles.buttonRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.followButtonFullWidth,
+                      { backgroundColor: following ? colors.border : colors.primary },
+                      following && {
+                        borderWidth: StyleSheet.hairlineWidth,
+                        borderColor: colors.border,
+                      },
+                    ]}
+                    onPress={handleFollow}
+                    disabled={followLoading}
+                    activeOpacity={0.85}
+                  >
+                    {followLoading ? (
+                      <ActivityIndicator color={following ? colors.text : colors.buttonText} />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.halfButtonText,
+                          { color: following ? colors.text : colors.buttonText },
+                        ]}
+                      >
+                        {following ? t('following') : t('follow')}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               )}
               
               <View style={[styles.stats, { borderTopColor: colors.border }]}>
@@ -437,45 +603,87 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   profileHeader: {
-    alignItems: 'center',
-    paddingTop: 20,
-    paddingBottom: 24,
-    paddingHorizontal: 20,
+    alignItems: 'stretch',
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
-  avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    marginBottom: 12,
+  profileTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+  },
+  profileAvatarCol: {
+    marginRight: 14,
+  },
+  profileTextCol: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
+  profileAvatarBig: {
+    overflow: 'hidden',
+    backgroundColor: COLORS.background,
+  },
+  profileAvatarTouchFill: {
+    width: '100%',
+    height: '100%',
+  },
+  profileAvatarImageFill: {
+    width: '100%',
+    height: '100%',
+  },
+  profileAvatarOtherPlain: {
+    overflow: 'hidden',
+  },
+  profileAvatarLetter: {
+    color: '#FFFFFF',
+    fontSize: 36,
+    fontWeight: '700',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    width: '100%',
+    marginTop: 14,
+    gap: 10,
+  },
+  halfButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  halfButtonWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  halfButtonText: {
+    fontWeight: '700',
+    fontSize: 14,
   },
   avatarPlaceholder: {
-    backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
   name: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 'bold',
     color: COLORS.text,
-    marginBottom: 5,
   },
   username: {
-    fontSize: 16,
+    fontSize: 15,
     color: COLORS.textGray,
-    marginBottom: 10,
   },
   bio: {
     fontSize: 14,
     color: COLORS.text,
-    textAlign: 'center',
-    marginBottom: 15,
+    textAlign: 'left',
+    lineHeight: 20,
   },
   stats: {
     flexDirection: 'row',
@@ -498,24 +706,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textGray,
   },
-  followButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 30,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  followingButton: {
-    backgroundColor: COLORS.backgroundLight,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  followButtonText: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-  },
-  followingButtonText: {
-    color: COLORS.text,
-    fontWeight: 'bold',
+  /** Same height/radius as halfButton — full width for Follow / Following */
+  followButtonFullWidth: {
+    flex: 1,
+    minHeight: 44,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   updateButton: {
     backgroundColor: COLORS.primary,

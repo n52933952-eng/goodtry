@@ -26,6 +26,9 @@ import VideoFeedPreview from './VideoFeedPreview';
 import AddContributorModal from './AddContributorModal';
 import ManageContributorsModal from './ManageContributorsModal';
 import EditPostModal from './EditPostModal';
+import StoryAvatarRing from './StoryAvatarRing';
+import StoryOrProfileSheet from './StoryOrProfileSheet';
+import { navigateToMainStack } from '../utils/navigationHelpers';
 
 interface PostProps {
   post: any;
@@ -35,6 +38,10 @@ interface PostProps {
   autoPlayMedia?: boolean; // Force media autoplay (used in PostDetail)
   /** When the post is updated in-place (e.g. contributors), parent can sync local state (Post detail). */
   onPostUpdated?: (updated: any) => void;
+  /** Feed: active story for this author (for ring + tap menu). */
+  storyRing?: { storyId: string; hasUnviewed: boolean } | null;
+  /** Bumps on feed focus — restarts story ring fill animation */
+  storyRingReplayKey?: number;
 }
 
 const Post: React.FC<PostProps> = ({
@@ -44,6 +51,8 @@ const Post: React.FC<PostProps> = ({
   userProfileParams,
   autoPlayMedia = false,
   onPostUpdated,
+  storyRing,
+  storyRingReplayKey = 0,
 }) => {
   const navigation = useNavigation<any>();
   
@@ -80,6 +89,7 @@ const Post: React.FC<PostProps> = ({
   const [addContribOpen, setAddContribOpen] = useState(false);
   const [manageContribOpen, setManageContribOpen] = useState(false);
   const [editPostOpen, setEditPostOpen] = useState(false);
+  const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
 
   const [isLiking, setIsLiking] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -534,36 +544,57 @@ const Post: React.FC<PostProps> = ({
   const { width } = Dimensions.get('window');
   const videoHeight = (width - 30) * 0.5625; // 16:9 aspect ratio
 
+  const showStoryRing =
+    !!storyRing?.storyId &&
+    !!postedById &&
+    !isChannelPost &&
+    !isWeatherPost &&
+    !isFootballPost &&
+    !isChessPost &&
+    !isCardPost;
+
+  const onAvatarPress = (e: any) => {
+    e.stopPropagation();
+    if (disableNavigation) return;
+
+    const username =
+      typeof post.postedBy === 'object' && post.postedBy?.username
+        ? String(post.postedBy.username).trim()
+        : '';
+
+    if (isChannelPost && post?._id) {
+      navigateToPostDetail(post._id);
+      return;
+    }
+    if (!username) return;
+
+    if (showStoryRing && storyRing?.storyId && postedById) {
+      setStoryMenu({ userId: postedById, username });
+      return;
+    }
+
+    navigation.navigate('Profile', {
+      screen: 'UserProfile',
+      params: { username },
+    });
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
       <View style={styles.header}>
-        <TouchableOpacity
-          onPress={(e) => {
-            e.stopPropagation();
-            // If navigation is disabled (PostDetailScreen), don't navigate
-            if (disableNavigation) return;
-
-            const username =
-              typeof post.postedBy === 'object' && post.postedBy?.username
-                ? String(post.postedBy.username).trim()
-                : '';
-
-            // Use the same channel rules as the rest of the component (was referencing
-            // undefined `isYouTubeEmbed` here → ReferenceError / app exit on every tap).
-            if (isChannelPost && post?._id) {
-              console.log('📺 [Post] Channel post - navigating to PostDetail:', post._id);
-              navigateToPostDetail(post._id);
-            } else if (username) {
-              console.log('👤 [Post] User post - navigating to UserProfile:', username);
-              navigation.navigate('Profile', {
-                screen: 'UserProfile',
-                params: { username },
-              });
-            }
-          }}
-          activeOpacity={disableNavigation ? 1 : 0.7}
-          disabled={disableNavigation}
+        <StoryAvatarRing
+          visible={showStoryRing}
+          showAnimatedRedFill={!!storyRing?.storyId && !!storyRing?.hasUnviewed}
+          replayKey={storyRingReplayKey}
+          ringOuterSize={50}
+          avatarSize={45}
+          strokeWidth={2}
         >
+          <TouchableOpacity
+            onPress={onAvatarPress}
+            activeOpacity={disableNavigation ? 1 : 0.7}
+            disabled={disableNavigation}
+          >
           {(() => {
             // Use current user's profilePic if it's own post (for immediate updates)
             const avatarPic = isOwner && user?.profilePic 
@@ -592,6 +623,7 @@ const Post: React.FC<PostProps> = ({
             );
           })()}
         </TouchableOpacity>
+        </StoryAvatarRing>
 
         <View style={styles.headerInfo}>
           <View style={styles.headerTop}>
@@ -841,7 +873,7 @@ const Post: React.FC<PostProps> = ({
                       src="${post.img}"
                       controls
                       autoplay
-                      muted
+                      ${autoPlayMedia ? '' : 'muted'}
                       playsinline
                       preload="metadata"
                       controlsList="nodownload"
@@ -1193,6 +1225,25 @@ const Post: React.FC<PostProps> = ({
         onSaved={(updated) => {
           onCollaborativePostUpdated(updated);
         }}
+      />
+      <StoryOrProfileSheet
+        visible={!!storyMenu}
+        onClose={() => setStoryMenu(null)}
+        username={storyMenu?.username}
+        onSeeStory={() => {
+          if (storyMenu?.userId) {
+            navigateToMainStack(navigation, 'StoryViewer', { userId: storyMenu.userId });
+          }
+        }}
+        onGoToProfile={
+          storyMenu?.username
+            ? () =>
+                navigation.navigate('Profile', {
+                  screen: 'UserProfile',
+                  params: { username: storyMenu.username },
+                })
+            : undefined
+        }
       />
     </View>
   );

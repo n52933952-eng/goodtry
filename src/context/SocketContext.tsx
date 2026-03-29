@@ -4,7 +4,7 @@ import { DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
-import { SOCKET_EVENTS, API_URL, STORAGE_KEYS } from '../utils/constants';
+import { SOCKET_EVENTS, API_URL, STORAGE_KEYS, STORY_STRIP_SHOULD_REFRESH } from '../utils/constants';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -357,6 +357,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.CARD_MOVE);
     socketService.off('newNotification');
     socketService.off('newMessage', onNewMessageForSocket);
+    socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
 
     console.log('🔧 [SocketContext] Installing core socket listeners');
 
@@ -687,6 +688,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     });
 
     socketService.on('newMessage', onNewMessageForSocket);
+
+    socketService.on(SOCKET_EVENTS.STORY_STRIP_CHANGED, () => {
+      DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
+    });
     };
 
     // Subscribe to targeted presence updates (followers + following + conversation partner USER ID)
@@ -790,6 +795,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off(SOCKET_EVENTS.CARD_MOVE);
       socketService.off('newNotification');
       socketService.off('newMessage', onNewMessageForSocket);
+      socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
     };
   }, [user?._id, addPost, updatePost, deletePost, playNotificationSound, onNewMessageForSocket]);
 

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Modal,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { usePost } from '../../context/PostContext';
@@ -17,7 +18,7 @@ import { useSocket } from '../../context/SocketContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import { apiService } from '../../services/api';
-import { ENDPOINTS, COLORS } from '../../utils/constants';
+import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import ChannelsModal from '../../components/ChannelsModal';
@@ -52,6 +53,12 @@ const FeedScreen = ({ navigation }: any) => {
   const [busyCardUserIds, setBusyCardUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
+  /** userId -> story ring info for post avatars */
+  const [storyByUserId, setStoryByUserId] = useState<
+    Record<string, { storyId: string; hasUnviewed: boolean }>
+  >({});
+  /** Each feed focus: replay gray→red fill on all story rings */
+  const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   const isFetchingRef = useRef(false);
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
@@ -62,19 +69,52 @@ const FeedScreen = ({ navigation }: any) => {
   }, [user?._id]);
 
   // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
+  const fetchStoryStrip = useCallback(async () => {
+    if (!user?._id) return;
+    try {
+      const data = await apiService.get(ENDPOINTS.STORY_FEED_STRIP);
+      const m: Record<string, { storyId: string; hasUnviewed: boolean }> = {};
+      for (const s of data.stories || []) {
+        const uid = s.user?._id?.toString?.();
+        if (uid && s.storyId) {
+          m[uid] = { storyId: String(s.storyId), hasUnviewed: !!s.hasUnviewed };
+        }
+      }
+      setStoryByUserId(m);
+    } catch (_) {
+      /* optional feature */
+    }
+  }, [user?._id]);
+
   useFocusEffect(
     useCallback(() => {
+      setStoryRingReplayKey((k) => k + 1);
       // Always refresh to get latest live matches and weather
       if (!loading && !isFetchingRef.current) {
         console.log('🔄 [FeedScreen] useFocusEffect: Refreshing feed for live updates');
         fetchFeed();
       }
-    }, [])
+      fetchStoryStrip();
+      // fetchFeed is intentionally omitted from deps (same as before) to avoid re-registering every render
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fetchStoryStrip, loading])
   );
 
   useEffect(() => {
     fetchFeed();
   }, []);
+
+  useEffect(() => {
+    fetchStoryStrip();
+  }, [fetchStoryStrip]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(STORY_STRIP_SHOULD_REFRESH, () => {
+      setStoryRingReplayKey((k) => k + 1);
+      fetchStoryStrip();
+    });
+    return () => sub.remove();
+  }, [fetchStoryStrip]);
 
   // Socket listeners specific to FeedScreen UI
   // NOTE: post create/update/delete events are handled globally in SocketContext/PostContext
@@ -243,6 +283,8 @@ const FeedScreen = ({ navigation }: any) => {
   const handleRefresh = () => {
     setRefreshing(true);
     setHasMore(true);
+    setStoryRingReplayKey((k) => k + 1);
+    fetchStoryStrip();
     fetchFeed(false); // Reset and fetch from beginning
   };
 
@@ -461,7 +503,13 @@ const FeedScreen = ({ navigation }: any) => {
     }
   };
 
-  const renderPost = ({ item }: { item: any }) => <Post post={item} />;
+  const renderPost = ({ item }: { item: any }) => {
+    const uid = item.postedBy?._id?.toString?.() ?? '';
+    const ring = uid ? storyByUserId[uid] : undefined;
+    return (
+      <Post post={item} storyRing={ring} storyRingReplayKey={storyRingReplayKey} />
+    );
+  };
 
   const quickActionsHeader = (
     <View style={styles.quickAccessHeaderContainer}>

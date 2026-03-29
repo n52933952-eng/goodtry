@@ -214,6 +214,21 @@ const ChatScreen = ({ route, navigation }: any) => {
           return prev;
         }
         console.log('💬 [ChatScreen] handleNewMessage: Adding message to list');
+        // While this screen is open, each new incoming message must mark the partner's messages as
+        // seen (fetchMessages only emits markmessageasSeen once). Otherwise the sender never gets
+        // `messagesSeen` and ticks stay gray even when both users are in the chat.
+        const convForSeen =
+          curConvStr ||
+          msgConvId ||
+          (data.conversationId != null
+            ? typeof data.conversationId === 'string'
+              ? data.conversationId
+              : data.conversationId.toString?.() ?? String(data.conversationId)
+            : '');
+        const partnerForSeen = otherUser?._id ?? (userId != null ? userId : null);
+        if (socket && convForSeen && partnerForSeen && user?._id) {
+          socket.emit('markmessageasSeen', { conversationId: convForSeen, userId: partnerForSeen });
+        }
         return [...prev, data];
       });
       
@@ -221,7 +236,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     } else {
       console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
     }
-  }, [user?._id, userId, otherUser?._id]);
+  }, [user?._id, userId, otherUser?._id, socket]);
 
   // Real-time: reaction on a message – backend emits messageReactionUpdated with { conversationId, messageId } (same as web)
   const handleMessageReactionUpdated = useCallback(async (data: { conversationId?: string; messageId?: string }) => {
@@ -565,9 +580,20 @@ const ChatScreen = ({ route, navigation }: any) => {
       setHasMoreMessages(hasMore);
 
       const convId = currentConversationId || conversationId;
-      if (socket && convId && otherUser?._id && user?._id && !hasMarkedSeenRef.current) {
+      const partnerId = otherUser?._id ?? userId;
+      const sk = socket as { isSocketConnected?: () => boolean; emit: (e: string, p?: unknown) => void };
+      // Only set hasMarkedSeenRef when the socket is actually connected — socketService.emit no-ops
+      // if TCP is not up yet; setting the ref anyway used to skip mark-seen forever (kill app / cold start).
+      if (
+        convId &&
+        partnerId &&
+        user?._id &&
+        !hasMarkedSeenRef.current &&
+        typeof sk.isSocketConnected === 'function' &&
+        sk.isSocketConnected()
+      ) {
         hasMarkedSeenRef.current = true;
-        socket.emit('markmessageasSeen', { conversationId: convId, userId: otherUser._id });
+        sk.emit('markmessageasSeen', { conversationId: convId, userId: partnerId });
       }
 
       setTimeout(() => {
@@ -595,23 +621,30 @@ const ChatScreen = ({ route, navigation }: any) => {
     getSenderId,
   ]);
 
-  // After socket connects/reconnects, ack any incoming messages we already have (fetch may have run while offline).
+  // After socket connects/reconnects, ack delivery + mark conversation read (fetch may have run before TCP was up).
   useEffect(() => {
     const sk = socket as any;
     if (!sk || typeof sk.addConnectListener !== 'function') return;
     const remove = sk.addConnectListener(() => {
-      const ackIds = collectUndeliveredIncomingIds(
-        messagesRef.current,
-        currentUserIdStr,
-        getSenderId
-      );
-      if (!ackIds.length) return;
       setTimeout(() => {
-        sk.emit?.('ackMessageDelivered', { messageIds: ackIds });
+        const ackIds = collectUndeliveredIncomingIds(
+          messagesRef.current,
+          currentUserIdStr,
+          getSenderId
+        );
+        if (ackIds.length) {
+          sk.emit?.('ackMessageDelivered', { messageIds: ackIds });
+        }
+        const convId = currentConversationIdRef.current ?? conversationId;
+        const partnerId = otherUser?._id ?? userId;
+        if (convId && partnerId && user?._id && sk.isSocketConnected?.()) {
+          sk.emit?.('markmessageasSeen', { conversationId: convId, userId: partnerId });
+          hasMarkedSeenRef.current = true;
+        }
       }, 500);
     });
     return () => remove?.();
-  }, [socket, currentUserIdStr, getSenderId]);
+  }, [socket, currentUserIdStr, getSenderId, conversationId, otherUser?._id, userId, user?._id]);
 
   // When returning from background, refresh messages + re-mark as seen.
   // This prevents "push stops but chat list still stale until I leave and come back".
