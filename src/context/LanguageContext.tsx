@@ -7,6 +7,7 @@ interface LanguageContextType {
   language: Language;
   setLanguage: (lang: Language) => void;
   t: (key: string) => string;
+  tn: (key: string, params?: Record<string, string | number>) => string;
   isRTL: boolean;
 }
 
@@ -193,9 +194,35 @@ const translations: Record<Language, Record<string, string>> = {
     'chooseOption': 'Choose an option',
     'camera': 'Camera',
     'gallery': 'Gallery (photo or video)',
+    'pickPhotoVideo': 'Pick photo / video',
+    'takePhoto': 'Take photo',
     'recordVideo': 'Record video',
     'selectMedia': 'Add image or video',
     'image': 'Image',
+    'storyAndProfile': 'Story & profile',
+    'seeStory': 'See story',
+    'goToProfile': 'Go to profile',
+    'viewers': 'Viewers',
+    'deleteStoryItemTitle': 'Delete this story item?',
+    'deleteStoryItemBody': 'Remove only the current story item.',
+    'newStory': 'New story',
+    'storyPublished': 'Story published',
+    'addedToYourStory': 'Added to your story',
+    'uploadFailed': 'Upload failed',
+    'pickPhotosVideos': 'Pick photos & videos',
+    'storyTextOptional': 'Story text (optional)',
+    'videoTooLongTitle': 'Video too long',
+    'videoTooLongBody': 'Each clip must be {{sec}} seconds or less.',
+    'done': 'Done',
+    'noViewsYet': 'No views yet',
+    'deleteAccount': 'Delete account',
+    'deleteAccountTitle': 'Delete your account?',
+    'deleteAccountBody':
+      'This will permanently delete your account and all your data (posts, stories, messages, and collaborations). This cannot be undone.',
+    'typeDeleteToConfirm': 'Type DELETE to confirm',
+    'confirmDelete': 'Confirm delete',
+    'deleteAccountFailed': 'Failed to delete account',
+    'deleteAccountSuccess': 'Account deleted',
     'deleteConversationQuestion': 'Delete conversation?',
     'deleteConversationWarning': 'This will delete the conversation and all messages for both users.',
     'failedToDeleteConversation': 'Failed to delete conversation',
@@ -444,9 +471,35 @@ const translations: Record<Language, Record<string, string>> = {
     'chooseOption': 'اختر خياراً',
     'camera': 'الكاميرا',
     'gallery': 'المعرض (صورة أو فيديو)',
+    'pickPhotoVideo': 'اختر صورة / فيديو',
+    'takePhoto': 'التقط صورة',
     'recordVideo': 'تسجيل فيديو',
     'selectMedia': 'إضافة صورة أو فيديو',
     'image': 'صورة',
+    'storyAndProfile': 'القصة والملف الشخصي',
+    'seeStory': 'عرض القصة',
+    'goToProfile': 'الذهاب إلى الملف الشخصي',
+    'viewers': 'المشاهدون',
+    'deleteStoryItemTitle': 'حذف عنصر القصة؟',
+    'deleteStoryItemBody': 'سيتم حذف العنصر الحالي فقط.',
+    'newStory': 'قصة جديدة',
+    'storyPublished': 'تم نشر القصة',
+    'addedToYourStory': 'تمت الإضافة إلى قصتك',
+    'uploadFailed': 'فشل الرفع',
+    'pickPhotosVideos': 'اختر صوراً وفيديوهات',
+    'storyTextOptional': 'نص القصة (اختياري)',
+    'videoTooLongTitle': 'الفيديو طويل جداً',
+    'videoTooLongBody': 'يجب ألا تتجاوز مدة كل مقطع {{sec}} ثانية.',
+    'done': 'تم',
+    'noViewsYet': 'لا توجد مشاهدات بعد',
+    'deleteAccount': 'حذف الحساب',
+    'deleteAccountTitle': 'حذف حسابك؟',
+    'deleteAccountBody':
+      'سيتم حذف حسابك وجميع بياناتك نهائياً (المنشورات، القصص، الرسائل، والمساهمات). لا يمكن التراجع عن ذلك.',
+    'typeDeleteToConfirm': 'اكتب DELETE للتأكيد',
+    'confirmDelete': 'تأكيد الحذف',
+    'deleteAccountFailed': 'فشل حذف الحساب',
+    'deleteAccountSuccess': 'تم حذف الحساب',
     'deleteConversationQuestion': 'حذف المحادثة؟',
     'deleteConversationWarning': 'سيؤدي هذا إلى حذف المحادثة وجميع الرسائل لكلا المستخدمين.',
     'failedToDeleteConversation': 'فشل حذف المحادثة',
@@ -551,12 +604,21 @@ export const LanguageProvider = ({ children }: { children: ReactNode }) => {
     return translations[language][key] || key;
   };
 
+  const tn = (key: string, params?: Record<string, string | number>): string => {
+    const base = t(key);
+    if (!params) return base;
+    return Object.keys(params).reduce((acc, k) => {
+      const v = params[k];
+      return acc.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), String(v));
+    }, base);
+  };
+
   // Force isRTL to always be false to keep LTR layout
   // Text will be in Arabic when language is 'ar', but layout stays Left-to-Right
   const isRTL = false; // Always LTR layout regardless of language
 
   return (
-    <LanguageContext.Provider value={{ language, setLanguage, t, isRTL }}>
+    <LanguageContext.Provider value={{ language, setLanguage, t, tn, isRTL }}>
       {children}
     </LanguageContext.Provider>
   );

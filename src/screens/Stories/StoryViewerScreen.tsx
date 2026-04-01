@@ -21,6 +21,7 @@ import WebView from 'react-native-webview';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useTheme } from '../../context/ThemeContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 const { width: W, height: H } = Dimensions.get('window');
 
@@ -31,6 +32,8 @@ const STORY_TAP_RIGHT_FRAC = 0.65;
 type Slide = {
   type: 'image' | 'video';
   url: string;
+  publicId?: string;
+  text?: string;
   durationSec?: number;
 };
 
@@ -40,6 +43,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const userId = route.params?.userId;
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
+  const { t } = useLanguage();
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -51,6 +55,13 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const [index, setIndex] = useState(0);
   const slides: Slide[] = story?.slides || [];
   const slide = slides[index];
+
+  // Safety: after deleting a slide (or story refresh), keep index in bounds to avoid `slide` becoming undefined.
+  useEffect(() => {
+    if (!slides?.length) return;
+    if (index < 0) setIndex(0);
+    else if (index > slides.length - 1) setIndex(slides.length - 1);
+  }, [slides.length, index]);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -69,22 +80,52 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const deleteMine = useCallback(() => {
-    Alert.alert('Delete story?', 'Remove your story for everyone.', [
-      { text: 'Cancel', style: 'cancel' },
+    // Freeze the currently visible slide so auto-advance cannot change the deletion target
+    pauseEpochRef.current += 1;
+    clearTimer();
+    progressAnim.stopAnimation();
+    const deleteIndex = index;
+    const targetSlide: any = slides?.[deleteIndex];
+    const qPublicId = targetSlide?.publicId ? String(targetSlide.publicId) : '';
+    const qUrl = targetSlide?.url ? String(targetSlide.url) : '';
+
+    Alert.alert(t('deleteStoryItemTitle'), t('deleteStoryItemBody'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Delete',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           try {
-            await apiService.delete(ENDPOINTS.STORY_DELETE_MINE);
-            navigation.goBack();
+            const qs = `?index=${encodeURIComponent(String(deleteIndex))}${
+              qPublicId ? `&publicId=${encodeURIComponent(qPublicId)}` : ''
+            }${qUrl ? `&url=${encodeURIComponent(qUrl)}` : ''}`;
+
+            const data = await apiService.delete(`${ENDPOINTS.STORY_DELETE_SLIDE_MINE}${qs}`);
+
+            if (data?.deletedAll) {
+              navigation.goBack();
+              return;
+            }
+
+            if (data?.story?.slides?.length) {
+              setStory(data.story);
+              setViewers(data.viewers || viewers);
+              // Keep index in bounds after deletion
+              const nextLen = data.story.slides.length;
+              setIndex((prev) => Math.min(prev, Math.max(0, nextLen - 1)));
+              DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
+              return;
+            }
+
+            // Fallback: reload
+            await load();
           } catch (e: any) {
-            Alert.alert('Error', e?.message || 'Failed');
+            Alert.alert(t('error'), e?.message || 'Failed');
           }
         },
       },
     ]);
-  }, [navigation]);
+  }, [navigation, index, slides, progressAnim, viewers, load]);
 
   const load = useCallback(async () => {
     if (!userId) {
@@ -251,8 +292,16 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={[styles.center, { backgroundColor: '#000', padding: 24 }]}>
         <Text style={{ color: '#fff', textAlign: 'center', marginBottom: 16 }}>{err || 'No story'}</Text>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.closeBtn}>
-          <Text style={{ color: '#fff', fontWeight: '700' }}>Close</Text>
+          <Text style={{ color: '#fff', fontWeight: '700' }}>{t('close')}</Text>
         </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (!slide) {
+    return (
+      <View style={[styles.center, { backgroundColor: '#000' }]}>
+        <ActivityIndicator color="#fff" size="large" />
       </View>
     );
   }
@@ -302,7 +351,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
                   style={[styles.headerChip, styles.headerChipDanger, { marginLeft: 8 }]}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.headerChipText}>Delete</Text>
+                  <Text style={styles.headerChipText}>{t('delete')}</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -336,15 +385,23 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
             <TouchableOpacity style={styles.tapRight} activeOpacity={1} onPress={goNext} />
           </>
         )}
+
+        {!!(slide as any)?.text?.trim?.() && (
+          <View pointerEvents="none" style={styles.captionWrap}>
+            <View style={styles.captionScrim}>
+              <Text style={styles.captionText}>{String((slide as any).text).trim()}</Text>
+            </View>
+          </View>
+        )}
       </View>
 
       <Modal visible={viewersOpen} transparent animationType="slide" onRequestClose={() => setViewersOpen(false)}>
         <View style={[styles.modalBg, { paddingTop: insets.top }]}>
           <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>Viewers</Text>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>{t('viewers')}</Text>
               <TouchableOpacity onPress={() => setViewersOpen(false)}>
-                <Text style={{ color: colors.primary, fontSize: 16 }}>Done</Text>
+                <Text style={{ color: colors.primary, fontSize: 16 }}>{t('done')}</Text>
               </TouchableOpacity>
             </View>
             <FlatList
@@ -369,7 +426,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
                   </View>
                 );
               }}
-              ListEmptyComponent={<Text style={{ color: colors.textGray, padding: 16 }}>No views yet</Text>}
+              ListEmptyComponent={<Text style={{ color: colors.textGray, padding: 16 }}>{t('noViewsYet')}</Text>}
             />
           </View>
         </View>
@@ -470,6 +527,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   media: { width: W, height: H, backgroundColor: '#000' },
+  captionWrap: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 6,
+  },
+  captionScrim: {
+    maxWidth: W - 40,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  captionText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 26,
+    textShadowColor: 'rgba(0,0,0,0.85)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
+  },
   imageHoldOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 5,

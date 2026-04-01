@@ -29,7 +29,7 @@ interface Channel {
 interface ChannelsModalProps {
   visible: boolean;
   onClose: () => void;
-  onChannelFollowed?: () => void;
+  onChannelFollowed?: (postId?: string) => void;
 }
 
 const ChannelsModal: React.FC<ChannelsModalProps> = ({
@@ -84,7 +84,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       }
       onClose();
       setTimeout(() => {
-        onChannelFollowed?.();
+        onChannelFollowed?.(data?.postId ? String(data.postId) : undefined);
       }, 500);
     } catch (error) {
       console.error('Error creating stream post:', error);

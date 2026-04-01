@@ -50,7 +50,7 @@ const StoryOrProfileSheet: React.FC<Props> = ({
           onPress={(e) => e.stopPropagation()}
         >
           <View style={[styles.handle, { backgroundColor: colors.border }]} />
-          <Text style={[styles.title, { color: colors.text }]}>Story & profile</Text>
+          <Text style={[styles.title, { color: colors.text }]}>{t('storyAndProfile')}</Text>
           {!!username && (
             <Text style={[styles.subtitle, { color: colors.textGray }]} numberOfLines={1}>
               @{username}
@@ -65,7 +65,7 @@ const StoryOrProfileSheet: React.FC<Props> = ({
             }}
             activeOpacity={0.88}
           >
-            <Text style={[styles.primaryBtnText, { color: colors.buttonText }]}>See story</Text>
+            <Text style={[styles.primaryBtnText, { color: colors.buttonText }]}>{t('seeStory')}</Text>
           </TouchableOpacity>
 
           {showProfile && (
@@ -77,7 +77,7 @@ const StoryOrProfileSheet: React.FC<Props> = ({
               }}
               activeOpacity={0.88}
             >
-              <Text style={[styles.secondaryBtnText, { color: colors.text }]}>Go to profile</Text>
+              <Text style={[styles.secondaryBtnText, { color: colors.text }]}>{t('goToProfile')}</Text>
             </TouchableOpacity>
           )}
 

@@ -10,6 +10,7 @@ import {
   RefreshControl,
   Image,
   ScrollView,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
@@ -512,6 +513,11 @@ const FootballScreen = () => {
       if (response) {
         // Re-check follow status from API to ensure accuracy (don't just toggle)
         await checkFollowStatus();
+
+        // If user just followed Football, tell FeedScreen to boost Football post to top on next refresh.
+        if (!wasFollowing) {
+          DeviceEventEmitter.emit('FootballFollowedBoost', { ts: Date.now() });
+        }
         
         // Use the opposite of what it was before (since we just toggled)
         showToast(

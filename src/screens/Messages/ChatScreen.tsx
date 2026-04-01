@@ -14,8 +14,9 @@ import {
   Keyboard,
   Alert,
   AppState,
+  ScrollView,
 } from 'react-native';
-import { launchImageLibrary } from 'react-native-image-picker';
+import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useWebRTC } from '../../context/WebRTCContext';
@@ -108,6 +109,8 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [reactionTargetId, setReactionTargetId] = useState<string | null>(null);
   const [actionTarget, setActionTarget] = useState<any | null>(null);
   const [replyingTo, setReplyingTo] = useState<any | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const messagesEndRef = useRef<FlatList>(null);
@@ -117,6 +120,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const isSendingRef = useRef(false);
   const hasMarkedSeenRef = useRef(false); // Prevent duplicate markmessageasSeen emits
   const lastForegroundRefreshAtRef = useRef(0); // Debounce app-active refresh
+  const ignoreNextForegroundRefreshRef = useRef(false); // Image picker can trigger inactive->active
   const lastScrollOffsetRef = useRef(0);
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
   const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
@@ -232,7 +236,20 @@ const ChatScreen = ({ route, navigation }: any) => {
         return [...prev, data];
       });
       
-      messagesEndRef.current?.scrollToEnd({ animated: true });
+      // Inverted list: offset 0 is the latest (bottom)
+      // Only auto-scroll if user is already near the bottom; don't disrupt if they're reading older messages.
+      if (shouldAutoScrollRef.current) {
+        requestAnimationFrame(() => {
+          try {
+            (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
+          } catch (_) {}
+        });
+        setTimeout(() => {
+          try {
+            (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
+          } catch (_) {}
+        }, 80);
+      }
     } else {
       console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
     }
@@ -596,11 +613,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         sk.emit('markmessageasSeen', { conversationId: convId, userId: partnerId });
       }
 
-      setTimeout(() => {
-        if (shouldAutoScrollRef.current) {
-          messagesEndRef.current?.scrollToEnd({ animated: false });
-        }
-      }, 100);
+      // With an inverted list, the newest messages are naturally visible without forcing scrollToEnd.
     } catch (error: any) {
       if (!loadMore) setMessages([]);
       loadingMoreRef.current = false;
@@ -651,6 +664,10 @@ const ChatScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') return;
+      if (ignoreNextForegroundRefreshRef.current) {
+        ignoreNextForegroundRefreshRef.current = false;
+        return;
+      }
       if (!socket || !user?._id) return;
       if (isCalling || callAccepted) return;
 
@@ -787,7 +804,12 @@ const ChatScreen = ({ route, navigation }: any) => {
           setCurrentConversationId(response.conversationId);
         }
 
-        setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 120);
+        // Inverted list: keep newest visible at offset 0 (bottom)
+        setTimeout(() => {
+          try {
+            (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
+          } catch (_) {}
+        }, 120);
       }
     } catch (error) {
       const maxAttempts = 3;
@@ -813,12 +835,18 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const handlePickMedia = async () => {
     try {
+      // Opening the native picker can trigger AppState inactive/background on some devices.
+      // Avoid reloading messages when coming back from the picker.
+      ignoreNextForegroundRefreshRef.current = true;
       const res = await launchImageLibrary({
         mediaType: 'mixed',
         selectionLimit: 1,
         quality: 0.8,
         includeBase64: false,
       });
+      setTimeout(() => {
+        ignoreNextForegroundRefreshRef.current = false;
+      }, 600);
       if (res.didCancel) return;
       const asset = res.assets?.[0];
       if (asset?.uri) {
@@ -826,6 +854,52 @@ const ChatScreen = ({ route, navigation }: any) => {
       }
     } catch (e) {
       console.error('❌ [ChatScreen] handlePickMedia error:', e);
+      ignoreNextForegroundRefreshRef.current = false;
+    }
+  };
+
+  const handleRecordVideo = async () => {
+    try {
+      ignoreNextForegroundRefreshRef.current = true;
+      const res = await launchCamera({
+        mediaType: 'video',
+        videoQuality: 'high',
+        durationLimit: 60,
+        saveToPhotos: false,
+      });
+      setTimeout(() => {
+        ignoreNextForegroundRefreshRef.current = false;
+      }, 600);
+      if (res.didCancel) return;
+      const asset = res.assets?.[0];
+      if (asset?.uri) {
+        setPendingMedia(asset);
+      }
+    } catch (e) {
+      console.error('❌ [ChatScreen] handleRecordVideo error:', e);
+      ignoreNextForegroundRefreshRef.current = false;
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    try {
+      ignoreNextForegroundRefreshRef.current = true;
+      const res = await launchCamera({
+        mediaType: 'photo',
+        quality: 0.85,
+        saveToPhotos: false,
+      });
+      setTimeout(() => {
+        ignoreNextForegroundRefreshRef.current = false;
+      }, 600);
+      if (res.didCancel) return;
+      const asset = res.assets?.[0];
+      if (asset?.uri) {
+        setPendingMedia(asset);
+      }
+    } catch (e) {
+      console.error('❌ [ChatScreen] handleTakePhoto error:', e);
+      ignoreNextForegroundRefreshRef.current = false;
     }
   };
 
@@ -974,6 +1048,16 @@ const ChatScreen = ({ route, navigation }: any) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const CHAT_EMOJIS = useMemo(
+    () => [
+      '😂','😍','🥰','😘','😊','😎','🥳','🤯','😢','😭','😡','🤔',
+      '👍','👎','👏','🙏','💯','✨','🔥','💥','⚡','🌟','🎉','❤️',
+      '🧡','💛','💚','💙','💜','🖤','🤍','💔','💖','🤝','✅','❌',
+      '📌','📍','📝','📣','📸','🎥','🎵','⚽','🏆','🎮','🌤️','🌙',
+    ],
+    []
+  );
+
   const CHAT_MEDIA_SIZE = 220;
 
   const buildChatVideoHtml = (videoUrl: string) => {
@@ -1086,7 +1170,11 @@ const ChatScreen = ({ route, navigation }: any) => {
               onLoadEnd={() => {
                 // When an image finishes loading, the content height changes; scroll again.
                 if (shouldAutoScrollRef.current) {
-                  setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 80);
+                  setTimeout(() => {
+                    try {
+                      (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
+                    } catch (_) {}
+                  }, 80);
                 }
               }}
             />
@@ -1227,30 +1315,31 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       <FlatList
         ref={messagesEndRef}
-        data={messages}
+        inverted
+        // Backend returns chronological (oldest -> newest). For inverted lists we feed newest-first
+        // so the newest message sticks to the bottom (WhatsApp-like).
+        data={[...messages].reverse()}
         extraData={messages.length}
         renderItem={renderMessage}
         keyExtractor={(item, index) => item._id || index.toString()}
         contentContainerStyle={styles.messagesList}
-        onScroll={(e) => {
-          const y = e.nativeEvent.contentOffset.y;
-          lastScrollOffsetRef.current = y;
-          // Only load older when user actually scrolls UP into the top zone (previous position was below threshold)
-          const wasScrolledDown = previousScrollYRef.current > 80;
-          const nowNearTop = y <= 50;
-          if (wasScrolledDown && nowNearTop && hasMoreMessages && !loadingMoreMessages && messages.length > 0) {
+        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+        // With inverted lists, `onEndReached` is the natural "load older" trigger.
+        onEndReached={() => {
+          if (hasMoreMessages && !loadingMoreMessages && messages.length > 0) {
             loadOlderMessages();
           }
-          previousScrollYRef.current = y;
         }}
-        scrollEventThrottle={100}
+        onEndReachedThreshold={0.2}
+        scrollEventThrottle={16}
         onScrollBeginDrag={() => {
           shouldAutoScrollRef.current = false;
         }}
-        onContentSizeChange={() => {
-          if (shouldAutoScrollRef.current || isSendingRef.current) {
-            setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 60);
-          }
+        onScroll={(e) => {
+          // With inverted lists, being "at the bottom" means contentOffset.y is near 0.
+          const y = e?.nativeEvent?.contentOffset?.y ?? 0;
+          lastScrollOffsetRef.current = y;
+          shouldAutoScrollRef.current = y < 80;
         }}
         ListHeaderComponent={
           loadingMoreMessages ? (
@@ -1300,11 +1389,18 @@ const ChatScreen = ({ route, navigation }: any) => {
 
           <View style={[styles.actionDivider, { backgroundColor: colors.border }]} />
 
-          {['👍', '❤️', '😂', '😮', '😢', '🔥', '👏', '✅', '😡', '🎉', '🤝', '🙏'].map((e) => (
-            <TouchableOpacity key={e} onPress={() => handleToggleReaction(reactionTargetId, e)} style={styles.reactionPickBtn}>
-              <Text style={styles.reactionPickEmoji}>{e}</Text>
-            </TouchableOpacity>
-          ))}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionEmojiRow}>
+            {[
+              '👍','👎','❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💖',
+              '😂','🤣','😍','🥰','😘','😊','😎','🤯','😮','😢','😭','😡','🤔',
+              '🔥','💥','⚡','✨','🌟','🎉','🥳','👏','🙏','🤝','✅','❌',
+              '⚽','🏆','🎮','🎥','🎵','📌','📍','📝','📣','📸','🌤️','🌙',
+            ].map((e) => (
+              <TouchableOpacity key={e} onPress={() => handleToggleReaction(reactionTargetId, e)} style={styles.reactionPickBtn}>
+                <Text style={styles.reactionPickEmoji}>{e}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
           <TouchableOpacity onPress={() => { setReactionTargetId(null); setActionTarget(null); }} style={styles.reactionPickBtn}>
             <Text style={styles.reactionPickEmoji}>✕</Text>
           </TouchableOpacity>
@@ -1339,9 +1435,33 @@ const ChatScreen = ({ route, navigation }: any) => {
         </View>
       ) : null}
 
+      {emojiOpen && (
+        <View style={[styles.emojiComposer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.emojiComposerRow}>
+            {CHAT_EMOJIS.map((e) => (
+              <TouchableOpacity
+                key={e}
+                onPress={() => setNewMessage((prev) => `${prev}${e}`)}
+                style={styles.emojiComposerBtn}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.emojiComposerEmoji}>{e}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
-        <TouchableOpacity onPress={handlePickMedia} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
+        <TouchableOpacity onPress={() => setAttachOpen((v) => !v)} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
           <Text style={[styles.attachIcon, { color: colors.text }]}>＋</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setEmojiOpen((v) => !v)}
+          style={[styles.attachBtn, { backgroundColor: colors.border }]}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.attachIcon, { color: colors.text }]}>😊</Text>
         </TouchableOpacity>
         <TextInput
           style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
@@ -1351,9 +1471,22 @@ const ChatScreen = ({ route, navigation }: any) => {
           onChangeText={handleMessageTextChange}
           multiline
           onFocus={() => {
+            setEmojiOpen(false);
+            // Inverted list: keep latest message visible when keyboard opens.
+            // Offset 0 is the "bottom" (newest) for inverted FlatList.
+            shouldAutoScrollRef.current = true;
+            requestAnimationFrame(() => {
+              try {
+                (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
+              } catch (_) {}
+            });
             // When keyboard opens, ensure input and latest message are visible
             shouldAutoScrollRef.current = true;
-            setTimeout(() => messagesEndRef.current?.scrollToEnd({ animated: true }), 120);
+            setTimeout(() => {
+              try {
+                (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
+              } catch (_) {}
+            }, 120);
           }}
         />
         <TouchableOpacity
@@ -1364,10 +1497,52 @@ const ChatScreen = ({ route, navigation }: any) => {
           {sending ? (
             <ActivityIndicator color={colors.buttonText} />
           ) : (
-            <Text style={[styles.sendButtonText, { color: colors.buttonText }]}>{t('send')}</Text>
+            <Text style={[styles.sendButtonText, { color: colors.buttonText }]}>➤</Text>
           )}
         </TouchableOpacity>
       </View>
+
+      {attachOpen && (
+        <View style={[styles.attachMenu, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
+          <TouchableOpacity
+            style={[styles.attachMenuBtn, { borderColor: colors.border }]}
+            onPress={() => {
+              setAttachOpen(false);
+              handlePickMedia();
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.attachMenuText, { color: colors.text }]}>🖼️ {t('pickPhotoVideo')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuBtn, { borderColor: colors.border }]}
+            onPress={() => {
+              setAttachOpen(false);
+              handleTakePhoto();
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.attachMenuText, { color: colors.text }]}>📸 {t('takePhoto')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuBtn, { borderColor: colors.border }]}
+            onPress={() => {
+              setAttachOpen(false);
+              handleRecordVideo();
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.attachMenuText, { color: colors.text }]}>🎥 {t('recordVideo')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuBtn, { borderColor: 'transparent' }]}
+            onPress={() => setAttachOpen(false)}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.attachMenuText, { color: colors.textGray }]}>{t('cancel')}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </Wrapper>
   );
 };
@@ -1629,6 +1804,10 @@ const styles = StyleSheet.create({
   reactionPickEmoji: {
     fontSize: 18,
   },
+  reactionEmojiRow: {
+    alignItems: 'center',
+    paddingRight: 6,
+  },
   mediaPreview: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1638,6 +1817,45 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.background,
+  },
+  emojiComposer: {
+    borderTopWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.backgroundLight,
+  },
+  emojiComposerRow: {
+    paddingRight: 6,
+  },
+  emojiComposerBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  emojiComposerEmoji: {
+    fontSize: 20,
+  },
+  attachMenu: {
+    borderTopWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: COLORS.backgroundLight,
+  },
+  attachMenuBtn: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  attachMenuText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
   mediaPreviewText: {
     color: COLORS.textGray,
@@ -1659,45 +1877,47 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flexDirection: 'row',
-    padding: 15,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.background,
     alignItems: 'flex-end',
   },
   attachBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: COLORS.border,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 10,
+    marginRight: 6,
     backgroundColor: COLORS.backgroundLight,
   },
   attachIcon: {
-    fontSize: 22,
+    fontSize: 20,
     color: COLORS.text,
-    lineHeight: 22,
+    lineHeight: 20,
   },
   input: {
     flex: 1,
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    marginRight: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 6,
     color: COLORS.text,
     maxHeight: 100,
   },
   sendButton: {
     backgroundColor: COLORS.primary,
     borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    width: 44,
+    height: 36,
     justifyContent: 'center',
+    alignItems: 'center',
   },
   sendButtonDisabled: {
     opacity: 0.5,
@@ -1705,6 +1925,7 @@ const styles = StyleSheet.create({
   sendButtonText: {
     color: '#FFFFFF',
     fontWeight: 'bold',
+    fontSize: 18,
   },
 });
 

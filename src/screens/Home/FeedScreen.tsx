@@ -32,7 +32,7 @@ interface AvailableUser {
 }
 
 const FeedScreen = ({ navigation }: any) => {
-  const { posts, setPosts, filterPostsForFeed } = usePost();
+  const { posts, setPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount } = useSocket();
   const { t, isRTL } = useLanguage();
@@ -60,6 +60,8 @@ const FeedScreen = ({ navigation }: any) => {
   /** Each feed focus: replay gray→red fill on all story rings */
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   const isFetchingRef = useRef(false);
+  const footballFollowBoostTsRef = useRef<number>(0);
+  const weatherFollowBoostTsRef = useRef<number>(0);
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const LOAD_MORE_DEBOUNCE_MS = 2000;
@@ -115,6 +117,22 @@ const FeedScreen = ({ navigation }: any) => {
     });
     return () => sub.remove();
   }, [fetchStoryStrip]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('FootballFollowedBoost', (payload: any) => {
+      const ts = Number(payload?.ts || 0);
+      footballFollowBoostTsRef.current = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('WeatherFollowedBoost', (payload: any) => {
+      const ts = Number(payload?.ts || 0);
+      weatherFollowBoostTsRef.current = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
+    });
+    return () => sub.remove();
+  }, []);
 
   // Socket listeners specific to FeedScreen UI
   // NOTE: post create/update/delete events are handled globally in SocketContext/PostContext
@@ -245,6 +263,25 @@ const FeedScreen = ({ navigation }: any) => {
           return pId === postId;
         }) === index;
       });
+
+      for (const p of uniquePosts as any[]) {
+        const username = p?.postedBy?.username;
+        if (username === 'Football' && footballFollowBoostTsRef.current) {
+          const pid = p?._id?.toString?.() ?? String(p?._id);
+          // User explicitly followed Football, so ensure the Football source isn't hidden anymore.
+          unhideFeedSourceFromFeed('Football');
+          if (pid) unhideFeedPostFromFeed(pid);
+          if (pid) setViewerSortBoost(pid, footballFollowBoostTsRef.current);
+          footballFollowBoostTsRef.current = 0;
+        }
+        if (username === 'Weather' && weatherFollowBoostTsRef.current) {
+          const pid = p?._id?.toString?.() ?? String(p?._id);
+          unhideFeedSourceFromFeed('Weather');
+          if (pid) unhideFeedPostFromFeed(pid);
+          if (pid) setViewerSortBoost(pid, weatherFollowBoostTsRef.current);
+          weatherFollowBoostTsRef.current = 0;
+        }
+      }
       
       if (loadMore) {
         // Append new posts, filtering out duplicates with existing posts
@@ -668,7 +705,11 @@ const FeedScreen = ({ navigation }: any) => {
       <ChannelsModal
         visible={showChannelsModal}
         onClose={() => setShowChannelsModal(false)}
-        onChannelFollowed={() => {
+        onChannelFollowed={(postId?: string) => {
+          // Unhide ONLY the channel post the user just re-added.
+          if (postId) unhideFeedPostFromFeed(postId);
+          // Bubble the newly added/re-added channel post to the top for this viewer (survives refresh).
+          if (postId) setViewerSortBoost(postId, Date.now());
           fetchFeed(); // Refresh feed when channel is followed
         }}
       />

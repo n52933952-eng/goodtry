@@ -11,6 +11,11 @@ import {
   RefreshControl,
   FlatList,
   DeviceEventEmitter,
+  Modal,
+  TextInput,
+  Pressable,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -26,7 +31,7 @@ import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
-  const { user: currentUser, updateUser } = useUser();
+  const { user: currentUser, updateUser, logout } = useUser();
   const { colors } = useTheme();
   const username =
     usernameParam === 'self' ? currentUser?.username : usernameParam;
@@ -46,6 +51,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   } | null>(null);
   /** Each profile focus: replay gray → red ring fill */
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
   
   // Pagination state
   const [loadingMore, setLoadingMore] = useState(false);
@@ -330,11 +339,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   const isOwnProfile = profileUser._id === currentUser?._id;
 
-  const PROFILE_AVATAR = 96;
+  const PROFILE_AVATAR = 84;
   /** Tight ring: thin stroke + ~3px gap to avatar edge */
-  const PROFILE_RING = 102;
-  const OTHER_AVATAR = 88;
-  const OTHER_RING = 94;
+  const PROFILE_RING = 90;
+  const OTHER_AVATAR = 78;
+  const OTHER_RING = 84;
 
   const openMyStory = () => {
     if (!profileUser?._id) return;
@@ -342,6 +351,32 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   };
 
   const openCreateStory = () => navigateToMainStack(navigation, 'CreateStory');
+
+  const openDeleteAccount = () => {
+    setDeleteConfirmText('');
+    setDeleteOpen(true);
+  };
+
+  const confirmDeleteAccount = async () => {
+    if (deletingAccount) return;
+    const typed = deleteConfirmText.trim().toUpperCase();
+    if (typed !== 'DELETE') return;
+    setDeletingAccount(true);
+    try {
+      await apiService.delete(ENDPOINTS.DELETE_ACCOUNT, {
+        data: {
+          confirm: 'DELETE',
+        },
+      } as any);
+      showToast(t('success'), t('deleteAccountSuccess'), 'success');
+      setDeleteOpen(false);
+      await logout();
+    } catch (e: any) {
+      showToast(t('error'), e?.message || t('deleteAccountFailed'), 'error');
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
 
   const renderProfileAvatar = () => {
     if (isOwnProfile && !storyMeta?.active) {
@@ -495,6 +530,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   </TouchableOpacity>
                 </View>
               )}
+
+              {isOwnProfile && (
+                <TouchableOpacity
+                  style={[
+                    styles.dangerButton,
+                    { borderColor: colors.error, backgroundColor: 'transparent' },
+                  ]}
+                  onPress={openDeleteAccount}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.dangerButtonText, { color: colors.error }]}>{t('deleteAccount')}</Text>
+                </TouchableOpacity>
+              )}
               
               {!isOwnProfile && (
                 <View style={styles.buttonRow}>
@@ -588,6 +636,56 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           </View>
         )}
       />
+
+      <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
+        <KeyboardAvoidingView style={styles.deleteOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={styles.deleteBackdrop} onPress={() => setDeleteOpen(false)} />
+          <Pressable
+            style={[styles.deleteSheet, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[styles.deleteTitle, { color: colors.text }]}>{t('deleteAccountTitle')}</Text>
+            <Text style={[styles.deleteBody, { color: colors.textGray }]}>{t('deleteAccountBody')}</Text>
+
+            <Text style={[styles.deleteLabel, { color: colors.textGray }]}>{t('typeDeleteToConfirm')}</Text>
+            <TextInput
+              value={deleteConfirmText}
+              onChangeText={setDeleteConfirmText}
+              autoCapitalize="characters"
+              placeholder="DELETE"
+              placeholderTextColor={colors.textGray}
+              style={[
+                styles.deleteInput,
+                { borderColor: colors.border, color: colors.text, backgroundColor: colors.background },
+              ]}
+            />
+
+            <View style={styles.deleteActions}>
+              <TouchableOpacity onPress={() => setDeleteOpen(false)} style={[styles.deleteBtn, { borderColor: colors.border }]}>
+                <Text style={[styles.deleteBtnText, { color: colors.text }]}>{t('cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={confirmDeleteAccount}
+                disabled={deletingAccount || deleteConfirmText.trim().toUpperCase() !== 'DELETE'}
+                style={[
+                  styles.deleteBtn,
+                  {
+                    backgroundColor:
+                      deleteConfirmText.trim().toUpperCase() === 'DELETE' ? colors.error : colors.border,
+                    borderColor: 'transparent',
+                  },
+                ]}
+              >
+                {deletingAccount ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={[styles.deleteBtnText, { color: '#fff' }]}>{t('confirmDelete')}</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 };
@@ -640,18 +738,18 @@ const styles = StyleSheet.create({
   },
   profileAvatarLetter: {
     color: '#FFFFFF',
-    fontSize: 36,
+    fontSize: 30,
     fontWeight: '700',
   },
   buttonRow: {
     flexDirection: 'row',
     width: '100%',
-    marginTop: 14,
+    marginTop: 12,
     gap: 10,
   },
   halfButton: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
@@ -664,7 +762,7 @@ const styles = StyleSheet.create({
   },
   halfButtonText: {
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 13,
   },
   avatarPlaceholder: {
     justifyContent: 'center',
@@ -728,6 +826,18 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  dangerButton: {
+    marginTop: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dangerButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
   listContent: {
     paddingBottom: 28,
   },
@@ -767,6 +877,62 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
     textAlign: 'center',
     marginTop: 50,
+  },
+
+  deleteOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  deleteBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  deleteSheet: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+  },
+  deleteTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  deleteBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  deleteLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  deleteInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  deleteActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    gap: 10,
+  },
+  deleteBtn: {
+    flex: 1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
   },
 });
 

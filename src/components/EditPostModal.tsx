@@ -12,6 +12,7 @@ import {
   ScrollView,
   Image,
   Alert,
+  Pressable,
 } from 'react-native';
 import { useLanguage } from '../context/LanguageContext';
 import { useTheme } from '../context/ThemeContext';
@@ -137,8 +138,11 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
-        <View style={[styles.sheet, { backgroundColor: colors.backgroundLight }]}>
+        <Pressable style={styles.backdrop} onPress={onClose} />
+        <Pressable
+          style={[styles.sheet, { backgroundColor: colors.backgroundLight }]}
+          onPress={(e) => e.stopPropagation()}
+        >
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <TouchableOpacity onPress={onClose}>
               <Text style={{ color: colors.textGray, fontSize: 16 }}>{t('cancel')}</Text>
@@ -154,7 +158,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
           </View>
           <ScrollView
             style={styles.scroll}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps="always"
             contentContainerStyle={styles.scrollContent}
           >
             <TextInput
@@ -209,7 +213,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
               </Text>
             </TouchableOpacity>
           </ScrollView>
-        </View>
+        </Pressable>
       </KeyboardAvoidingView>
     </Modal>
   );

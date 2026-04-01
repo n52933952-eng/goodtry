@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { API_URL, ENDPOINTS } from '../../utils/constants';
@@ -397,6 +398,11 @@ const WeatherScreen = () => {
       
       // Re-check follow status from API to ensure accuracy (don't just toggle)
       await checkFollowStatus();
+
+      // If user just followed Weather, tell FeedScreen to unhide + boost Weather on next refresh.
+      if (!wasFollowing) {
+        DeviceEventEmitter.emit('WeatherFollowedBoost', { ts: Date.now() });
+      }
       
       // Use the opposite of what it was before (since we just toggled)
       showToast('Success', wasFollowing ? 'Unfollowed Weather' : 'Following Weather! You\'ll now see updates in your feed', 'success');

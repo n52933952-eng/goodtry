@@ -19,6 +19,7 @@ export const ENDPOINTS = {
   LOGIN: '/api/user/login',
   SIGNUP: '/api/user/signup',
   LOGOUT: '/api/user/logout',
+  DELETE_ACCOUNT: '/api/user/delete',
   GOOGLE_LOGIN: '/api/user/google-login',
   
   // User
@@ -103,6 +104,7 @@ export const ENDPOINTS = {
   STORY_CREATE: '/api/story/create',
   STORY_FEED_STRIP: '/api/story/feed-strip',
   STORY_DELETE_MINE: '/api/story/mine',
+  STORY_DELETE_SLIDE_MINE: '/api/story/mine/slide',
   STORY_BY_USER: '/api/story/user',
   STORY_STATUS: '/api/story/status',
   STORY_VIEWERS: '/api/story',

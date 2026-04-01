@@ -92,14 +92,41 @@ const AddContributorModal: React.FC<Props> = ({
       if (successful.length > 0) {
         const first = successful[0] as { ok: true; data: { post?: any } };
         const updated = first.data?.post;
-        if (updated) {
-          showToast(t('success'), t('contributorsAdded'), 'success');
-          onContributorAdded?.(updated);
-        } else {
+        // Backend sometimes returns contributors as ids (strings). Hydrate via GET so avatar/name shows immediately.
+        const needsHydration = (p: any) =>
+          !Array.isArray(p?.contributors) ||
+          p.contributors.some((c: any) => typeof c === 'string' || typeof c === 'number' || !c?.profilePic);
+
+        let finalPost = updated;
+        if (!finalPost || needsHydration(finalPost)) {
           const fresh = await apiService.get(`${ENDPOINTS.GET_POST}/${post._id}`);
-          showToast(t('success'), t('contributorsAdded'), 'success');
-          onContributorAdded?.(fresh);
+          finalPost = (fresh as any)?.post ?? fresh;
         }
+
+        // Best-effort client hydration: merge selectedUsers into contributors so UI shows avatars immediately,
+        // even if backend returns only contributor ids.
+        const selectedById = new Map(
+          selectedUsers
+            .filter((u) => u?._id)
+            .map((u) => [String(u._id), { _id: u._id, name: u.name, username: u.username, profilePic: u.profilePic }])
+        );
+        const normalizeContributor = (c: any) => {
+          const id = (typeof c === 'string' || typeof c === 'number') ? String(c) : (c?._id != null ? String(c._id) : '');
+          if (id && selectedById.has(id)) return selectedById.get(id);
+          if (typeof c === 'string' || typeof c === 'number') return { _id: id };
+          return c;
+        };
+        if (finalPost && Array.isArray(finalPost.contributors)) {
+          const merged = finalPost.contributors.map(normalizeContributor);
+          // Ensure newly selected are present
+          for (const [id, u] of selectedById.entries()) {
+            if (!merged.some((c: any) => String((c?._id ?? c) || '') === id)) merged.push(u);
+          }
+          finalPost = { ...finalPost, contributors: merged };
+        }
+
+        showToast(t('success'), t('contributorsAdded'), 'success');
+        if (finalPost) onContributorAdded?.(finalPost);
         onClose();
         reset();
       }

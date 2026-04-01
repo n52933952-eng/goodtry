@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   DeviceEventEmitter,
+  TextInput,
 } from 'react-native';
 import { launchImageLibrary, Asset } from 'react-native-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +17,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useTheme } from '../../context/ThemeContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 const MAX_SLIDES = 15;
 const MAX_VIDEO_SEC = 20;
@@ -23,9 +25,17 @@ const MAX_VIDEO_SEC = 20;
 const CreateStoryScreen = ({ navigation }: any) => {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
+  const { t, tn } = useLanguage();
   const showToast = useShowToast();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [caption, setCaption] = useState('');
+  const EMOJIS = [
+    '😂','😍','🥰','😘','😊','😎','🥳','🤯','😢','😭','😡','🤔',
+    '👏','🙏','💯','✨','🔥','💥','⚡','🌟','🌈','☀️','🌤️','🌙',
+    '❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💖',
+    '⚽','🏆','🎮','🎥','🎵','📌','✅','❌','📍','📝','📸','📣',
+  ];
 
   const pickMedia = async () => {
     const result = await launchImageLibrary({
@@ -45,7 +55,7 @@ const CreateStoryScreen = ({ navigation }: any) => {
         const dur = typeof a.duration === 'number' ? a.duration : 0;
         const sec = dur > 1000 ? dur / 1000 : dur;
         if (sec > MAX_VIDEO_SEC + 0.5) {
-          Alert.alert('Video too long', `Each clip must be ${MAX_VIDEO_SEC} seconds or less.`);
+          Alert.alert(t('videoTooLongTitle'), tn('videoTooLongBody', { sec: MAX_VIDEO_SEC }));
           continue;
         }
       }
@@ -68,6 +78,10 @@ const CreateStoryScreen = ({ navigation }: any) => {
     setUploading(true);
     try {
       const formData = new FormData();
+      const trimmedCaption = caption.trim();
+      if (trimmedCaption) {
+        formData.append('text', trimmedCaption.slice(0, 300));
+      }
       for (const a of assets) {
         const uri = a.uri;
         if (!uri) continue;
@@ -81,15 +95,12 @@ const CreateStoryScreen = ({ navigation }: any) => {
       const data = await apiService.upload(ENDPOINTS.STORY_CREATE, formData);
       const appended = !!(data as { appended?: boolean })?.appended;
       DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
-      showToast(
-        'Success',
-        appended ? 'Added to your story' : 'Story published',
-        'success',
-      );
+      showToast(t('success'), appended ? t('addedToYourStory') : t('storyPublished'), 'success');
       setAssets([]);
+      setCaption('');
       navigation.goBack();
     } catch (e: any) {
-      showToast('Error', e?.message || 'Upload failed', 'error');
+      showToast(t('error'), e?.message || t('uploadFailed'), 'error');
     } finally {
       setUploading(false);
     }
@@ -99,14 +110,16 @@ const CreateStoryScreen = ({ navigation }: any) => {
     <View style={[styles.root, { backgroundColor: colors.background, paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12}>
-          <Text style={{ color: colors.text, fontSize: 16 }}>Cancel</Text>
+          <Text style={{ color: colors.text, fontSize: 16 }}>{t('cancel')}</Text>
         </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.text }]}>New story</Text>
+        <Text style={[styles.title, { color: colors.text }]}>{t('newStory')}</Text>
         <TouchableOpacity onPress={publish} disabled={uploading || !assets.length}>
           {uploading ? (
             <ActivityIndicator color={colors.primary} />
           ) : (
-            <Text style={{ color: assets.length ? colors.primary : colors.textGray, fontWeight: '700' }}>Share</Text>
+            <Text style={{ color: assets.length ? colors.primary : colors.textGray, fontWeight: '700' }}>
+              {t('share')}
+            </Text>
           )}
         </TouchableOpacity>
       </View>
@@ -121,8 +134,42 @@ const CreateStoryScreen = ({ navigation }: any) => {
         onPress={pickMedia}
         disabled={uploading}
       >
-        <Text style={{ color: colors.primary, fontWeight: '600' }}>Pick photos & videos</Text>
+        <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('pickPhotosVideos')}</Text>
       </TouchableOpacity>
+
+      <View style={[styles.captionBox, { borderColor: colors.border, backgroundColor: colors.backgroundLight }]}>
+        <Text style={{ color: colors.textGray, marginBottom: 6, fontSize: 12 }}>{t('storyTextOptional')}</Text>
+        <TextInput
+          value={caption}
+          onChangeText={setCaption}
+          placeholder="Write something…"
+          placeholderTextColor={colors.textGray}
+          editable={!uploading}
+          multiline
+          maxLength={300}
+          style={{ color: colors.text, minHeight: 40, fontSize: 15 }}
+        />
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ paddingTop: 10, paddingBottom: 2 }}
+        >
+          {EMOJIS.map((e) => (
+            <TouchableOpacity
+              key={e}
+              onPress={() => setCaption((prev) => `${prev}${e}`)}
+              disabled={uploading}
+              style={[
+                styles.emojiBtn,
+                { backgroundColor: colors.background, borderColor: colors.border },
+              ]}
+              activeOpacity={0.8}
+            >
+              <Text style={{ fontSize: 18 }}>{e}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
 
       <ScrollView horizontal style={styles.strip} contentContainerStyle={{ paddingVertical: 8 }}>
         {assets.map((a, i) => {
@@ -164,6 +211,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     marginBottom: 12,
+  },
+  captionBox: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
+  emojiBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginRight: 8,
   },
   strip: { flexGrow: 0 },
   thumbWrap: { marginRight: 10, position: 'relative' },

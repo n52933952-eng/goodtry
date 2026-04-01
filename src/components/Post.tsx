@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -80,7 +80,14 @@ const Post: React.FC<PostProps> = ({
     }
   };
   const { user } = useUser();
-  const { likePost, unlikePost, deletePost: deletePostContext, updatePost, hideFeedPostFromFeed } = usePost();
+  const {
+    likePost,
+    unlikePost,
+    deletePost: deletePostContext,
+    updatePost,
+    hideFeedPostFromFeed,
+    hideFeedSourceFromFeed,
+  } = usePost();
   const { t } = useLanguage();
   const { colors } = useTheme();
   const { socket } = useSocket();
@@ -90,6 +97,67 @@ const Post: React.FC<PostProps> = ({
   const [manageContribOpen, setManageContribOpen] = useState(false);
   const [editPostOpen, setEditPostOpen] = useState(false);
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
+
+  // Contributor hydration: sometimes API/socket returns contributor ids only. Fetch profiles so avatars show without reload.
+  const [contribHydrateMap, setContribHydrateMap] = useState<Record<string, any>>({});
+  const contribHydrateInFlightRef = useRef<Record<string, boolean>>({});
+
+  const contributorIdsNeedingHydration = useMemo(() => {
+    if (!post?.isCollaborative || !Array.isArray(post?.contributors)) return [];
+    const ids: string[] = [];
+    for (const c of post.contributors) {
+      const id =
+        typeof c === 'string' || typeof c === 'number'
+          ? String(c)
+          : c?._id != null
+            ? String(c._id)
+            : '';
+      if (!id) continue;
+      const hasPic = typeof c === 'object' && !!c?.profilePic;
+      const already = !!contribHydrateMap[id];
+      if (!hasPic && !already) ids.push(id);
+    }
+    return ids.slice(0, 12);
+  }, [post?.isCollaborative, post?.contributors, contribHydrateMap]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!contributorIdsNeedingHydration.length) return;
+      const todo = contributorIdsNeedingHydration.filter((id) => !contribHydrateInFlightRef.current[id]);
+      if (!todo.length) return;
+      todo.forEach((id) => (contribHydrateInFlightRef.current[id] = true));
+      try {
+        const results = await Promise.all(
+          todo.map(async (id) => {
+            try {
+              // Backend supports both username or userId: /api/user/getUserPro/:query
+              const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/${encodeURIComponent(String(id))}`);
+              const u = (data as any)?.user ?? data;
+              const uid = u?._id != null ? String(u._id) : id;
+              return uid ? { id: uid, user: u } : null;
+            } catch {
+              return null;
+            }
+          })
+        );
+        if (cancelled) return;
+        const next: Record<string, any> = {};
+        for (const r of results) {
+          if (r?.id && r.user) next[r.id] = r.user;
+        }
+        if (Object.keys(next).length) {
+          setContribHydrateMap((prev) => ({ ...prev, ...next }));
+        }
+      } finally {
+        todo.forEach((id) => (contribHydrateInFlightRef.current[id] = false));
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [contributorIdsNeedingHydration]);
 
   const [isLiking, setIsLiking] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -511,9 +579,26 @@ const Post: React.FC<PostProps> = ({
         {
           text: t('removeFromFeedConfirm'),
           style: 'destructive',
-          onPress: () => {
-            hideFeedPostFromFeed(String(post._id));
-            showToast(t('success'), t('removedFromFeed'), 'success');
+          onPress: async () => {
+            try {
+              // Channels you add are real DB posts scoped to you (`channelAddedBy`).
+              // Deleting them server-side prevents them from "coming back" when you follow Football/refresh feed.
+              if (isMyChannelFeedCard && post?._id) {
+                await apiService.delete(`${ENDPOINTS.DELETE_POST}/${String(post._id)}`);
+                deletePostContext(String(post._id));
+              } else {
+                // Football/Weather cards are global/system posts; hide only.
+                const uname = post?.postedBy?.username;
+                if (uname === 'Football' || uname === 'Weather') {
+                  hideFeedSourceFromFeed(String(uname));
+                } else {
+                  hideFeedPostFromFeed(String(post._id));
+                }
+              }
+              showToast(t('success'), t('removedFromFeed'), 'success');
+            } catch (e: any) {
+              showToast(t('error'), e?.message || 'Failed', 'error');
+            }
           },
         },
       ]
@@ -642,7 +727,7 @@ const Post: React.FC<PostProps> = ({
           <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <View style={styles.headerActions}>
           {showDismissFromFeed && (
             <TouchableOpacity
               onPress={(e) => {
@@ -686,7 +771,7 @@ const Post: React.FC<PostProps> = ({
           if (displayContributors.length === 0) return null;
           return (
             <View style={{ marginBottom: 10 }}>
-              <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textGray }}>{t('contributors')}</Text>
+              <Text style={[styles.contributorsLabel, { color: colors.textGray }]}>{t('contributors')}</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -695,11 +780,13 @@ const Post: React.FC<PostProps> = ({
               >
                 {displayContributors.map((contributor: any, idx: number) => {
                   const cid = (contributor?._id || contributor)?.toString();
-                  const label = contributor?.name || contributor?.username || '?';
+                  const hydrated = cid && contribHydrateMap[cid] ? contribHydrateMap[cid] : null;
+                  const cObj = hydrated || contributor;
+                  const label = cObj?.name || cObj?.username || '?';
                   return (
                     <View key={cid || String(idx)} style={{ marginRight: 8 }}>
-                      {contributor?.profilePic ? (
-                        <Image source={{ uri: contributor.profilePic }} style={styles.contribAvatar} />
+                      {cObj?.profilePic ? (
+                        <Image source={{ uri: cObj.profilePic }} style={styles.contribAvatar} />
                       ) : (
                         <View
                           style={[
@@ -1283,6 +1370,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+  },
   name: {
     fontSize: 16,
     fontWeight: 'bold',
@@ -1305,6 +1397,12 @@ const styles = StyleSheet.create({
   collabActionText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  contributorsLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'left',
+    alignSelf: 'flex-start',
   },
   time: {
     fontSize: 14,

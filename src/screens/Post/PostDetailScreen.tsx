@@ -23,6 +23,7 @@ import ThreadedComment from '../../components/ThreadedComment';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
+import { usePost } from '../../context/PostContext';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
   const { postId, fromScreen, userProfileParams } = route.params || {};
@@ -30,6 +31,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
+  const { deletePost } = usePost();
   
   // Customize back button behavior based on where we came from
   React.useEffect(() => {
@@ -93,9 +95,23 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     } catch (error: any) {
       console.error('❌ [PostDetail] Error fetching post:', error);
       console.error('❌ [PostDetail] Post ID:', postId);
-      showToast('Error', 'Failed to load post', 'error');
-      // Don't auto-navigate back, let user see the error
-      // navigation.goBack();
+      const msg = String(error?.message || '');
+      const missing =
+        msg.toLowerCase().includes('no post') ||
+        msg.toLowerCase().includes('not found') ||
+        msg.toLowerCase().includes('post not found');
+
+      if (missing) {
+        // If post was deleted (e.g., author deleted account), remove it from local lists and exit safely.
+        if (postId) deletePost(String(postId));
+        showToast(t('info'), t('postNotFound'), 'info');
+        setPost(null);
+        // Navigate away to avoid leaving user on a dead detail screen.
+        if (navigation.canGoBack?.()) navigation.goBack();
+        return;
+      }
+
+      showToast(t('error'), 'Failed to load post', 'error');
     } finally {
       setLoading(false);
       setRefreshing(false);

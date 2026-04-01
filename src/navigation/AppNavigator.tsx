@@ -77,14 +77,19 @@ const FeedStack = () => {
         component={PostDetailScreen}
         options={{
           headerShown: true,
-          title: 'Post',
+          // Android: use custom headerTitle to guarantee true centering
+          headerTitle: () => (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
+            </View>
+          ),
+          headerTitleAlign: 'center',
           headerStyle: {
             backgroundColor: colors.backgroundLight,
           },
           headerTintColor: colors.text,
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
+          // Balance left/right so title stays centered
+          headerRight: () => <View style={{ width: 44 }} />,
         }}
       />
     </Stack.Navigator>
@@ -326,14 +331,17 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
         component={PostDetailScreen}
         options={{
           headerShown: true,
-          title: 'Post',
+          headerTitle: () => (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
+            </View>
+          ),
+          headerTitleAlign: 'center',
           headerStyle: {
             backgroundColor: colors.backgroundLight,
           },
           headerTintColor: colors.text,
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
+          headerRight: () => <View style={{ width: 44 }} />,
         }}
       />
       <Stack.Screen 
@@ -761,9 +769,19 @@ const AppNavigator = () => {
     const goChess = (data: any) => tryNavigateChessAccept(data);
     const goCard = (data: any) => tryNavigateCardAccept(data);
 
-    socket.on('acceptChessChallenge', goChess);
-    socket.on('acceptCardChallenge', goCard);
+    // CRITICAL: SocketService may recreate the underlying Socket.IO instance on reconnect.
+    // When that happens, previous `.on(...)` handlers are lost. Re-bind via socketReadyListener.
+    const bindAcceptListeners = () => {
+      socket.off('acceptChessChallenge', goChess);
+      socket.off('acceptCardChallenge', goCard);
+      socket.on('acceptChessChallenge', goChess);
+      socket.on('acceptCardChallenge', goCard);
+    };
+
+    bindAcceptListeners();
+    const removeReady = socket.addSocketReadyListener(bindAcceptListeners);
     return () => {
+      removeReady?.();
       socket.off('acceptChessChallenge', goChess);
       socket.off('acceptCardChallenge', goCard);
     };

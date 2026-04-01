@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from './UserContext';
 
 const feedHiddenStorageKey = (userId: string) => `feed_hidden_post_ids_${userId}`;
+const feedHiddenSourcesKey = (userId: string) => `feed_hidden_sources_${userId}`;
 
 export interface Post {
   _id: string;
@@ -29,11 +30,13 @@ export interface Post {
   footballData?: any;
   chessGameData?: string; // JSON string containing chess game data
   cardGameData?: string; // JSON string containing card game data
+  /** Ephemeral client-only sort boost (ms since epoch). Used to bubble items like re-added channels. */
+  __viewerSortBoostMs?: number;
 }
 
 interface PostContextType {
   posts: Post[];
-  setPosts: (posts: Post[]) => void;
+  setPosts: (posts: Post[] | ((prev: Post[]) => Post[])) => void;
   addPost: (post: Post) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
@@ -42,7 +45,17 @@ interface PostContextType {
   addComment: (postId: string, comment: any) => void;
   /** Post IDs the user hid from feed (Football / Weather / channel cards); persisted per account. */
   hiddenFeedPostIds: Set<string>;
+  /** Usernames the user hid from feed (system cards like Football/Weather); persisted per account. */
+  hiddenFeedSources: Set<string>;
   hideFeedPostFromFeed: (postId: string) => void;
+  hideFeedSourceFromFeed: (username: string) => void;
+  /** Clear hidden IDs so dismissed feed cards can show again (e.g., after re-follow / re-adding channels). */
+  clearHiddenFeedPosts: () => void;
+  /** Unhide a specific post id (e.g., re-add one channel without restoring all). */
+  unhideFeedPostFromFeed: (postId: string) => void;
+  unhideFeedSourceFromFeed: (username: string) => void;
+  /** Client-only: bubble a post to top (survives refresh). */
+  setViewerSortBoost: (postId: string, boostMs?: number) => void;
   filterPostsForFeed: (list: Post[]) => Post[];
 }
 
@@ -53,16 +66,38 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const [posts, setPosts] = useState<Post[]>([]);
   const [hiddenFeedPostIds, setHiddenFeedPostIds] = useState<Set<string>>(new Set());
   const hiddenFeedPostIdsRef = useRef<Set<string>>(new Set());
+  const [hiddenFeedSources, setHiddenFeedSources] = useState<Set<string>>(new Set());
+  const hiddenFeedSourcesRef = useRef<Set<string>>(new Set());
+  const viewerSortBoostRef = useRef<Record<string, number>>({});
+
+  const getSortTimeMs = (p: any): number => {
+    const id = p?._id?.toString?.() ?? (p?._id != null ? String(p._id) : '');
+    const mapBoost = id && viewerSortBoostRef.current[id] ? viewerSortBoostRef.current[id] : 0;
+    const inlineBoost = typeof p?.__viewerSortBoostMs === 'number' ? p.__viewerSortBoostMs : 0;
+    const boost = Math.max(mapBoost || 0, inlineBoost || 0);
+    const base = new Date(p?.updatedAt || p?.createdAt || 0).getTime();
+    return Math.max(base || 0, boost || 0);
+  };
+
+  const sortPostsNewestFirst = useCallback((list: Post[]) => {
+    const safe = Array.isArray(list) ? list : [];
+    return [...safe].sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+  }, []);
 
   useEffect(() => {
     hiddenFeedPostIdsRef.current = hiddenFeedPostIds;
   }, [hiddenFeedPostIds]);
+  useEffect(() => {
+    hiddenFeedSourcesRef.current = hiddenFeedSources;
+  }, [hiddenFeedSources]);
 
   // Load dismissed feed cards (Football / Weather / channels) per user
   useEffect(() => {
     if (!user?._id) {
       setHiddenFeedPostIds(new Set());
       hiddenFeedPostIdsRef.current = new Set();
+      setHiddenFeedSources(new Set());
+      hiddenFeedSourcesRef.current = new Set();
       return;
     }
     let cancelled = false;
@@ -81,6 +116,23 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         }
       })
       .catch(() => {});
+
+    AsyncStorage.getItem(feedHiddenSourcesKey(String(user._id)))
+      .then((raw) => {
+        if (cancelled || !raw) return;
+        try {
+          const ids: string[] = JSON.parse(raw);
+          if (Array.isArray(ids)) {
+            const next = new Set(ids.map((x) => String(x).trim()).filter(Boolean));
+            setHiddenFeedSources(next);
+            hiddenFeedSourcesRef.current = next;
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
@@ -95,7 +147,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
   const filterPostsForFeed = useCallback((list: Post[]) => {
     const hidden = hiddenFeedPostIdsRef.current;
-    return list.filter((p) => p?._id && !hidden.has(String(p._id)));
+    const sources = hiddenFeedSourcesRef.current;
+    return (Array.isArray(list) ? list : []).filter((p: any) => {
+      const idOk = p?._id && !hidden.has(String(p._id));
+      if (!idOk) return false;
+      const uname = p?.postedBy?.username ? String(p.postedBy.username) : '';
+      if (uname && sources.has(uname)) return false;
+      return true;
+    });
   }, []);
 
   // When hidden IDs load from storage (or change), drop those posts from the current feed list
@@ -118,6 +177,70 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       setPosts((prev) => prev.filter((p) => String(p._id) !== id));
     },
     [user?._id]
+  );
+
+  const hideFeedSourceFromFeed = useCallback(
+    (username: string) => {
+      const uname = String(username || '').trim();
+      if (!uname) return;
+      setHiddenFeedSources((prev) => {
+        const next = new Set(prev);
+        next.add(uname);
+        hiddenFeedSourcesRef.current = next;
+        if (user?._id) {
+          AsyncStorage.setItem(feedHiddenSourcesKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+        }
+        return next;
+      });
+      // Drop any current posts from that source immediately
+      setPosts((prev) => (Array.isArray(prev) ? prev.filter((p: any) => String(p?.postedBy?.username || '') !== uname) : []));
+    },
+    [user?._id],
+  );
+
+  const clearHiddenFeedPosts = useCallback(() => {
+    const uid = user?._id ? String(user._id) : '';
+    setHiddenFeedPostIds(new Set());
+    hiddenFeedPostIdsRef.current = new Set();
+    if (uid) {
+      AsyncStorage.removeItem(feedHiddenStorageKey(uid)).catch(() => {});
+    }
+  }, [user?._id]);
+
+  const unhideFeedPostFromFeed = useCallback(
+    (postId: string) => {
+      const id = String(postId || '').trim();
+      if (!id) return;
+      setHiddenFeedPostIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        hiddenFeedPostIdsRef.current = next;
+        if (user?._id) {
+          AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+        }
+        return next;
+      });
+    },
+    [user?._id],
+  );
+
+  const unhideFeedSourceFromFeed = useCallback(
+    (username: string) => {
+      const uname = String(username || '').trim();
+      if (!uname) return;
+      setHiddenFeedSources((prev) => {
+        if (!prev.has(uname)) return prev;
+        const next = new Set(prev);
+        next.delete(uname);
+        hiddenFeedSourcesRef.current = next;
+        if (user?._id) {
+          AsyncStorage.setItem(feedHiddenSourcesKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+        }
+        return next;
+      });
+    },
+    [user?._id],
   );
 
   const addPost = (post: Post) => {
@@ -146,9 +269,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         const updated = [post, ...withoutDup];
         // Sort newest first by updatedAt/createdAt to match backend behavior
         updated.sort((a: any, b: any) => {
-          const dateA = new Date((a as any).updatedAt || a.createdAt).getTime();
-          const dateB = new Date((b as any).updatedAt || b.createdAt).getTime();
-          return dateB - dateA;
+        return getSortTimeMs(b) - getSortTimeMs(a);
         });
         return updated;
       }
@@ -162,9 +283,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       });
 
       fromSameAuthor.sort((a: any, b: any) => {
-        const dateA = new Date(a.updatedAt || a.createdAt).getTime();
-        const dateB = new Date(b.updatedAt || b.createdAt).getTime();
-        return dateB - dateA;
+        return getSortTimeMs(b) - getSortTimeMs(a);
       });
 
       const keptSameAuthor = fromSameAuthor.slice(0, 2); // new post becomes #1, keep 2 older = 3 total
@@ -172,9 +291,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
       // Sort newest first by updatedAt/createdAt to match backend behavior
       updated.sort((a: any, b: any) => {
-        const dateA = new Date((a as any).updatedAt || a.createdAt).getTime();
-        const dateB = new Date((b as any).updatedAt || b.createdAt).getTime();
-        return dateB - dateA;
+        return getSortTimeMs(b) - getSortTimeMs(a);
       });
 
       return updated;
@@ -189,13 +306,20 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         String(post._id) === target ? { ...post, ...updates } : post
       );
       // Re-sort so edited / contributor-updated posts rise like the server feed (updatedAt)
-      return [...next].sort((a: any, b: any) => {
-        const da = new Date(a.updatedAt || a.createdAt).getTime();
-        const db = new Date(b.updatedAt || b.createdAt).getTime();
-        return db - da;
-      });
+      return sortPostsNewestFirst(next);
     });
   };
+
+  const setViewerSortBoost = useCallback(
+    (postId: string, boostMs?: number) => {
+      const id = String(postId || '').trim();
+      if (!id) return;
+      const ms = typeof boostMs === 'number' && Number.isFinite(boostMs) ? boostMs : Date.now();
+      viewerSortBoostRef.current[id] = ms;
+      setPosts((prev) => sortPostsNewestFirst(prev));
+    },
+    [sortPostsNewestFirst],
+  );
 
   const deletePost = (postId: string) => {
     if (!postId) {
@@ -331,7 +455,11 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     <PostContext.Provider
       value={{
         posts,
-        setPosts,
+        setPosts: (next) =>
+          setPosts((prev) => {
+            const computed = typeof next === 'function' ? (next as (p: Post[]) => Post[])(prev) : next;
+            return sortPostsNewestFirst(filterPostsForFeed(computed));
+          }),
         addPost,
         updatePost,
         deletePost,
@@ -339,7 +467,13 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         unlikePost,
         addComment,
         hiddenFeedPostIds,
+        hiddenFeedSources,
         hideFeedPostFromFeed,
+        hideFeedSourceFromFeed,
+        clearHiddenFeedPosts,
+        unhideFeedPostFromFeed,
+        unhideFeedSourceFromFeed,
+        setViewerSortBoost,
         filterPostsForFeed,
       }}
     >
