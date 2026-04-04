@@ -9,10 +9,10 @@ import {
   Dimensions,
   ScrollView,
   Modal,
-  Platform,
   StatusBar,
 } from 'react-native';
 import Sound from 'react-native-sound';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
@@ -59,6 +59,7 @@ interface GameState {
 
 const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) => {
   const { roomId, opponentId, isSpectator } = route.params || {};
+  const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { socket } = useSocket();
   const { deletePost, posts } = usePost();
@@ -717,10 +718,14 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     }
   };
 
+  const topInset = insets.top > 0 ? insets.top : StatusBar.currentHeight || 0;
+  /** Slightly tighter than full inset so the bar sits a bit higher (still clear of status / notch). */
+  const headerPaddingTop = Math.max(topInset - 6, 10);
+
   if (!gameLive) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
           <TouchableOpacity onPress={handleBack} style={styles.backButton} activeOpacity={0.7}>
             <Text style={styles.backArrow}>←</Text>
           </TouchableOpacity>
@@ -745,7 +750,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
         <TouchableOpacity onPress={handleBack} style={styles.backButton} activeOpacity={0.7}>
           <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
@@ -1024,13 +1029,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
+    paddingBottom: 6,
     paddingHorizontal: 15,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 8,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
     backgroundColor: COLORS.background,
-    minHeight: 50,
+    minHeight: 46,
   },
   backButton: {
     padding: 8,

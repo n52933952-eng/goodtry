@@ -93,19 +93,22 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
-  // Connect socket and link push notification services when user is available.
+  // Connect socket when we have a user id. Use `user?._id` only — not `[user]`.
+  // `updateUser` / `setUser` replace the user object often (following, profile); re-running
+  // connect on every new reference aborts a socket that is still handshaking (`connected === false`
+  // but manager still active), which shows as "online then offline" on the server.
   // Only connect when app is active (foreground). When backgrounded we disconnect so user is
   // offline and backend uses FCM for call notifications.
   useEffect(() => {
-    if (user?._id) {
-      // FCM is initialized in App.tsx, token is automatically sent
+    const uid = user?._id;
+    if (uid) {
       if (AppState.currentState === 'active') {
-        socketService.connect(user._id);
+        socketService.connect(uid);
       }
     } else {
       socketService.disconnect();
     }
-  }, [user]);
+  }, [user?._id]);
 
   // Presence: only treat true background as "left the app". `inactive` fires for volume UI, overlays, and
   // task-switcher transitions — emitting offline there makes friends see you flip offline/online (green dot flashing).

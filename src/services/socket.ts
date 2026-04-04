@@ -59,6 +59,12 @@ class SocketService {
         console.log('✅ Socket already connected');
         return;
       }
+      // Still in opening/reconnecting — do not disconnect or we abort the handshake and briefly
+      // go "offline" on the server (duplicate connect() from UserContext user object churn).
+      if (this.socket.active) {
+        console.log('⏳ Socket still connecting — skipping duplicate connect()');
+        return;
+      }
       // If socket exists but not connected, remove all listeners before reconnecting
       console.log('🔄 Socket exists but not connected - removing old listeners');
       this.socket.removeAllListeners();
