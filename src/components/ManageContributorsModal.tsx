@@ -156,9 +156,11 @@ const ManageContributorsModal: React.FC<Props> = ({
                           </Text>
                         </View>
                       )}
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.name, { color: colors.text }]}>{currentPost.postedBy.name}</Text>
-                        <Text style={[styles.sub, { color: colors.textGray }]}>
+                      <View style={styles.userInfo}>
+                        <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>
+                          {currentPost.postedBy.name}
+                        </Text>
+                        <Text style={[styles.sub, { color: colors.textGray }]} numberOfLines={1}>
                           @{currentPost.postedBy.username}
                         </Text>
                       </View>
@@ -187,13 +189,16 @@ const ManageContributorsModal: React.FC<Props> = ({
                               <Text style={styles.avatarTxt}>{contributorName[0]?.toUpperCase()}</Text>
                             </View>
                           )}
-                          <View style={{ flex: 1 }}>
-                            <Text style={[styles.name, { color: colors.text }]}>{contributorName}</Text>
-                            <Text style={[styles.sub, { color: colors.textGray }]}>
+                          <View style={styles.userInfo}>
+                            <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>
+                              {contributorName}
+                            </Text>
+                            <Text style={[styles.sub, { color: colors.textGray }]} numberOfLines={1}>
                               @{contributor?.username || '—'}
                             </Text>
                           </View>
                           <TouchableOpacity
+                            style={styles.rowAction}
                             onPress={() => handleRemove(contributorId, contributorName)}
                             disabled={removingId === contributorId}
                           >
@@ -268,6 +273,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     marginBottom: 8,
+    direction: 'ltr',
+  },
+  userInfo: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
+  },
+  rowAction: {
+    marginLeft: 10,
   },
   avatar: {
     width: 40,
@@ -286,13 +300,20 @@ const styles = StyleSheet.create({
   name: {
     fontSize: 15,
     fontWeight: '600',
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   sub: {
     fontSize: 13,
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   badge: {
     fontSize: 12,
     fontWeight: '700',
+    marginLeft: 10,
   },
 });
 

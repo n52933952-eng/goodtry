@@ -45,20 +45,20 @@ const darkTheme: ThemeColors = {
   cardText: '#FFFFFF', // White text on cards
 };
 
-// Light Theme (White)
+// Light Theme — slightly muted canvas so white / light surfaces read as cards
 const blueTheme: ThemeColors = {
   primary: '#1D9BF0', // Accent buttons (create, highlights)
-  background: '#F7F9FC', // App page background
-  backgroundLight: '#FFFFFF', // Header / section background
+  background: '#E4E9F0', // App page background (darker than before — cards pop)
+  backgroundLight: '#F6F8FB', // Headers, post shells, sections (off-white vs page)
   text: '#0F172A', // Main text on light backgrounds
   textGray: '#64748B', // Secondary text
-  border: '#E2E8F0', // Soft borders/dividers
+  border: '#D1D9E4', // Slightly stronger borders for separation
   error: '#E11D48',
   success: '#16A34A',
   warning: '#D97706',
   avatarBg: '#1D9BF0', // Keep avatars vibrant and visible
   buttonText: '#FFFFFF', // White text on primary colored buttons
-  cardBg: '#FFFFFF', // White cards
+  cardBg: '#FFFFFF', // Inner cards (weather, etc.) stay crisp on top of backgroundLight
   cardText: '#0F172A', // Dark text on cards
 };
 

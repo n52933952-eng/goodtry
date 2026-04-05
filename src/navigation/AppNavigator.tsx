@@ -20,6 +20,7 @@ import CreatePostScreen from '../screens/Post/CreatePostScreen';
 import PostDetailScreen from '../screens/Post/PostDetailScreen';
 import UserProfileScreen from '../screens/Profile/UserProfileScreen';
 import UpdateProfileScreen from '../screens/Profile/UpdateProfileScreen';
+import FollowListScreen from '../screens/Profile/FollowListScreen';
 import SearchScreen from '../screens/Search/SearchScreen';
 import NotificationsScreen from '../screens/Notifications/NotificationsScreen';
 import WeatherScreen from '../screens/Weather/WeatherScreen';
@@ -351,6 +352,7 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
           headerShown: false,
         }}
       />
+      <Stack.Screen name="FollowList" component={FollowListScreen} />
     </Stack.Navigator>
   );
 };

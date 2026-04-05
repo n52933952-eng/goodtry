@@ -195,13 +195,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       // Prefer backend-calculated follow state (works even if follower list is capped for scalability)
       // But also verify against UserContext to ensure consistency
       if (typeof data?.isFollowedByMe === 'boolean') {
-        // Use backend value, but UserContext useEffect will sync it if different
         setFollowing(data.isFollowedByMe);
       } else {
-        // Fallback: check both backend followers list and UserContext
-        const isFollowingFromBackend = data.followers?.includes(currentUser?._id);
-        // Prefer UserContext as source of truth (most up-to-date)
-        setFollowing(isFollowingFromContext || isFollowingFromBackend);
+        // Profile API omits full follower id lists; use context (login/follow actions) only
+        setFollowing(isFollowingFromContext);
       }
     } catch (error: any) {
       // Only show error if we're still viewing the same profile
@@ -580,18 +577,48 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   <Text style={[styles.statNumber, { color: colors.text }]}>{posts.length}</Text>
                   <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('posts')}</Text>
                 </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statNumber, { color: colors.text }]}>
-                    {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
-                  </Text>
-                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statNumber, { color: colors.text }]}>
-                    {profileUser.followingCount ?? (profileUser.following?.length || 0)}
-                  </Text>
-                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
-                </View>
+                {isOwnProfile ? (
+                  <TouchableOpacity
+                    style={styles.statItem}
+                    onPress={() => navigation.navigate('FollowList', { listType: 'followers' })}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('followers')}
+                  >
+                    <Text style={[styles.statNumber, { color: colors.text }]}>
+                      {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.statItem}>
+                    <Text style={[styles.statNumber, { color: colors.text }]}>
+                      {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
+                  </View>
+                )}
+                {isOwnProfile ? (
+                  <TouchableOpacity
+                    style={styles.statItem}
+                    onPress={() => navigation.navigate('FollowList', { listType: 'following' })}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('following')}
+                  >
+                    <Text style={[styles.statNumber, { color: colors.text }]}>
+                      {profileUser.followingCount ?? (profileUser.following?.length || 0)}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.statItem}>
+                    <Text style={[styles.statNumber, { color: colors.text }]}>
+                      {profileUser.followingCount ?? (profileUser.following?.length || 0)}
+                    </Text>
+                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
+                  </View>
+                )}
               </View>
             </View>
             <View

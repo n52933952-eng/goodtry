@@ -358,12 +358,15 @@ const styles = StyleSheet.create({
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    /** Keep avatar + text column + button in fixed LTR order even when app locale is RTL. */
+    direction: 'ltr',
   },
   userTapArea: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
     minWidth: 0,
+    direction: 'ltr',
   },
   avatar: {
     width: 50,
@@ -383,16 +386,24 @@ const styles = StyleSheet.create({
   },
   userInfo: {
     flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
   },
   userName: {
     fontSize: 16,
     fontWeight: 'bold',
     color: COLORS.text,
     marginBottom: 3,
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   userUsername: {
     fontSize: 14,
     color: COLORS.textGray,
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   followButton: {
     backgroundColor: COLORS.primary,

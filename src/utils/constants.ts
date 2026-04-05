@@ -35,6 +35,9 @@ export const ENDPOINTS = {
   GET_SUGGESTED_USERS: '/api/user/suggested',
   // Returns list of user objects (server-side limited), used by Messages search
   GET_FOLLOWING_USERS: '/api/user/following',
+  GET_FOLLOWERS_USERS: '/api/user/followers',
+  /** DELETE /api/user/follower/:id — remove someone from following you */
+  REMOVE_FOLLOWER: '/api/user/follower',
   // Backward compat name (some older screens may reference this)
   GET_FOLLOWING: '/api/user/following',
   

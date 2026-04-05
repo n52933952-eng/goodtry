@@ -113,11 +113,15 @@ const CollaboratorPicker: React.FC<Props> = ({ excludeUserIds, onSelectUser }) =
           </Text>
         </View>
       )}
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.name, { color: colors.text }]}>{u.name}</Text>
-        <Text style={[styles.sub, { color: colors.textGray }]}>@{u.username}</Text>
+      <View style={styles.userInfo}>
+        <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>
+          {u.name}
+        </Text>
+        <Text style={[styles.sub, { color: colors.textGray }]} numberOfLines={1}>
+          @{u.username}
+        </Text>
       </View>
-      <Text style={{ color: colors.primary }}>{t('add')}</Text>
+      <Text style={[styles.addLabel, { color: colors.primary }]}>{t('add')}</Text>
     </TouchableOpacity>
   );
 
@@ -206,6 +210,8 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     marginBottom: 8,
+    /** Avatar + names + Add stay LTR so Arabic display names align like English in RTL locale. */
+    direction: 'ltr',
   },
   avatar: {
     width: 40,
@@ -221,12 +227,27 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
   },
+  userInfo: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
+  },
   name: {
     fontSize: 15,
     fontWeight: '600',
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   sub: {
     fontSize: 13,
+    width: '100%',
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  addLabel: {
+    marginLeft: 10,
+    fontWeight: '600',
   },
 });
 

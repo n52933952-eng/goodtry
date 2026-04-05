@@ -28,6 +28,7 @@ import ManageContributorsModal from './ManageContributorsModal';
 import EditPostModal from './EditPostModal';
 import StoryAvatarRing from './StoryAvatarRing';
 import StoryOrProfileSheet from './StoryOrProfileSheet';
+import FootballMatchCard from './FootballMatchCard';
 import { navigateToMainStack } from '../utils/navigationHelpers';
 
 interface PostProps {
@@ -42,6 +43,10 @@ interface PostProps {
   storyRing?: { storyId: string; hasUnviewed: boolean } | null;
   /** Bumps on feed focus — restarts story ring fill animation */
   storyRingReplayKey?: number;
+  /** Post detail: show only this live match card (same id as comment navigation). */
+  footballFocusMatchId?: string;
+  /** Post detail / full-bleed: no side margins so the card spans the screen width (feed keeps inset). */
+  fullWidthCard?: boolean;
 }
 
 const Post: React.FC<PostProps> = ({
@@ -53,32 +58,62 @@ const Post: React.FC<PostProps> = ({
   onPostUpdated,
   storyRing,
   storyRingReplayKey = 0,
+  footballFocusMatchId,
+  fullWidthCard = false,
 }) => {
   const navigation = useNavigation<any>();
   
   // Helper function to navigate to PostDetail (ensures tab bar is visible)
-  const navigateToPostDetail = (postId: string) => {
-    // When navigating from UserProfileScreen, navigate within ProfileStack
-    // When navigating from Feed, navigate within FeedStack
+  const navigateToPostDetail = (postId: string, extra?: Record<string, unknown>) => {
+    const params = {
+      postId,
+      fromScreen,
+      userProfileParams,
+      ...extra,
+    };
     if (fromScreen === 'UserProfile') {
-      // Navigate to PostDetail within ProfileStack (tab bar will be visible)
-      navigation.navigate('PostDetail', {
-        postId,
-        fromScreen,
-        userProfileParams,
-      });
-    } else {
-      // Navigate through Feed tab (for Feed screen and other tab contexts)
-      navigation.navigate('Feed', { 
-        screen: 'PostDetail', 
-        params: { 
-          postId,
-          fromScreen, // Pass the source screen
-          userProfileParams, // Pass params for navigating back
-        } 
-      });
+      navigation.navigate('PostDetail', params);
+      return;
+    }
+    // Feed tab: Post lives in FeedStack (FeedScreen + PostDetail). Navigating via
+    // navigate('Feed', { screen: 'PostDetail', params }) from inside that stack can
+    // drop nested params (e.g. footballMatchId). Push PostDetail on the current stack when possible.
+    try {
+      const state = navigation.getState?.() as { routeNames?: string[]; routes?: { name: string }[] } | undefined;
+      const names =
+        state?.routeNames ?? state?.routes?.map((r) => r.name) ?? [];
+      if (names.includes('PostDetail')) {
+        navigation.navigate('PostDetail', params);
+        return;
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    navigation.navigate('Feed', {
+      screen: 'PostDetail',
+      params,
+    });
+  };
+
+  /** Football feed card: header/avatar open the Football tab; 💬 still opens this post for comments. */
+  const navigateToFootballTab = () => {
+    try {
+      let nav: any = navigation;
+      for (let i = 0; i < 5 && nav; i++) {
+        const state = nav.getState?.();
+        const names = state?.routeNames;
+        if (Array.isArray(names) && names.includes('Football')) {
+          nav.navigate('Football');
+          return;
+        }
+        nav = nav.getParent?.();
+      }
+      navigation.navigate('Football');
+    } catch (e) {
+      console.warn('[Post] navigateToFootballTab failed', e);
     }
   };
+
   const { user } = useUser();
   const {
     likePost,
@@ -160,6 +195,15 @@ const Post: React.FC<PostProps> = ({
   }, [contributorIdsNeedingHydration]);
 
   const [isLiking, setIsLiking] = useState(false);
+  /** Optimistic per-match like (football stacked cards) — key = footballMatchId */
+  const [matchLikeOverride, setMatchLikeOverride] = useState<
+    Record<string, { liked: boolean; count: number }>
+  >({});
+  const [footballMatchLikingId, setFootballMatchLikingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMatchLikeOverride({});
+  }, [post?._id]);
   const [isDeleting, setIsDeleting] = useState(false);
   const [youtubePlaying, setYoutubePlaying] = useState(true);
   // Local state for optimistic like updates (like web)
@@ -290,6 +334,82 @@ const Post: React.FC<PostProps> = ({
       socket.off('footballPageUpdate', handleFootballPageUpdate);
     };
   }, [isFootballPost, socket, fetchFootballMatches]);
+
+  const footballMatchesSource = useMemo(() => {
+    if (!isFootballPost) return [];
+    const arr =
+      footballMatches.length > 0
+        ? footballMatches
+        : post.liveMatches || post.matches || post.todayMatches || [];
+    return Array.isArray(arr) ? arr : [];
+  }, [isFootballPost, footballMatches, post.liveMatches, post.matches, post.todayMatches]);
+
+  const footballLiveMatches = useMemo(() => {
+    return footballMatchesSource.filter((m: any) => {
+      const u = String(m.fixture?.status?.short || m.fixture?.status?.long || m.status || '')
+        .trim()
+        .toUpperCase();
+      if (!u && m.fixture?.status?.elapsed != null) return true;
+      if (['FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO'].includes(u)) return false;
+      if (['LIVE', 'IN_PLAY', 'PAUSED', '1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(u)) return true;
+      const elapsed = m.fixture?.status?.elapsed;
+      if (elapsed != null && Number(elapsed) >= 0 && u !== 'NS' && u !== 'TBD') return true;
+      return false;
+    });
+  }, [footballMatchesSource]);
+
+  const footballLiveMatchesDisplayed = useMemo(() => {
+    if (!footballFocusMatchId) return footballLiveMatches;
+    const focus = String(footballFocusMatchId);
+    const filtered = footballLiveMatches.filter((m: any, index: number) => {
+      const fid =
+        m._id != null
+          ? String(m._id)
+          : m.fixture?.id != null
+            ? String(m.fixture.id)
+            : `idx-${index}`;
+      return fid === focus;
+    });
+    return filtered.length > 0 ? filtered : footballLiveMatches;
+  }, [footballLiveMatches, footballFocusMatchId]);
+
+  const showStackedFootballMatchActions =
+    isFootballPost && !footballLoading && footballLiveMatches.length > 0 && !disableNavigation;
+
+  /** Top-level comment count per footballMatchId, including all nested replies in those threads. */
+  const footballMatchReplyCounts = useMemo(() => {
+    if (!isFootballPost) return new Map<string, number>();
+    const all = Array.isArray(post.replies) ? post.replies : [];
+    const rootsByMatch = new Map<string, Set<string>>();
+    for (const r of all) {
+      if (r?.parentReplyId) continue;
+      const fid = String(r?.footballMatchId || '');
+      if (!fid) continue;
+      const id = r?._id != null ? String(r._id) : '';
+      if (!id) continue;
+      if (!rootsByMatch.has(fid)) rootsByMatch.set(fid, new Set());
+      rootsByMatch.get(fid)!.add(id);
+    }
+    const counts = new Map<string, number>();
+    for (const [fid, seedIds] of rootsByMatch) {
+      const inThread = new Set<string>(seedIds);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const r of all) {
+          const id = r?._id != null ? String(r._id) : '';
+          if (!id || inThread.has(id)) continue;
+          const p = r.parentReplyId != null ? String(r.parentReplyId) : '';
+          if (p && inThread.has(p)) {
+            inThread.add(id);
+            added = true;
+          }
+        }
+      }
+      counts.set(fid, inThread.size);
+    }
+    return counts;
+  }, [isFootballPost, post.replies]);
 
   // Handle chess post click - navigate to watch game
   const handleChessPostClick = () => {
@@ -492,6 +612,61 @@ const Post: React.FC<PostProps> = ({
     }
   };
 
+  const matchLikeFromServer = (fid: string) => {
+    const list = Array.isArray((post as any).footballMatchLikes) ? (post as any).footballMatchLikes : [];
+    const entry = list.find((e: any) => String(e?.footballMatchId) === String(fid));
+    const likes = Array.isArray(entry?.likes) ? entry.likes : [];
+    const uid = user?._id?.toString?.() ?? '';
+    const liked =
+      !!uid && likes.some((l: any) => String(l?._id ?? l) === uid);
+    return { liked, count: likes.length };
+  };
+
+  const getMatchLikeDisplay = (fid: string) => {
+    const o = matchLikeOverride[fid];
+    if (o) return o;
+    return matchLikeFromServer(fid);
+  };
+
+  const handleFootballMatchLike = async (fid: string) => {
+    if (!user) return;
+    const cur = matchLikeOverride[fid] ?? matchLikeFromServer(fid);
+    setMatchLikeOverride((prev) => ({
+      ...prev,
+      [fid]: {
+        liked: !cur.liked,
+        count: Math.max(0, cur.count + (cur.liked ? -1 : 1)),
+      },
+    }));
+    setFootballMatchLikingId(fid);
+    try {
+      const data: any = await apiService.put(`${ENDPOINTS.LIKE_POST}/${post._id}`, {
+        footballMatchId: fid,
+      });
+      if (Array.isArray(data?.footballMatchLikes)) {
+        updatePost(post._id, { footballMatchLikes: data.footballMatchLikes } as any);
+        onPostUpdated?.((prev: any) =>
+          prev ? { ...prev, footballMatchLikes: data.footballMatchLikes } : prev,
+        );
+      }
+      setMatchLikeOverride((prev) => {
+        const n = { ...prev };
+        delete n[fid];
+        return n;
+      });
+    } catch (error: any) {
+      console.error('Error liking match:', error);
+      setMatchLikeOverride((prev) => {
+        const n = { ...prev };
+        delete n[fid];
+        return n;
+      });
+      showToast('Error', error?.message || 'Failed to like', 'error');
+    } finally {
+      setFootballMatchLikingId((x) => (x === fid ? null : x));
+    }
+  };
+
   const handleDelete = () => {
     Alert.alert(
       'Delete Post',
@@ -647,6 +822,10 @@ const Post: React.FC<PostProps> = ({
         ? String(post.postedBy.username).trim()
         : '';
 
+    if (isFootballPost) {
+      navigateToFootballTab();
+      return;
+    }
     if (isChannelPost && post?._id) {
       navigateToPostDetail(post._id);
       return;
@@ -665,7 +844,14 @@ const Post: React.FC<PostProps> = ({
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+    <View
+      style={[
+        styles.container,
+        fullWidthCard && styles.containerFullWidth,
+        { backgroundColor: colors.backgroundLight },
+        showStackedFootballMatchActions && { paddingBottom: 0 },
+      ]}
+    >
       <View style={styles.header}>
         <StoryAvatarRing
           visible={showStoryRing}
@@ -710,22 +896,50 @@ const Post: React.FC<PostProps> = ({
         </TouchableOpacity>
         </StoryAvatarRing>
 
-        <View style={styles.headerInfo}>
-          <View style={styles.headerTop}>
-            <Text style={[styles.name, { color: colors.text }]}>{post.postedBy?.name || 'Unknown'}</Text>
-            {post.isCollaborative && (
-              <Text style={styles.collaborativeBadge}>👥</Text>
-            )}
-            <Text style={[styles.time, { color: colors.textGray }]}>
-              {`· ${formatTime(post.createdAt)}${
-                post.editedAt
-                  ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
-                  : ''
-              }`}
-            </Text>
+        {isFootballPost && !disableNavigation ? (
+          <TouchableOpacity
+            style={styles.headerInfo}
+            activeOpacity={0.7}
+            onPress={(e) => {
+              e.stopPropagation();
+              navigateToFootballTab();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Football Live"
+          >
+            <View style={styles.headerTop}>
+              <Text style={[styles.name, { color: colors.text }]}>{post.postedBy?.name || 'Unknown'}</Text>
+              {post.isCollaborative && (
+                <Text style={styles.collaborativeBadge}>👥</Text>
+              )}
+              <Text style={[styles.time, { color: colors.textGray }]}>
+                {`· ${formatTime(post.createdAt)}${
+                  post.editedAt
+                    ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
+                    : ''
+                }`}
+              </Text>
+            </View>
+            <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.headerInfo}>
+            <View style={styles.headerTop}>
+              <Text style={[styles.name, { color: colors.text }]}>{post.postedBy?.name || 'Unknown'}</Text>
+              {post.isCollaborative && (
+                <Text style={styles.collaborativeBadge}>👥</Text>
+              )}
+              <Text style={[styles.time, { color: colors.textGray }]}>
+                {`· ${formatTime(post.createdAt)}${
+                  post.editedAt
+                    ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
+                    : ''
+                }`}
+              </Text>
+            </View>
+            <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
           </View>
-          <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
-        </View>
+        )}
 
         <View style={styles.headerActions}>
           {showDismissFromFeed && (
@@ -1073,7 +1287,7 @@ const Post: React.FC<PostProps> = ({
       )}
 
       {isFootballPost && (
-        <View style={{ marginBottom: 10 }}>
+        <View style={{ marginBottom: showStackedFootballMatchActions ? 0 : 10 }}>
           {/* Check if we have matches from API fetch or post data */}
           {footballLoading ? (
             <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
@@ -1082,85 +1296,78 @@ const Post: React.FC<PostProps> = ({
                 Loading matches...
               </Text>
             </View>
-          ) : (footballMatches.length > 0 || (post.liveMatches && post.liveMatches.length > 0) || (post.matches && post.matches.length > 0) || (post.todayMatches && post.todayMatches.length > 0)) ? (
-            <>
-              {(() => {
-                const matchesArray = footballMatches.length > 0 ? footballMatches : (post.liveMatches || post.matches || post.todayMatches || []);
-                
-                // Filter to ONLY show live matches (no upcoming matches in feed)
-                const liveMatches = matchesArray.filter((m: any) => {
-                  const status = m.fixture?.status?.short || m.fixture?.status?.long || m.status;
-                  return status === 'LIVE' || status === 'IN_PLAY' || status === 'PAUSED' || m.fixture?.status?.elapsed !== null;
-                });
-                
-                console.log('⚽ [Post] Rendering LIVE matches only:', {
-                  totalMatches: matchesArray.length,
-                  liveMatchesCount: liveMatches.length,
-                  liveMatches: liveMatches
-                });
-                
-                const hasLive = liveMatches.length > 0;
-                
-                // If no live matches, show "No matches" message
-                if (!hasLive) {
+          ) : footballMatchesSource.length > 0 ? (
+            footballLiveMatches.length > 0 ? (
+              <View
+                style={[
+                  styles.footballFeedMatchListStrip,
+                  { backgroundColor: colors.background },
+                ]}
+              >
+                {footballLiveMatchesDisplayed.map((match: any, index: number) => {
+                  const fid =
+                    match._id != null
+                      ? String(match._id)
+                      : match.fixture?.id != null
+                        ? String(match.fixture.id)
+                        : `idx-${index}`;
+                  const matchLike = getMatchLikeDisplay(fid);
                   return (
-                    <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
-                      <Text style={[styles.footballTeam, { color: colors.cardText, textAlign: 'center' }]}>
-                        ⚽ No live matches right now
-                      </Text>
-                      <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', fontSize: 12 }]}>
-                        Check back during match hours
-                      </Text>
+                    <View
+                      key={fid}
+                      style={[
+                        styles.footballFeedUnit,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.backgroundLight,
+                        },
+                      ]}
+                    >
+                      <FootballMatchCard match={match} showStatus embedded />
+                      <View
+                        style={[styles.footballFeedUnitFooter, { borderTopColor: colors.border }]}
+                        pointerEvents="box-none"
+                      >
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            handleFootballMatchLike(fid);
+                          }}
+                          disabled={footballMatchLikingId === fid}
+                        >
+                          <Text style={styles.actionIcon}>{matchLike.liked ? '❤️' : '🤍'}</Text>
+                          <Text style={[styles.actionText, { color: colors.textGray }]}>{matchLike.count}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            if (!disableNavigation) {
+                              navigateToPostDetail(post._id, { footballMatchId: fid });
+                            }
+                          }}
+                        >
+                          <Text style={styles.actionIcon}>💬</Text>
+                          <Text style={[styles.actionText, { color: colors.textGray }]}>
+                            {footballMatchReplyCounts.get(fid) ?? 0}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   );
-                }
-                
-                return (
-                  <>
-                    <View style={[styles.footballCard, { backgroundColor: colors.error, marginBottom: 8 }]}>
-                      <Text style={[styles.footballTeam, { color: '#FFFFFF', fontWeight: 'bold', textAlign: 'center' }]}>
-                        🔴 LIVE MATCHES ({liveMatches.length})
-                      </Text>
-                    </View>
-                    {liveMatches.map((match: any, index: number) => {
-                      // Handle MongoDB match structure: teams, goals, fixture
-                      const homeTeam = match.teams?.home?.name || match.homeTeam?.name || match.homeTeam || 'Home';
-                      const awayTeam = match.teams?.away?.name || match.awayTeam?.name || match.awayTeam || 'Away';
-                      const homeScore = match.goals?.home ?? match.score?.fullTime?.home ?? match.homeScore ?? 0;
-                      const awayScore = match.goals?.away ?? match.score?.fullTime?.away ?? match.awayScore ?? 0;
-                      const status = match.fixture?.status?.short || match.fixture?.status?.long || match.status || 'NS';
-                      const minute = match.fixture?.status?.elapsed || match.minute || null;
-                      const isLive = status === 'LIVE' || status === 'IN_PLAY' || status === 'PAUSED' || match.fixture?.status?.elapsed !== null;
-                      
-                      return (
-                        <View key={index} style={[
-                          styles.footballCard, 
-                          { 
-                            backgroundColor: isLive ? colors.cardBg : colors.backgroundLight, 
-                            marginBottom: 8,
-                            borderLeftWidth: isLive ? 4 : 0,
-                            borderLeftColor: isLive ? colors.error : 'transparent'
-                          }
-                        ]}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <Text style={[styles.footballTeam, { color: colors.cardText, flex: 1 }]}>
-                              {homeTeam} vs {awayTeam}
-                            </Text>
-                            {isLive && <Text style={{ color: colors.error, fontSize: 12, fontWeight: 'bold', marginLeft: 8 }}>● LIVE</Text>}
-                          </View>
-                          <Text style={[styles.footballScore, { color: colors.cardText, fontSize: 24, fontWeight: 'bold' }]}>
-                            {homeScore} - {awayScore}
-                          </Text>
-                          <Text style={[styles.footballStatus, { color: colors.cardText }]}>
-                            {minute ? `${minute}' ` : ''}{status}
-                          </Text>
-                        </View>
-                      );
-                    })}
-                  </>
-                );
-              })()}
-            </>
+                })}
+              </View>
+            ) : (
+              <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
+                <Text style={[styles.footballTeam, { color: colors.cardText, textAlign: 'center' }]}>
+                  ⚽ No live matches right now
+                </Text>
+                <Text style={[styles.footballStatus, { color: colors.cardText, textAlign: 'center', fontSize: 12 }]}>
+                  Check back during match hours
+                </Text>
+              </View>
+            )
           ) : post.footballData ? (
             // Fallback to old single match format
             <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
@@ -1262,36 +1469,36 @@ const Post: React.FC<PostProps> = ({
         </TouchableOpacity>
       )}
 
-      <View style={styles.footer} pointerEvents="box-none">
-        <TouchableOpacity 
-          style={styles.actionButton} 
-          onPress={(e) => {
-            e.stopPropagation();
-            handleLike();
-          }}
-          disabled={isLiking}
-        >
-          <Text style={styles.actionIcon}>
-            {isLiked ? '❤️' : '🤍'}
-          </Text>
-          <Text style={styles.actionText}>{localLikesCount}</Text>
-        </TouchableOpacity>
+      {!showStackedFootballMatchActions && (
+        <View style={styles.footer} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              handleLike();
+            }}
+            disabled={isLiking}
+          >
+            <Text style={styles.actionIcon}>{isLiked ? '❤️' : '🤍'}</Text>
+            <Text style={[styles.actionText, { color: colors.textGray }]}>{localLikesCount}</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={styles.actionButton}
-          onPress={(e) => {
-            e.stopPropagation();
-            if (!disableNavigation) {
-              // Navigate to PostDetail
-              navigateToPostDetail(post._id);
-            }
-          }}
-        >
-          <Text style={styles.actionIcon}>💬</Text>
-          <Text style={styles.actionText}>{post.replies?.length || 0}</Text>
-        </TouchableOpacity>
-
-      </View>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              if (!disableNavigation) {
+                navigateToPostDetail(post._id);
+              }
+            }}
+          >
+            <Text style={styles.actionIcon}>💬</Text>
+            <Text style={[styles.actionText, { color: colors.textGray }]}>
+              {post.replies?.length || 0}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <AddContributorModal
         visible={addContribOpen}
@@ -1339,9 +1546,13 @@ const Post: React.FC<PostProps> = ({
 const styles = StyleSheet.create({
   container: {
     padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    marginHorizontal: 15,
+    borderRadius: 8,
     backgroundColor: COLORS.background,
+  },
+  containerFullWidth: {
+    marginHorizontal: 0,
+    borderRadius: 0,
   },
   header: {
     flexDirection: 'row',
@@ -1575,6 +1786,26 @@ const styles = StyleSheet.create({
   footballStatus: {
     fontSize: 14,
     color: COLORS.textGray,
+  },
+  footballFeedMatchListStrip: {
+    marginTop: 6,
+    marginBottom: 0,
+    paddingTop: 8,
+    paddingBottom: 0,
+    gap: 8,
+  },
+  footballFeedUnit: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  footballFeedUnitFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   footer: {
     flexDirection: 'row',

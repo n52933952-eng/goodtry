@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
-  Image,
   ScrollView,
   DeviceEventEmitter,
 } from 'react-native';
@@ -19,6 +18,7 @@ import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
+import FootballMatchCard from '../../components/FootballMatchCard';
 
 interface Match {
   _id: string;
@@ -236,122 +236,6 @@ const FootballScreen = () => {
         listContainer: {
           padding: 15,
         },
-        matchCard: {
-          backgroundColor: colors.backgroundLight,
-          borderRadius: 12,
-          padding: 15,
-          marginBottom: 12,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        leagueRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          marginBottom: 12,
-        },
-        leagueLogo: {
-          width: 20,
-          height: 20,
-          marginRight: 8,
-        },
-        leagueName: {
-          fontSize: 14,
-          fontWeight: '600',
-          color: colors.text,
-          flex: 1,
-        },
-        liveBadge: {
-          backgroundColor: '#EF4444',
-          paddingHorizontal: 8,
-          paddingVertical: 4,
-          borderRadius: 4,
-        },
-        liveBadgeText: {
-          color: '#FFFFFF',
-          fontSize: 11,
-          fontWeight: 'bold',
-        },
-        halfTimeBadge: {
-          backgroundColor: '#F97316',
-          paddingHorizontal: 8,
-          paddingVertical: 4,
-          borderRadius: 4,
-        },
-        halfTimeBadgeText: {
-          color: '#FFFFFF',
-          fontSize: 11,
-          fontWeight: 'bold',
-        },
-        matchContent: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          marginBottom: 12,
-        },
-        teamContainer: {
-          flex: 1,
-          alignItems: 'center',
-        },
-        teamName: {
-          fontSize: 15,
-          fontWeight: 'bold',
-          color: colors.text,
-          textAlign: 'center',
-          marginBottom: 8,
-        },
-        teamLogo: {
-          width: 30,
-          height: 30,
-        },
-        scoreContainer: {
-          alignItems: 'center',
-          marginHorizontal: 10,
-        },
-        scoreRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-        },
-        score: {
-          fontSize: 24,
-          fontWeight: 'bold',
-          color: colors.text,
-        },
-        scoreSeparator: {
-          fontSize: 18,
-          color: colors.textGray,
-          marginHorizontal: 4,
-        },
-        matchTime: {
-          fontSize: 14,
-          color: colors.textGray,
-          fontWeight: '500',
-        },
-        eventsContainer: {
-          marginTop: 12,
-          paddingTop: 12,
-          borderTopWidth: 1,
-          borderTopColor: colors.border,
-        },
-        eventsTitle: {
-          fontSize: 11,
-          color: colors.textGray,
-          fontWeight: '600',
-          marginBottom: 8,
-        },
-        eventRow: {
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 4,
-        },
-        eventText: {
-          fontSize: 12,
-          color: colors.text,
-          fontWeight: '500',
-        },
-        eventTeam: {
-          fontSize: 11,
-          color: colors.textGray,
-        },
         emptyContainer: {
           padding: 60,
           alignItems: 'center',
@@ -542,13 +426,6 @@ const FootballScreen = () => {
   };
 
   // Format time
-  const formatTime = (dateString: string) => {
-    if (!dateString) return 'TBD';
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return 'TBD';
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  };
-
   // Generate next 7 days for date selector
   const getNext7Days = () => {
     const days = [];
@@ -584,108 +461,6 @@ const FootballScreen = () => {
       return matchDate === selectedDate;
     });
   };
-
-  // Render match card
-  const renderMatchCard = (match: Match, showStatus = true) => (
-    <View style={styles.matchCard}>
-      {/* League info */}
-      <View style={styles.leagueRow}>
-        {match.league?.logo && (
-          <Image source={{ uri: match.league.logo }} style={styles.leagueLogo} />
-        )}
-        <Text style={styles.leagueName}>{match.league?.name || t('unknownLeague')}</Text>
-        {showStatus && match.fixture?.status?.short === '1H' && (
-          <View style={styles.liveBadge}>
-            <Text style={styles.liveBadgeText}>
-              🔴 LIVE {match.fixture?.status?.elapsed || 0}'
-            </Text>
-          </View>
-        )}
-        {showStatus && match.fixture?.status?.short === '2H' && (
-          <View style={styles.liveBadge}>
-            <Text style={styles.liveBadgeText}>
-              🔴 LIVE {match.fixture?.status?.elapsed || 0}'
-            </Text>
-          </View>
-        )}
-        {showStatus && match.fixture?.status?.short === 'HT' && (
-          <View style={styles.halfTimeBadge}>
-            <Text style={styles.halfTimeBadgeText}>{t('halfTime')}</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Teams and score */}
-      <View style={styles.matchContent}>
-        {/* Home team */}
-        <View style={styles.teamContainer}>
-          <Text style={styles.teamName} numberOfLines={2}>
-            {match.teams?.home?.name || t('tbd')}
-          </Text>
-          {match.teams?.home?.logo && (
-            <Image source={{ uri: match.teams.home.logo }} style={styles.teamLogo} />
-          )}
-        </View>
-
-        {/* Score or time */}
-        <View style={styles.scoreContainer}>
-          {match.fixture?.status?.short === 'NS' ? (
-            <Text style={styles.matchTime}>{formatTime(match.fixture?.date || '')}</Text>
-          ) : (
-            <View style={styles.scoreRow}>
-              <Text style={styles.score}>{match.goals?.home ?? 0}</Text>
-              <Text style={styles.scoreSeparator}>-</Text>
-              <Text style={styles.score}>{match.goals?.away ?? 0}</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Away team */}
-        <View style={styles.teamContainer}>
-          {match.teams?.away?.logo && (
-            <Image source={{ uri: match.teams.away.logo }} style={styles.teamLogo} />
-          )}
-          <Text style={styles.teamName} numberOfLines={2}>
-            {match.teams?.away?.name || t('tbd')}
-          </Text>
-        </View>
-      </View>
-
-      {/* Match events - ONLY for finished matches */}
-      {match.fixture?.status?.short === 'FT' && match.events && match.events.length > 0 && (
-        <View style={styles.eventsContainer}>
-          <Text style={styles.eventsTitle}>MATCH EVENTS</Text>
-          {match.events
-            .filter((e) => e.type === 'Goal')
-            .slice(0, 5)
-            .map((event, idx) => (
-              <View key={`goal-${idx}`} style={styles.eventRow}>
-                <Text style={styles.eventText}>
-                  ⚽ {event.player} ({event.time}')
-                </Text>
-                <Text style={styles.eventTeam}>{event.team}</Text>
-              </View>
-            ))}
-          {match.events
-            .filter((e) => e.type === 'Card')
-            .slice(0, 3)
-            .map((event, idx) => (
-              <View key={`card-${idx}`} style={styles.eventRow}>
-                <Text
-                  style={[
-                    styles.eventText,
-                    { color: event.detail === 'Red Card' ? '#EF4444' : '#FBBF24' },
-                  ]}
-                >
-                  {event.detail === 'Red Card' ? '🟥' : '🟨'} {event.player} ({event.time}')
-                </Text>
-                <Text style={styles.eventTeam}>{event.team}</Text>
-              </View>
-            ))}
-        </View>
-      )}
-    </View>
-  );
 
   // Get current matches based on active tab
   const getCurrentMatches = () => {
@@ -831,7 +606,9 @@ const FootballScreen = () => {
       {/* Matches list */}
       <FlatList
         data={getCurrentMatches()}
-        renderItem={({ item }) => renderMatchCard(item, activeTab !== 'upcoming')}
+        renderItem={({ item }) => (
+          <FootballMatchCard match={item} showStatus={activeTab !== 'upcoming'} />
+        )}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.listContainer}
         refreshControl={

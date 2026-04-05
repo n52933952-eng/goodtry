@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, ReactNode, useEffect } from 'react';
+import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type Language = 'en' | 'ar';
@@ -243,6 +243,14 @@ const translations: Record<Language, Record<string, string>> = {
     'remove': 'Remove',
     'unfollowed': 'Unfollowed',
     'failedToFollowUnfollow': 'Failed to follow/unfollow',
+    'failedToLoadList': 'Could not load this list. Try again.',
+    'confirmUnfollowUser': 'Stop following {{name}}?',
+    'removeFollowerTitle': 'Remove follower',
+    'removeFollowerMessage': '{{name}} will no longer follow you.',
+    'followerRemoved': 'Follower removed',
+    'failedToRemoveFollower': 'Could not remove follower',
+    'noFollowingYet': 'You are not following anyone yet.',
+    'noFollowersYet': 'No followers yet.',
     'pleaseEnterReply': 'Please enter a reply',
     'failedToPostReply': 'Failed to post reply',
     'mustBeLoggedInToLike': 'You must be logged in to like',
@@ -520,6 +528,14 @@ const translations: Record<Language, Record<string, string>> = {
     'remove': 'إزالة',
     'unfollowed': 'تم إلغاء المتابعة',
     'failedToFollowUnfollow': 'فشل المتابعة/إلغاء المتابعة',
+    'failedToLoadList': 'تعذر تحميل هذه القائمة. حاول مرة أخرى.',
+    'confirmUnfollowUser': 'إلغاء متابعة {{name}}؟',
+    'removeFollowerTitle': 'إزالة المتابع',
+    'removeFollowerMessage': 'لن يتابعك {{name}} بعد الآن.',
+    'followerRemoved': 'تمت إزالة المتابع',
+    'failedToRemoveFollower': 'تعذر إزالة المتابع',
+    'noFollowingYet': 'لا تتابع أحداً بعد.',
+    'noFollowersYet': 'لا يوجد متابعون بعد.',
     'pleaseEnterReply': 'يرجى إدخال رد',
     'failedToPostReply': 'فشل نشر الرد',
     'mustBeLoggedInToLike': 'يجب تسجيل الدخول للإعجاب',
@@ -600,18 +616,18 @@ export const LanguageProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const t = (key: string): string => {
+  const t = useCallback((key: string): string => {
     return translations[language][key] || key;
-  };
+  }, [language]);
 
-  const tn = (key: string, params?: Record<string, string | number>): string => {
-    const base = t(key);
+  const tn = useCallback((key: string, params?: Record<string, string | number>): string => {
+    const base = translations[language][key] || key;
     if (!params) return base;
     return Object.keys(params).reduce((acc, k) => {
       const v = params[k];
       return acc.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), String(v));
     }, base);
-  };
+  }, [language]);
 
   // Force isRTL to always be false to keep LTR layout
   // Text will be in Arabic when language is 'ar', but layout stays Left-to-Right

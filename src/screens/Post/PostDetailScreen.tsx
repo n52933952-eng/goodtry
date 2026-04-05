@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useRoute } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -26,7 +27,9 @@ import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
-  const { postId, fromScreen, userProfileParams } = route.params || {};
+  const navRoute = useRoute<any>();
+  const { postId, fromScreen, userProfileParams, footballMatchId } =
+    navRoute.params || route.params || {};
   const { user } = useUser();
   const { colors } = useTheme();
   const showToast = useShowToast();
@@ -83,6 +86,40 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     fetchPost();
   }, [postId]);
+
+  useEffect(() => {
+    setVisibleCommentsCount(COMMENTS_PER_PAGE);
+  }, [postId, footballMatchId]);
+
+  const scopedReplies = useMemo(() => {
+    const all = Array.isArray(post?.replies) ? post.replies : [];
+    if (!footballMatchId) return all;
+    const fid = String(footballMatchId);
+    const roots = all.filter(
+      (r: any) => !r?.parentReplyId && String(r?.footballMatchId || '') === fid,
+    );
+    const rootIds = new Set(roots.map((r: any) => String(r._id)));
+    const inThread = new Set<string>(rootIds);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const r of all) {
+        const id = String(r._id);
+        if (inThread.has(id)) continue;
+        const p = r.parentReplyId ? String(r.parentReplyId) : '';
+        if (p && inThread.has(p)) {
+          inThread.add(id);
+          added = true;
+        }
+      }
+    }
+    return all.filter((r: any) => inThread.has(String(r._id)));
+  }, [post?.replies, footballMatchId]);
+
+  const topLevelScopedReplies = useMemo(
+    () => scopedReplies.filter((r: any) => !r?.parentReplyId),
+    [scopedReplies],
+  );
 
   const fetchPost = async () => {
     try {
@@ -233,6 +270,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
       const data = await apiService.put(`${endpoint}/${postId}`, {
         text,
         ...(replyParentId ? { parentReplyId: replyParentId } : {}),
+        ...(!replyParentId && footballMatchId ? { footballMatchId: String(footballMatchId) } : {}),
       });
 
       // Backend returns the new reply object; append it to post.replies like the web does.
@@ -387,45 +425,45 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           disableNavigation={true}
           autoPlayMedia={true}
           onPostUpdated={setPost}
+          footballFocusMatchId={footballMatchId}
+          fullWidthCard
         />
 
         <View style={styles.repliesSection}>
-          <Text style={[styles.repliesTitle, { color: colors.text }]}>{t('comments')} ({post.replies?.length || 0})</Text>
+          <Text style={[styles.repliesTitle, { color: colors.text }]}>
+            {t('comments')} ({scopedReplies.length || 0})
+          </Text>
 
-          {(post.replies || [])
-            .filter((r: any) => !r?.parentReplyId)
-            .slice(0, visibleCommentsCount)
-            .map((reply: any) => (
-              <ThreadedComment
-                key={reply?._id?.toString?.() ?? String(reply?._id)}
-                reply={reply}
-                allReplies={post.replies || []}
-                postId={postId}
-                postOwnerId={post?.postedBy?._id?.toString?.() ?? String(post?.postedBy)}
-                currentUserId={user?._id?.toString?.() ?? String(user?._id)}
-                currentUserProfilePic={user?.profilePic}
-                onReplyPress={handleReplyPress}
-                onLikePress={handleLikeComment}
-                onDeletePress={handleDeleteComment}
-                onMentionPress={(username: string) => navigation.navigate('UserProfile', { username })}
-              />
-            ))}
-          
+          {topLevelScopedReplies.slice(0, visibleCommentsCount).map((reply: any) => (
+            <ThreadedComment
+              key={reply?._id?.toString?.() ?? String(reply?._id)}
+              reply={reply}
+              allReplies={scopedReplies}
+              postId={postId}
+              postOwnerId={post?.postedBy?._id?.toString?.() ?? String(post?.postedBy)}
+              currentUserId={user?._id?.toString?.() ?? String(user?._id)}
+              currentUserProfilePic={user?.profilePic}
+              onReplyPress={handleReplyPress}
+              onLikePress={handleLikeComment}
+              onDeletePress={handleDeleteComment}
+              onMentionPress={(username: string) => navigation.navigate('UserProfile', { username })}
+            />
+          ))}
+
           {/* Load More button */}
-          {post.replies && 
-           (post.replies.filter((r: any) => !r?.parentReplyId).length > visibleCommentsCount) && (
+          {topLevelScopedReplies.length > visibleCommentsCount && (
             <TouchableOpacity
               style={[styles.loadMoreButton, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
               onPress={() => {
-                setVisibleCommentsCount(prev => prev + COMMENTS_PER_PAGE);
-                // Scroll to show the newly loaded comments after a short delay
+                setVisibleCommentsCount((prev) => prev + COMMENTS_PER_PAGE);
                 setTimeout(() => {
                   scrollViewRef.current?.scrollToEnd({ animated: true });
                 }, 100);
               }}
             >
               <Text style={[styles.loadMoreText, { color: colors.primary }]}>
-                {t('loadMoreComments')} ({post.replies.filter((r: any) => !r?.parentReplyId).length - visibleCommentsCount} {t('remaining')})
+                {t('loadMoreComments')} ({topLevelScopedReplies.length - visibleCommentsCount}{' '}
+                {t('remaining')})
               </Text>
             </TouchableOpacity>
           )}
