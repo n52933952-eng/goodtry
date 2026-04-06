@@ -16,6 +16,7 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -55,6 +56,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deletingAccount, setDeletingAccount] = useState(false);
+  /** Full-screen profile photo (Instagram-style). */
+  const [profilePicPreviewOpen, setProfilePicPreviewOpen] = useState(false);
   
   // Pagination state
   const [loadingMore, setLoadingMore] = useState(false);
@@ -342,6 +345,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const OTHER_AVATAR = 78;
   const OTHER_RING = 84;
 
+  const openProfilePicPreview = () => {
+    if (profileUser?.profilePic) setProfilePicPreviewOpen(true);
+  };
+  const closeProfilePicPreview = () => setProfilePicPreviewOpen(false);
+
   const openMyStory = () => {
     if (!profileUser?._id) return;
     navigateToMainStack(navigation, 'StoryViewer', { userId: profileUser._id });
@@ -377,13 +385,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   const renderProfileAvatar = () => {
     if (isOwnProfile && !storyMeta?.active) {
-      return (
-        <View
-          style={[
-            styles.profileAvatarBig,
-            { width: PROFILE_AVATAR, height: PROFILE_AVATAR, borderRadius: PROFILE_AVATAR / 2 },
-          ]}
-        >
+      const inner = (
+        <>
           {profileUser.profilePic ? (
             <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
           ) : (
@@ -397,7 +400,25 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
             </View>
           )}
-        </View>
+        </>
+      );
+      return (
+        <TouchableOpacity
+          activeOpacity={0.88}
+          onPress={openProfilePicPreview}
+          disabled={!profileUser.profilePic}
+          accessibilityRole="button"
+          accessibilityLabel={profileUser.profilePic ? t('profilePhoto') : undefined}
+        >
+          <View
+            style={[
+              styles.profileAvatarBig,
+              { width: PROFILE_AVATAR, height: PROFILE_AVATAR, borderRadius: PROFILE_AVATAR / 2 },
+            ]}
+          >
+            {inner}
+          </View>
+        </TouchableOpacity>
       );
     }
 
@@ -411,10 +432,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           avatarSize={isOwnProfile ? PROFILE_AVATAR : OTHER_AVATAR}
           strokeWidth={2}
         >
-          <TouchableOpacity
-            activeOpacity={0.88}
+          <Pressable
             onPress={openMyStory}
+            onLongPress={profileUser.profilePic ? openProfilePicPreview : undefined}
+            delayLongPress={420}
             style={styles.profileAvatarTouchFill}
+            accessibilityRole="button"
+            accessibilityLabel={t('seeStory')}
           >
             {profileUser.profilePic ? (
               <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
@@ -429,27 +453,35 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
               </View>
             )}
-          </TouchableOpacity>
+          </Pressable>
         </StoryAvatarRing>
       );
     }
 
     const sz = OTHER_AVATAR;
     return (
-      <View
-        style={[
-          styles.profileAvatarOtherPlain,
-          { width: sz, height: sz, borderRadius: sz / 2, backgroundColor: colors.avatarBg },
-        ]}
+      <TouchableOpacity
+        activeOpacity={0.88}
+        onPress={openProfilePicPreview}
+        disabled={!profileUser.profilePic}
+        accessibilityRole="button"
+        accessibilityLabel={profileUser.profilePic ? t('profilePhoto') : undefined}
       >
-        {profileUser.profilePic ? (
-          <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
-        ) : (
-          <View style={[styles.profileAvatarImageFill, styles.avatarPlaceholder]}>
-            <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
-          </View>
-        )}
-      </View>
+        <View
+          style={[
+            styles.profileAvatarOtherPlain,
+            { width: sz, height: sz, borderRadius: sz / 2, backgroundColor: colors.avatarBg },
+          ]}
+        >
+          {profileUser.profilePic ? (
+            <Image source={{ uri: profileUser.profilePic }} style={styles.profileAvatarImageFill} />
+          ) : (
+            <View style={[styles.profileAvatarImageFill, styles.avatarPlaceholder]}>
+              <Text style={styles.profileAvatarLetter}>{profileUser.name?.[0]?.toUpperCase() || '?'}</Text>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
     );
   };
 
@@ -577,48 +609,50 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   <Text style={[styles.statNumber, { color: colors.text }]}>{posts.length}</Text>
                   <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('posts')}</Text>
                 </View>
-                {isOwnProfile ? (
-                  <TouchableOpacity
-                    style={styles.statItem}
-                    onPress={() => navigation.navigate('FollowList', { listType: 'followers' })}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('followers')}
-                  >
-                    <Text style={[styles.statNumber, { color: colors.text }]}>
-                      {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
-                    </Text>
-                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.statItem}>
-                    <Text style={[styles.statNumber, { color: colors.text }]}>
-                      {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
-                    </Text>
-                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
-                  </View>
-                )}
-                {isOwnProfile ? (
-                  <TouchableOpacity
-                    style={styles.statItem}
-                    onPress={() => navigation.navigate('FollowList', { listType: 'following' })}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('following')}
-                  >
-                    <Text style={[styles.statNumber, { color: colors.text }]}>
-                      {profileUser.followingCount ?? (profileUser.following?.length || 0)}
-                    </Text>
-                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.statItem}>
-                    <Text style={[styles.statNumber, { color: colors.text }]}>
-                      {profileUser.followingCount ?? (profileUser.following?.length || 0)}
-                    </Text>
-                    <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
-                  </View>
-                )}
+                <TouchableOpacity
+                  style={styles.statItem}
+                  onPress={() =>
+                    navigation.navigate('FollowList', {
+                      listType: 'followers',
+                      ...(isOwnProfile
+                        ? {}
+                        : {
+                            userId: profileUser._id,
+                            displayUsername: profileUser.username,
+                          }),
+                    })
+                  }
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('followers')}
+                >
+                  <Text style={[styles.statNumber, { color: colors.text }]}>
+                    {profileUser.followersCount ?? (profileUser.followers?.length || 0)}
+                  </Text>
+                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('followers')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.statItem}
+                  onPress={() =>
+                    navigation.navigate('FollowList', {
+                      listType: 'following',
+                      ...(isOwnProfile
+                        ? {}
+                        : {
+                            userId: profileUser._id,
+                            displayUsername: profileUser.username,
+                          }),
+                    })
+                  }
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('following')}
+                >
+                  <Text style={[styles.statNumber, { color: colors.text }]}>
+                    {profileUser.followingCount ?? (profileUser.following?.length || 0)}
+                  </Text>
+                  <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('following')}</Text>
+                </TouchableOpacity>
               </View>
             </View>
             <View
@@ -663,6 +697,61 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           </View>
         )}
       />
+
+      <Modal
+        visible={profilePicPreviewOpen && !!profileUser?.profilePic}
+        transparent
+        animationType="fade"
+        onRequestClose={closeProfilePicPreview}
+      >
+        <View style={styles.profilePicPreviewRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closeProfilePicPreview}
+            accessibilityRole="button"
+            accessibilityLabel={t('close')}
+          />
+          <View style={styles.profilePicPreviewImageWrap} pointerEvents="box-none">
+            {profileUser?.profilePic ? (
+              <Image
+                source={{ uri: profileUser.profilePic }}
+                style={[
+                  styles.profilePicPreviewImage,
+                  {
+                    width: Dimensions.get('window').width,
+                    height: Dimensions.get('window').height * 0.82,
+                  },
+                ]}
+                resizeMode="contain"
+                pointerEvents="none"
+              />
+            ) : null}
+          </View>
+          <TouchableOpacity
+            style={styles.profilePicPreviewClose}
+            onPress={closeProfilePicPreview}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            accessibilityRole="button"
+            accessibilityLabel={t('close')}
+          >
+            <Text style={styles.profilePicPreviewCloseText}>✕</Text>
+          </TouchableOpacity>
+          {storyMeta?.active && (
+            <TouchableOpacity
+              style={[styles.profilePicPreviewStoryBtn, { backgroundColor: colors.primary }]}
+              onPress={() => {
+                closeProfilePicPreview();
+                openMyStory();
+              }}
+              activeOpacity={0.9}
+            >
+              <Text style={[styles.profilePicPreviewStoryBtnText, { color: colors.buttonText }]}>
+                {t('seeStory')}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </Modal>
 
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
         <KeyboardAvoidingView style={styles.deleteOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -960,6 +1049,50 @@ const styles = StyleSheet.create({
   deleteBtnText: {
     fontSize: 14,
     fontWeight: '800',
+  },
+  profilePicPreviewRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.94)',
+    justifyContent: 'center',
+  },
+  profilePicPreviewImageWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profilePicPreviewImage: {
+    maxWidth: '100%',
+  },
+  profilePicPreviewClose: {
+    position: 'absolute',
+    top: 48,
+    right: 16,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  profilePicPreviewCloseText: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '600',
+    lineHeight: 24,
+  },
+  profilePicPreviewStoryBtn: {
+    position: 'absolute',
+    bottom: 42,
+    alignSelf: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 24,
+    zIndex: 10,
+  },
+  profilePicPreviewStoryBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
 

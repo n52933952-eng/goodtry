@@ -88,6 +88,7 @@ const translations: Record<Language, Record<string, string>> = {
     'updateProfile': 'Update Profile',
     'editProfile': 'Edit Profile',
     'noPostsYet': 'No posts yet',
+    'profilePhoto': 'Profile photo',
     
     // Post Detail Screen
     'comments': 'Comments',
@@ -373,6 +374,7 @@ const translations: Record<Language, Record<string, string>> = {
     'updateProfile': 'تحديث الملف الشخصي',
     'editProfile': 'تعديل الملف الشخصي',
     'noPostsYet': 'لا توجد منشورات بعد',
+    'profilePhoto': 'الصورة الشخصية',
     
     // Post Detail Screen
     'comments': 'التعليقات',

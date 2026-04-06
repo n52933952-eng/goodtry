@@ -305,7 +305,12 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
           headerLeft: () => (
             <TouchableOpacity 
               onPress={() => {
-                // Navigate to Feed (home) tab
+                // Nested screens (e.g. Follow list → another profile): go back in stack.
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                  return;
+                }
+                // Root profile in tab: go to Feed (home)
                 const rootNavigation = navigation.getParent()?.getParent();
                 if (rootNavigation) {
                   rootNavigation.navigate('MainTabs', { screen: 'Feed' });

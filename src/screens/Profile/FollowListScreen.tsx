@@ -24,7 +24,15 @@ type ListMode = 'following' | 'followers';
 
 interface FollowListScreenProps {
   navigation: any;
-  route: { params: { listType: ListMode } };
+  route: {
+    params: {
+      listType: ListMode;
+      /** When set, load this user's list (otherwise the logged-in user). */
+      userId?: string;
+      /** For header: @username */
+      displayUsername?: string;
+    };
+  };
 }
 
 function normalizeFollowListResponse(data: any): {
@@ -47,10 +55,18 @@ function normalizeFollowListResponse(data: any): {
 
 const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }) => {
   const listType = route.params?.listType ?? 'following';
+  const targetUserId =
+    route.params?.userId != null && String(route.params.userId).trim() !== ''
+      ? String(route.params.userId)
+      : null;
+  const displayUsername = route.params?.displayUsername;
   const { colors } = useTheme();
   const { user: currentUser, updateUser } = useUser();
   const { t, tn } = useLanguage();
   const showToast = useShowToast();
+
+  const isOwnList =
+    !targetUserId || (currentUser?._id != null && String(currentUser._id) === targetUserId);
 
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,8 +81,10 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
 
   const fetchPage = useCallback(
     async (skip: number, mode: 'replace' | 'append') => {
-      const qs = `limit=${PAGE_SIZE}&skip=${skip}`;
-      const data = await apiService.get(`${listPath}?${qs}`);
+      // Manual query string — avoid URLSearchParams (not fully implemented in some RN/Hermes builds).
+      const parts = [`limit=${PAGE_SIZE}`, `skip=${skip}`];
+      if (targetUserId) parts.push(`userId=${encodeURIComponent(targetUserId)}`);
+      const data = await apiService.get(`${listPath}?${parts.join('&')}`);
       const { users: page, hasMore: more, nextSkip } = normalizeFollowListResponse(data);
 
       if (mode === 'replace') {
@@ -89,20 +107,23 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
       nextSkipRef.current = nextSkip;
       return { page, hasMore: more, nextSkip };
     },
-    [listPath]
+    [listPath, targetUserId]
   );
 
   useLayoutEffect(() => {
+    const baseTitle = listType === 'following' ? t('following') : t('followers');
+    const title =
+      displayUsername && targetUserId && !isOwnList ? `@${displayUsername} · ${baseTitle}` : baseTitle;
     navigation.setOptions({
       headerShown: true,
-      title: listType === 'following' ? t('following') : t('followers'),
+      title,
       headerTitleAlign: 'center',
       headerStyle: { backgroundColor: colors.backgroundLight },
       headerTintColor: colors.text,
       headerTitleStyle: { color: colors.text, fontWeight: '700' as const, fontSize: 18 },
       headerRight: () => <View style={{ width: 44 }} />,
     });
-  }, [navigation, listType, t, colors.backgroundLight, colors.text]);
+  }, [navigation, listType, t, colors.backgroundLight, colors.text, displayUsername, targetUserId, isOwnList]);
 
   useFocusEffect(
     useCallback(() => {
@@ -127,7 +148,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
       return () => {
         cancelled = true;
       };
-    }, [fetchPage, showToast, t])
+    }, [fetchPage, showToast, t, targetUserId, listType])
   );
 
   const onRefresh = useCallback(async () => {
@@ -274,7 +295,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
             </Text>
           </View>
         </TouchableOpacity>
-        {listType === 'following' ? (
+        {isOwnList && listType === 'following' ? (
           <TouchableOpacity
             style={[styles.actionBtn, { borderColor: colors.border }]}
             onPress={() => handleUnfollow(item)}
@@ -286,7 +307,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
               <Text style={[styles.actionBtnText, { color: colors.text }]}>{t('unfollow')}</Text>
             )}
           </TouchableOpacity>
-        ) : (
+        ) : isOwnList && listType === 'followers' ? (
           <TouchableOpacity
             style={[styles.actionBtn, { borderColor: colors.error }]}
             onPress={() => handleRemoveFollower(item)}
@@ -298,7 +319,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
               <Text style={[styles.actionBtnText, { color: colors.error }]}>{t('remove')}</Text>
             )}
           </TouchableOpacity>
-        )}
+        ) : null}
       </View>
     );
   };

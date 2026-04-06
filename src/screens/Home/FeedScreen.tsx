@@ -344,77 +344,67 @@ const FeedScreen = ({ navigation }: any) => {
 
     setLoadingUsers(true);
     try {
-      // 1) Fetch busy chess users (from Redis) so we can filter them out (same as web)
+      // Busy users — use local arrays for filtering (state updates are async and would be stale here)
+      let chessBusy: string[] = [];
+      let cardBusy: string[] = [];
       try {
         const busyRes = await apiService.get('/api/user/busyChessUsers');
-        const ids: string[] = busyRes?.busyUserIds || [];
-        setBusyChessUserIds(ids.map((x) => x?.toString()).filter(Boolean));
-      } catch (e) {
-        // Best-effort; if it fails we still show online users.
+        chessBusy = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+        setBusyChessUserIds(chessBusy);
+      } catch {
         setBusyChessUserIds([]);
       }
-
-      // Fetch busy card users (from Redis) so we can filter them out
       try {
         const busyCardRes = await apiService.get('/api/user/busyCardUsers');
-        const cardIds: string[] = busyCardRes?.busyUserIds || [];
-        setBusyCardUserIds(cardIds.map((x) => x?.toString()).filter(Boolean));
-      } catch (e) {
-        // Best-effort; if it fails we still show online users.
+        cardBusy = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+        setBusyCardUserIds(cardBusy);
+      } catch {
         setBusyCardUserIds([]);
       }
 
-      // 2) Fetch fresh current user profile to get latest following/followers (same as web)
-      let freshUserData: any = user;
-      try {
-        freshUserData = await apiService.get(`/api/user/getUserPro/${user._id}`);
-      } catch (e) {
-        freshUserData = user;
-      }
+      /**
+       * getUserPro no longer returns following/followers id lists (scalable profile API).
+       * Use dedicated endpoints — same data the Follow lists use (up to 500 each, full user objects).
+       */
+      const [followingRaw, followersRaw] = await Promise.all([
+        apiService.get(ENDPOINTS.GET_FOLLOWING).catch(() => []),
+        apiService.get(ENDPOINTS.GET_FOLLOWERS_USERS).catch(() => []),
+      ]);
 
-      // 3) Build candidate list from following + followers (same as web)
-      const allConnectionIds = [
-        ...(freshUserData?.following || []),
-        ...(freshUserData?.followers || []),
-      ].filter((id: any) => {
-        const idStr = id?.toString().trim();
-        if (!idStr || idStr.length !== 24) return false;
-        return /^[0-9a-fA-F]{24}$/.test(idStr);
-      });
+      const normalizeList = (data: any): any[] => {
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.users)) return data.users;
+        return [];
+      };
 
-      const uniqueIds = [...new Set(allConnectionIds.map((id: any) => id.toString()))];
+      const followingList = normalizeList(followingRaw);
+      const followersList = normalizeList(followersRaw);
 
-      if (uniqueIds.length === 0) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      // 4) Fetch each user profile (parallel)
-      const userPromises = uniqueIds.map(async (userId) => {
-        try {
-          const userData = await apiService.get(`/api/user/getUserPro/${userId}`);
-          if (userData && userData._id) return userData;
-        } catch (err) {
-          console.warn(`⚠️ Error fetching user ${userId}:`, err);
+      const byId = new Map<string, AvailableUser>();
+      for (const u of [...followingList, ...followersList]) {
+        if (!u?._id) continue;
+        const id = u._id.toString();
+        if (!byId.has(id)) {
+          byId.set(id, {
+            _id: id,
+            name: u.name ?? '',
+            username: u.username ?? '',
+            profilePic: u.profilePic,
+          });
         }
-        return null;
-      });
+      }
 
-      const allUsers = (await Promise.all(userPromises)).filter((u) => u !== null);
+      const allUsers = Array.from(byId.values());
+      const currentUserIdStr = user._id?.toString();
 
-      // 5) Filter to only online users who are NOT busy, and not self (same as web)
-      const onlineAvailableUsers = allUsers.filter((u: any) => {
+      const onlineAvailableUsers = allUsers.filter((u) => {
         const userIdStr = u._id?.toString();
-        const currentUserIdStr = user._id?.toString();
         if (!userIdStr || !currentUserIdStr) return false;
-
-        const online = isUserOnline(userIdStr);
-
-        const isNotSelf = userIdStr !== currentUserIdStr;
-        const isNotBusyChess = !busyChessUserIds.some((busyId) => busyId?.toString() === userIdStr);
-        const isNotBusyCard = !busyCardUserIds.some((busyId) => busyId?.toString() === userIdStr);
-
-        return online && isNotSelf && isNotBusyChess && isNotBusyCard;
+        if (userIdStr === currentUserIdStr) return false;
+        if (!isUserOnline(userIdStr)) return false;
+        if (chessBusy.some((b) => b === userIdStr)) return false;
+        if (cardBusy.some((b) => b === userIdStr)) return false;
+        return true;
       });
 
       setAvailableUsers(onlineAvailableUsers);
