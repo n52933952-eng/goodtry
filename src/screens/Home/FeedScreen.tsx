@@ -32,7 +32,7 @@ interface AvailableUser {
 }
 
 const FeedScreen = ({ navigation }: any) => {
-  const { posts, setPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
+  const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount } = useSocket();
   const { t, isRTL } = useLanguage();
@@ -284,15 +284,8 @@ const FeedScreen = ({ navigation }: any) => {
       }
       
       if (loadMore) {
-        // Append new posts, filtering out duplicates with existing posts
-        setPosts((prevPosts) => {
-          const existingIds = new Set(prevPosts.map((p: any) => p._id?.toString?.() ?? String(p._id)));
-          const newUniquePosts = uniquePosts.filter((post: any) => {
-            const postId = post._id?.toString?.() ?? String(post._id);
-            return postId && !existingIds.has(postId);
-          });
-          return filterPostsForFeed([...prevPosts, ...newUniquePosts]);
-        });
+        // Append new posts without re-sorting so Football/Weather stay in their page-1 position
+        appendPosts(uniquePosts);
         setLoadingMore(false);
       } else {
         // Replace all posts (initial load or refresh)

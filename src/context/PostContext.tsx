@@ -37,6 +37,8 @@ export interface Post {
 interface PostContextType {
   posts: Post[];
   setPosts: (posts: Post[] | ((prev: Post[]) => Post[])) => void;
+  /** Append new posts at the end without re-sorting existing posts (used for load more). */
+  appendPosts: (newPosts: Post[]) => void;
   addPost: (post: Post) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
@@ -439,6 +441,18 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
+  const appendPosts = useCallback((newPosts: Post[]) => {
+    setPosts((prev) => {
+      const safeArray = Array.isArray(prev) ? prev : [];
+      const existingIds = new Set(safeArray.map((p) => String(p._id)));
+      const fresh = (Array.isArray(newPosts) ? newPosts : []).filter(
+        (p) => p?._id && !existingIds.has(String(p._id))
+      );
+      // Keep existing order intact, only append fresh posts at end
+      return filterPostsForFeed([...safeArray, ...fresh]);
+    });
+  }, [filterPostsForFeed]);
+
   const addComment = (postId: string, comment: any) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
@@ -460,6 +474,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
             const computed = typeof next === 'function' ? (next as (p: Post[]) => Post[])(prev) : next;
             return sortPostsNewestFirst(filterPostsForFeed(computed));
           }),
+        appendPosts,
         addPost,
         updatePost,
         deletePost,
