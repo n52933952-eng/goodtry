@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useUser } from '../context/UserContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
@@ -31,6 +32,7 @@ const ManageContributorsModal: React.FC<Props> = ({
   post,
   onContributorRemoved,
 }) => {
+  const { user } = useUser();
   const { t } = useLanguage();
   const { colors } = useTheme();
   const showToast = useShowToast();
@@ -41,6 +43,7 @@ const ManageContributorsModal: React.FC<Props> = ({
 
   const currentPost = populatedPost || post;
   const postOwnerId = currentPost?.postedBy?._id?.toString();
+  const currentUserId = user?._id?.toString();
   const contributors = currentPost?.contributors || [];
 
   const reset = useCallback(() => {
@@ -78,14 +81,17 @@ const ManageContributorsModal: React.FC<Props> = ({
     if (!visible) reset();
   }, [visible, reset]);
 
-  const handleRemove = (contributorId: string, contributorName: string) => {
+  const handleRemove = (contributorId: string, contributorName: string, opts?: { isSelf?: boolean }) => {
+    const isSelf = !!opts?.isSelf;
     Alert.alert(
-      t('removeContributor'),
-      t('removeContributorQuestion').replace('{{name}}', contributorName),
+      isSelf ? 'Leave collaborative post' : t('removeContributor'),
+      isSelf
+        ? 'Are you sure you want to leave this collaborative post?'
+        : t('removeContributorQuestion').replace('{{name}}', contributorName),
       [
         { text: t('cancel'), style: 'cancel' },
         {
-          text: t('remove'),
+          text: isSelf ? 'Leave' : t('remove'),
           style: 'destructive',
           onPress: async () => {
             if (!currentPost?._id) return;
@@ -121,6 +127,7 @@ const ManageContributorsModal: React.FC<Props> = ({
     const id = (c._id || c)?.toString();
     return id && id !== postOwnerId;
   });
+  const isOwner = !!postOwnerId && !!currentUserId && postOwnerId === currentUserId;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -177,6 +184,8 @@ const ManageContributorsModal: React.FC<Props> = ({
                     {nonOwner.map((contributor: any) => {
                       const contributorId = (contributor._id || contributor).toString();
                       const contributorName = contributor?.name || contributor?.username || '?';
+                      const isSelf = !!currentUserId && contributorId === currentUserId;
+                      const canRemove = isOwner || isSelf;
                       return (
                         <View
                           key={contributorId}
@@ -197,17 +206,19 @@ const ManageContributorsModal: React.FC<Props> = ({
                               @{contributor?.username || '—'}
                             </Text>
                           </View>
-                          <TouchableOpacity
-                            style={styles.rowAction}
-                            onPress={() => handleRemove(contributorId, contributorName)}
-                            disabled={removingId === contributorId}
-                          >
-                            {removingId === contributorId ? (
-                              <ActivityIndicator color={colors.error} />
-                            ) : (
-                              <Text style={{ color: colors.error }}>{t('remove')}</Text>
-                            )}
-                          </TouchableOpacity>
+                          {canRemove && (
+                            <TouchableOpacity
+                              style={styles.rowAction}
+                              onPress={() => handleRemove(contributorId, contributorName, { isSelf })}
+                              disabled={removingId === contributorId}
+                            >
+                              {removingId === contributorId ? (
+                                <ActivityIndicator color={colors.error} />
+                              ) : (
+                                <Text style={{ color: colors.error }}>{isSelf ? 'Leave' : t('remove')}</Text>
+                              )}
+                            </TouchableOpacity>
+                          )}
                         </View>
                       );
                     })}

@@ -569,7 +569,7 @@ const Post: React.FC<PostProps> = ({
   const canAddCollaborator =
     !!post.isCollaborative && (isOwner || !!isContributor);
   const canManageContributorsList =
-    isOwner &&
+    (isOwner || !!isContributor) &&
     !!post.isCollaborative &&
     Array.isArray(post.contributors) &&
     post.contributors.length > 0;

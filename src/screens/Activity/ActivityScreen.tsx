@@ -15,44 +15,51 @@ import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 
-const formatTimeAgo = (dateString: string) => {
-  try {
-    const date = new Date(dateString);
-    const now = new Date();
-    console.log(now)
-    
-    // Validate date
-    if (isNaN(date.getTime())) {
-      console.warn('⚠️ [formatTimeAgo] Invalid date:', dateString);
-      return 'unknown';
-    }
-    
-    const diffMs = now.getTime() - date.getTime();
-    
-    // Handle negative differences (future dates - shouldn't happen but handle gracefully)
-    if (diffMs < 0) {
-      console.warn('⚠️ [formatTimeAgo] Future date detected:', dateString);
-      return 'just now';
-    }
-    
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const diffWeeks = Math.floor(diffDays / 7);
-    const diffMonths = Math.floor(diffDays / 30);
-
-    if (diffMins < 1)       return t('justNow');
-    if (diffMins < 60) return `${diffMins}m ${t('ago')}`;
-    if (diffHours < 24) return `${diffHours}h ${t('ago')}`;
-    if (diffDays < 7) return `${diffDays}d ${t('ago')}`;
-    if (diffWeeks < 4) return `${diffWeeks}w ${t('ago')}`;
-    if (diffMonths < 12) return `${diffMonths}mo ${t('ago')}`;
-    return date.toLocaleDateString();
-  } catch (error) {
-    console.error('❌ [formatTimeAgo] Error formatting date:', error, dateString);
-    return 'unknown';
+function parseActivityCreatedAt(value: unknown): Date | null {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
   }
-};
+  if (typeof value === 'string') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === 'object' && value !== null && '$date' in (value as object)) {
+    const d = new Date((value as { $date: string | number }).$date);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+function formatTimeAgo(
+  dateInput: string | Date | undefined,
+  t: (key: string) => string
+): string {
+  const date = parseActivityCreatedAt(dateInput);
+  if (!date) {
+    return t('unknown');
+  }
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  if (diffMs < 0) {
+    return t('justNow');
+  }
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffWeeks = Math.floor(diffDays / 7);
+  const diffMonths = Math.floor(diffDays / 30);
+
+  if (diffMins < 1) return t('justNow');
+  if (diffMins < 60) return `${diffMins}m ${t('ago')}`;
+  if (diffHours < 24) return `${diffHours}h ${t('ago')}`;
+  if (diffDays < 7) return `${diffDays}d ${t('ago')}`;
+  if (diffWeeks < 4) return `${diffWeeks}w ${t('ago')}`;
+  if (diffMonths < 12) return `${diffMonths}mo ${t('ago')}`;
+  return date.toLocaleDateString();
+}
 
 interface ActivityScreenProps {
   navigation: any;
@@ -90,9 +97,16 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  /** Re-render periodically so "X ago" matches wall clock */
+  const [relativeTimeTick, setRelativeTimeTick] = useState(0);
 
   useEffect(() => {
     fetchActivities();
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setRelativeTimeTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
   }, []);
 
   // Listen for new activities
@@ -257,7 +271,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
         <View style={styles.textContainer}>
           <Text style={styles.activityText}>{getActivityText(item)}</Text>
           <Text style={styles.activityTime}>
-            {formatTimeAgo(item.createdAt)}
+            {formatTimeAgo(item.createdAt, t)}
           </Text>
         </View>
       </View>
@@ -287,6 +301,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
 
       <FlatList
         data={activities}
+        extraData={relativeTimeTick}
         renderItem={renderActivity}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.listContainer}
