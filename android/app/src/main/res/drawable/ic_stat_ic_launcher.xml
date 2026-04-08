@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- Hexagon OUTLINE only: outer hex filled white, then inner hex punched black -->
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M50,4 L91,27 L91,73 L50,96 L9,73 L9,27 Z" />
+    <path android:fillColor="#FF000000"
+          android:pathData="M50,14 L84,33 L84,67 L50,86 L16,67 L16,33 Z" />
+
+    <!-- 4 diagonal lines (thin white bars) -->
+    <!-- top-left (9,27) to bottom-right (91,73) -->
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M7,23 L13,22 L93,74 L87,77 Z" />
+    <!-- top-right (91,27) to bottom-left (9,73) -->
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M93,23 L87,22 L7,74 L13,77 Z" />
+    <!-- top (50,4) to bottom (50,96) vertical -->
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M47,6 L53,6 L53,94 L47,94 Z" />
+
+    <!-- Re-punch black over diagonal line intersections to keep inner area dark -->
+    <path android:fillColor="#FF000000"
+          android:pathData="M50,14 L84,33 L84,67 L50,86 L16,67 L16,33 Z" />
+
+    <!-- 6 vertex node dots (white filled circles) -->
+    <path android:fillColor="#FFFFFFFF" android:pathData="M44.5,4 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M85.5,27 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M85.5,73 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M44.5,96 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3.5,73 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M3.5,27 a5.5,5.5,0,1,0,11,0 a5.5,5.5,0,1,0,-11,0" />
+
+    <!-- Diagonal lines again ON TOP of the repunch so they show inside -->
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M7,23 L13,22 L93,74 L87,77 Z" />
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M93,23 L87,22 L7,74 L13,77 Z" />
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M47,6 L53,6 L53,94 L47,94 Z" />
+
+    <!-- Center ring: white ring + black hole -->
+    <path android:fillColor="#FFFFFFFF" android:pathData="M42,50 a8,8,0,1,0,16,0 a8,8,0,1,0,-16,0" />
+    <path android:fillColor="#FF000000" android:pathData="M46,50 a4,4,0,1,0,8,0 a4,4,0,1,0,-8,0" />
+
+</vector>

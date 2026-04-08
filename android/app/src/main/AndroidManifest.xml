@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     
@@ -45,6 +46,16 @@
       android:theme="@style/AppTheme"
       android:supportsRtl="false"
       android:hardwareAccelerated="true">
+
+      <!-- FCM: use white silhouette drawable for tray/status icon (not launcher). Without this, "notification"
+           payload pushes use @mipmap/ic_launcher and look like a blob. -->
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_icon"
+        android:resource="@drawable/ic_stat_ic_launcher" />
+      <meta-data
+        android:name="com.google.firebase.messaging.default_notification_color"
+        android:resource="@color/notification_color"
+        tools:replace="android:resource" />
       
       <activity
         android:name=".MainActivity"

@@ -3,4 +3,6 @@
     <!-- Match default in-app dark theme so push transitions don’t flash white/light behind cards -->
     <color name="app_window_background">#000000</color>
     <color name="splash_background_solid">#E8EAED</color>
+    <!-- FCM default notification accent (Android 5+); icon itself is white silhouette -->
+    <color name="notification_color">#FF0D9488</color>
 </resources>
