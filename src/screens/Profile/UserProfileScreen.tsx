@@ -85,17 +85,23 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when resolved username changes
   }, [username]);
 
-  // Update following state immediately from UserContext when profile user or currentUser changes
-  // This ensures the button shows correct state even before backend response
+  // Keep follow button in sync when user follows/unfollows from another screen.
+  // BUT: if the API explicitly says isFollowedByMe=false (e.g. we were removed as a follower)
+  // while local context still thinks we're following, trust the API.
   useEffect(() => {
     if (profileUser && currentUser) {
       const profileUserId = profileUser._id?.toString();
       const isFollowingFromContext = (currentUser.following || []).some(
         (id: any) => id?.toString() === profileUserId
       );
-      setFollowing(isFollowingFromContext);
+      // API says not following but local state says following → we were removed; trust API
+      if (profileUser.isFollowedByMe === false && isFollowingFromContext) {
+        setFollowing(false);
+      } else {
+        setFollowing(isFollowingFromContext);
+      }
     }
-  }, [profileUser?._id, currentUser?.following]);
+  }, [profileUser?._id, profileUser?.isFollowedByMe, currentUser?.following]);
 
   useEffect(() => {
     if (!profileUser?._id) {

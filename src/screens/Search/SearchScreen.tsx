@@ -165,6 +165,12 @@ const SearchScreen = ({ navigation }: any) => {
 
     if (updatingUserIds[targetId]) return;
 
+    // Prefer isFollowedByMe from API (accurate) over stale followingSet
+    const isCurrentlyFollowing =
+      targetUser.isFollowedByMe !== undefined
+        ? targetUser.isFollowedByMe
+        : followingSet.has(targetId);
+
     setUpdatingUserIds((prev) => ({ ...prev, [targetId]: true }));
     try {
       const data = await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${targetId}`);
@@ -174,15 +180,24 @@ const SearchScreen = ({ navigation }: any) => {
         return;
       }
 
-      const isCurrentlyFollowing = followingSet.has(targetId);
+      const newFollowState = !isCurrentlyFollowing;
+
+      // Update isFollowedByMe on the item in both lists so re-renders are accurate
+      const updateList = (arr: any[]) =>
+        arr.map((u) =>
+          u?._id?.toString() === targetId ? { ...u, isFollowedByMe: newFollowState } : u
+        );
+      setSearchResults((prev) => updateList(prev));
+      setSuggestedUsers((prev) => updateList(prev));
+
       const nextFollowing = isCurrentlyFollowing
         ? (currentUser.following || []).filter((id: any) => id?.toString() !== targetId)
         : [...(currentUser.following || []), targetId];
 
       updateUser({ following: nextFollowing as any });
 
-      // Web removes user from suggestions immediately when newly followed
-      if (!isCurrentlyFollowing) {
+      // Remove from suggestions when newly followed
+      if (newFollowState) {
         setSuggestedUsers((prev) => prev.filter((u) => u?._id?.toString() !== targetId));
       }
 
@@ -203,7 +218,11 @@ const SearchScreen = ({ navigation }: any) => {
   const renderUser = ({ item }: { item: any }) => {
     const userId = item?._id?.toString() || '';
     const isUpdating = !!(userId && updatingUserIds[userId]);
-    const isFollowing = userId ? followingSet.has(userId) : false;
+    // Prefer isFollowedByMe from API (set at fetch time and updated on toggle)
+    // Fall back to stale followingSet only when field is absent
+    const isFollowing = userId
+      ? (item.isFollowedByMe !== undefined ? item.isFollowedByMe : followingSet.has(userId))
+      : false;
 
     return (
       <View style={[styles.userItem, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
@@ -283,9 +302,9 @@ const SearchScreen = ({ navigation }: any) => {
           renderItem={renderUser}
           keyExtractor={(item) => item._id}
           ListEmptyComponent={
-            !searchLoading && (
+            !searchLoading ? (
               <Text style={[styles.emptyText, { color: colors.textGray }]}>No users found</Text>
-            )
+            ) : null
           }
         />
       ) : (

@@ -36,7 +36,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { addPost, updatePost, deletePost } = usePost();
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
-  const [cardChallenges, setCardChallenges] = useState<any[]>([]);
+  const [cardChallenges,  setCardChallenges]  = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);

@@ -419,8 +419,6 @@ const FeedScreen = ({ navigation }: any) => {
     fetchAvailableUsers();
   };
 
-
-
   const handleSendChallenge = (opponent: AvailableUser) => {
     if (!socket?.isSocketConnected?.()) {
       showToast('Error', 'Not connected — wait a moment and try again', 'error');

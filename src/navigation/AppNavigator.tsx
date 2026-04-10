@@ -449,7 +449,7 @@ const AppNavigator = () => {
   const [navReady, setNavReady] = useState(false);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
   const pendingChessAcceptNavRef = useRef<any>(null);
-  const pendingCardAcceptNavRef = useRef<any>(null);
+  const pendingCardAcceptNavRef  = useRef<any>(null);
   const lastNavigateToCallRef = useRef<{ callerId: string; ts: number } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x)
   const lastIncomingOfferSdpRef = useRef<string | undefined>(undefined); // New offer SDP = new call session (same caller after decline)
   const prevIsReceivingRef = useRef(false);
@@ -774,15 +774,13 @@ const AppNavigator = () => {
     if (!socket || !user?._id) return;
 
     const goChess = (data: any) => tryNavigateChessAccept(data);
-    const goCard = (data: any) => tryNavigateCardAccept(data);
+    const goCard  = (data: any) => tryNavigateCardAccept(data);
 
-    // CRITICAL: SocketService may recreate the underlying Socket.IO instance on reconnect.
-    // When that happens, previous `.on(...)` handlers are lost. Re-bind via socketReadyListener.
     const bindAcceptListeners = () => {
       socket.off('acceptChessChallenge', goChess);
-      socket.off('acceptCardChallenge', goCard);
-      socket.on('acceptChessChallenge', goChess);
-      socket.on('acceptCardChallenge', goCard);
+      socket.off('acceptCardChallenge',  goCard);
+      socket.on('acceptChessChallenge',  goChess);
+      socket.on('acceptCardChallenge',   goCard);
     };
 
     bindAcceptListeners();
@@ -790,7 +788,7 @@ const AppNavigator = () => {
     return () => {
       removeReady?.();
       socket.off('acceptChessChallenge', goChess);
-      socket.off('acceptCardChallenge', goCard);
+      socket.off('acceptCardChallenge',  goCard);
     };
   }, [socket, user?._id, tryNavigateChessAccept, tryNavigateCardAccept]);
 

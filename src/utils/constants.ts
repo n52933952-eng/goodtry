@@ -6,6 +6,12 @@ export const API_URL = __DEV__
 export const SOCKET_URL = API_URL;
 
 /**
+ * Web app origin (Vite SPA) — must match API cookie domain so the WebView is logged in.
+ * Same host as API_URL in your current deploy; change if you split frontend to another domain.
+ */
+export const WEB_APP_URL = API_URL.replace(/\/$/, '');
+
+/**
  * Same value as backend `GOOGLE_WEB_CLIENT_ID`.
  * Firebase Console → Authentication → Sign-in method → Google → Web client ID
  * (also add your Android app SHA-1 to Firebase for release/debug builds.)
