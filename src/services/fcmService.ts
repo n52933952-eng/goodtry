@@ -218,9 +218,9 @@ class FCMService {
         return;
       }
 
-      if (data?.type === 'message') {
-        // Do NOT pop an Alert in foreground — it feels like a "ring" when user returns to the app.
-        // Instead, let chat screens refresh quietly (ChatScreen listens to AppState active and refetches).
+      if (data?.type === 'message' || data?.type === 'group_message') {
+        // Do NOT pop an Alert in foreground — socket handles real-time UI.
+        // Queue delivery ack and emit event so ChatScreen can refresh if needed.
         await queueDeliveryAckFromFcm(data);
         DeviceEventEmitter.emit('MessageFromFCM', { data, remoteMessage });
         return;

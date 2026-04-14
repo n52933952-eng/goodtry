@@ -466,16 +466,76 @@ const MessagesScreen = ({ navigation }: any) => {
     return date.toLocaleDateString();
   };
 
-  const renderConversation = ({ item }: { item: any }) => {
-    const otherUser = getOtherUser(item);
-    if (!otherUser) return null;
+  // Handle group socket events
+  const handleGroupCreated = React.useCallback((conv: any) => {
+    setConversations((prev) => {
+      if (prev.some((c) => c._id?.toString() === conv._id?.toString())) return prev;
+      return [conv, ...prev];
+    });
+  }, []);
 
-    const otherUserData = typeof otherUser === 'string' ? null : otherUser;
-    const otherUserId = typeof otherUser === 'string' ? otherUser : otherUser?._id;
+  const handleGroupMemberLeft = React.useCallback((data: any) => {
+    const myId = user?._id?.toString();
+    if (data?.userId?.toString() === myId) {
+      setConversations((prev) => prev.filter((c) => c._id?.toString() !== data.conversationId?.toString()));
+    }
+  }, [user?._id]);
+
+  const handleRemovedFromGroup = React.useCallback((data: any) => {
+    setConversations((prev) => prev.filter((c) => c._id?.toString() !== data.conversationId?.toString()));
+  }, []);
+
+  // Bind group socket events
+  useEffect(() => {
+    if (!socket || !user?._id) return;
+    const bind = () => {
+      socket.off('groupCreated', handleGroupCreated);
+      socket.off('groupMemberLeft', handleGroupMemberLeft);
+      socket.off('removedFromGroup', handleRemovedFromGroup);
+      socket.on('groupCreated', handleGroupCreated);
+      socket.on('groupMemberLeft', handleGroupMemberLeft);
+      socket.on('removedFromGroup', handleRemovedFromGroup);
+    };
+    bind();
+    const r1 = socket.addSocketReadyListener?.(bind);
+    const r2 = socket.addConnectListener?.(bind);
+    return () => {
+      r1?.(); r2?.();
+      socket.off('groupCreated', handleGroupCreated);
+      socket.off('groupMemberLeft', handleGroupMemberLeft);
+      socket.off('removedFromGroup', handleRemovedFromGroup);
+    };
+  }, [socket, user?._id, handleGroupCreated, handleGroupMemberLeft, handleRemovedFromGroup]);
+
+  const renderConversation = ({ item }: { item: any }) => {
+    const isGroupConv = !!item.isGroup;
+    const otherUser = isGroupConv ? null : getOtherUser(item);
+    if (!isGroupConv && !otherUser) return null;
+
+    const otherUserData = (!isGroupConv && typeof otherUser !== 'string') ? otherUser : null;
+    const otherUserId = (!isGroupConv && otherUser) ? (typeof otherUser === 'string' ? otherUser : otherUser?._id) : null;
     const unreadCount = item.unreadCount || 0;
-    const isOnline = otherUserId ? isUserOnline(otherUserId) : false;
+    const isOnline = (!isGroupConv && otherUserId) ? isUserOnline(otherUserId) : false;
 
     const confirmDeleteConversation = () => {
+      if (isGroupConv) {
+        Alert.alert('Leave Group', `Leave "${item.groupName || 'group'}"?`, [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Leave',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await apiService.post(`${ENDPOINTS.LEAVE_GROUP}/${item._id}/leave`, {});
+                setConversations((prev) => prev.filter((c) => c._id?.toString() !== item._id?.toString()));
+              } catch (e: any) {
+                Alert.alert('Error', e?.message || 'Failed to leave group');
+              }
+            },
+          },
+        ]);
+        return;
+      }
       Alert.alert(
         t('deleteConversationQuestion'),
         t('deleteConversationWarning'),
@@ -500,54 +560,68 @@ const MessagesScreen = ({ navigation }: any) => {
       );
     };
 
+    const displayName = isGroupConv
+      ? (item.groupName || 'Group')
+      : (otherUserData?.name || t('unknown'));
+
     return (
       <TouchableOpacity
         style={[styles.conversationItem, { borderBottomColor: colors.border }]}
         onPress={() => navigation.navigate('ChatScreen', { 
           conversationId: item._id,
-          otherUser: otherUserData 
+          otherUser: isGroupConv ? null : otherUserData,
+          isGroup: isGroupConv,
+          groupName: isGroupConv ? item.groupName : undefined,
+          conversation: item,
         })}
         onLongPress={confirmDeleteConversation}
       >
         <View style={styles.avatarContainer}>
-          {(() => {
-            const uid = otherUserId?.toString?.() ?? String(otherUserId);
-            const ring = storyByUserId[uid];
-            const showRing = !!ring?.storyId;
-            return (
-              <StoryAvatarRing
-                visible={showRing}
-                showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
-                replayKey={storyRingReplayKey}
-                ringOuterSize={LIST_RING_OUTER}
-                avatarSize={LIST_AVATAR}
-                strokeWidth={LIST_RING_STROKE}
-              >
-                <TouchableOpacity
-                  activeOpacity={0.7}
-                  onPress={() => onMessagingAvatarPress(uid, otherUserData)}
+          {isGroupConv ? (
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: '#1a4a8a' }]}>
+              <Text style={[styles.avatarText, { fontSize: 22 }]}>👥</Text>
+            </View>
+          ) : (
+            (() => {
+              const uid = otherUserId?.toString?.() ?? String(otherUserId);
+              const ring = storyByUserId[uid];
+              const showRing = !!ring?.storyId;
+              return (
+                <StoryAvatarRing
+                  visible={showRing}
+                  showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
+                  replayKey={storyRingReplayKey}
+                  ringOuterSize={LIST_RING_OUTER}
+                  avatarSize={LIST_AVATAR}
+                  strokeWidth={LIST_RING_STROKE}
                 >
-                  {otherUserData?.profilePic ? (
-                    <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
-                  ) : (
-                    <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                      <Text style={styles.avatarText}>
-                        {otherUserData?.name?.[0]?.toUpperCase() || '?'}
-                      </Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              </StoryAvatarRing>
-            );
-          })()}
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() => onMessagingAvatarPress(uid, otherUserData)}
+                  >
+                    {otherUserData?.profilePic ? (
+                      <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
+                    ) : (
+                      <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                        <Text style={styles.avatarText}>
+                          {otherUserData?.name?.[0]?.toUpperCase() || '?'}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </StoryAvatarRing>
+              );
+            })()
+          )}
           {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
         </View>
         <View style={styles.conversationInfo}>
           <View style={styles.conversationHeader}>
             <View style={styles.userNameRow}>
-              <Text style={[styles.userName, { color: colors.text }]}>
-                {otherUserData?.name || t('unknown')}
-              </Text>
+              <Text style={[styles.userName, { color: colors.text }]}>{displayName}</Text>
+              {isGroupConv && (
+                <Text style={{ fontSize: 10, color: colors.primary, marginLeft: 4, fontWeight: '600' }}>GROUP</Text>
+              )}
             </View>
             <View style={styles.rightHeader}>
               {item.lastMessage && (
@@ -560,10 +634,15 @@ const MessagesScreen = ({ navigation }: any) => {
                 style={styles.deleteBtn}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Text style={styles.deleteIcon}>🗑️</Text>
+                <Text style={styles.deleteIcon}>{isGroupConv ? '🚪' : '🗑️'}</Text>
               </TouchableOpacity>
             </View>
           </View>
+          {isGroupConv && (
+            <Text style={[styles.lastMessage, { color: colors.textGray, fontSize: 12, marginBottom: 2 }]} numberOfLines={1}>
+              {item.participants?.length || 0} members
+            </Text>
+          )}
           <View style={styles.lastMessageRow}>
             <Text 
               style={[
@@ -599,6 +678,12 @@ const MessagesScreen = ({ navigation }: any) => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('messages')}</Text>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('CreateGroup', { followingUsers })}
+          style={{ padding: 4 }}
+        >
+          <Text style={{ fontSize: 22, color: colors.primary }}>👥+</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Search Input */}
@@ -747,6 +832,9 @@ const styles = StyleSheet.create({
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 24,

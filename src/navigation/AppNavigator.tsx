@@ -27,6 +27,8 @@ import WeatherScreen from '../screens/Weather/WeatherScreen';
 import FootballScreen from '../screens/Football/FootballScreen';
 import MessagesScreen from '../screens/Messages/MessagesScreen';
 import ChatScreen from '../screens/Messages/ChatScreen';
+import CreateGroupScreen from '../screens/Messages/CreateGroupScreen';
+import GroupInfoScreen from '../screens/Messages/GroupInfoScreen';
 import CallScreen from '../screens/Call/CallScreen';
 import ChessScreen from '../screens/Chess/ChessScreen';
 import ChessGameScreen from '../screens/Chess/ChessGameScreen';
@@ -402,6 +404,16 @@ const MainStack = () => {
           cardStyle: { backgroundColor: colors.background },
           animationEnabled: false,
         }}
+      />
+      <Stack.Screen
+        name="CreateGroup"
+        component={CreateGroupScreen}
+        options={{ presentation: 'modal', headerShown: false }}
+      />
+      <Stack.Screen
+        name="GroupInfo"
+        component={GroupInfoScreen}
+        options={{ presentation: 'modal', headerShown: false }}
       />
       <Stack.Screen 
         name="CallScreen" 

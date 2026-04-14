@@ -105,6 +105,14 @@ export const ENDPOINTS = {
   SEND_MESSAGE: '/api/message',
   MARK_MESSAGES_SEEN: '/api/message/seen',
   DELETE_CONVERSATION: '/api/message/conversation',
+
+  // Group conversations
+  CREATE_GROUP: '/api/message/group',
+  UPDATE_GROUP_INFO: '/api/message/group',
+  DELETE_GROUP: '/api/message/group',
+  ADD_GROUP_MEMBER: '/api/message/group',
+  REMOVE_GROUP_MEMBER: '/api/message/group',
+  LEAVE_GROUP: '/api/message/group',
   
   // User Profile
   UPDATE_USER_PROFILE: '/api/user/update',
@@ -138,6 +146,13 @@ export const SOCKET_EVENTS = {
   MESSAGE_REACTION_UPDATED: 'messageReactionUpdated',
   MESSAGE_DELETED: 'messageDeleted',
   STORY_STRIP_CHANGED: 'storyStripChanged',
+  // Group conversations
+  GROUP_CREATED: 'groupCreated',
+  GROUP_INFO_UPDATED: 'groupInfoUpdated',
+  GROUP_MEMBER_ADDED: 'groupMemberAdded',
+  GROUP_MEMBER_REMOVED: 'groupMemberRemoved',
+  GROUP_MEMBER_LEFT: 'groupMemberLeft',
+  REMOVED_FROM_GROUP: 'removedFromGroup',
 };
 
 // Storage Keys

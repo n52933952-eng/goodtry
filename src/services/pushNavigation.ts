@@ -69,6 +69,25 @@ export function navigateFromPushData(
       return true;
     }
 
+    if (type === 'group_message' || type === 'group_added') {
+      const conversationId = raw.conversationId;
+      if (conversationId) {
+        nav.navigate('ChatScreen', {
+          conversationId,
+          isGroup: true,
+          groupName: raw.groupName || 'Group',
+        });
+        return true;
+      }
+      nav.navigate('Messages');
+      return true;
+    }
+
+    if (type === 'group_removed') {
+      nav.navigate('Messages');
+      return true;
+    }
+
     if (type === 'missed_call') {
       return false;
     }

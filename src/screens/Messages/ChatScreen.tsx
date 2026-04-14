@@ -65,15 +65,7 @@ const WA = {
 } as const;
 
 const ChatScreen = ({ route, navigation }: any) => {
-  const { conversationId, userId, otherUser } = route.params || {};
-  const lastLogKeyRef = useRef<string | null>(null);
-  if (__DEV__) {
-    const logKey = `${conversationId ?? 'new'}-${otherUser?._id ?? userId ?? ''}`;
-    if (lastLogKeyRef.current !== logKey) {
-      lastLogKeyRef.current = logKey;
-      console.log('💬 [ChatScreen] Mount/conversation:', logKey);
-    }
-  }
+  const { conversationId, userId, otherUser, isGroup, groupName, conversation: groupConversation } = route.params || {};
   const { user } = useUser();
   const { socket, isUserOnline, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
@@ -158,28 +150,12 @@ const ChatScreen = ({ route, navigation }: any) => {
     return url.includes('/video/upload/') || /\.(mp4|webm|ogg|mov)$/i.test(url);
   };
 
-  // Handle new messages from socket - STABLE FUNCTION (like web version)
-  // Defined here (before useEffects) to avoid hoisting issues
   const handleNewMessage = useCallback((data: any) => {
-    console.log('🔔🔔🔔 [ChatScreen] handleNewMessage: Received newMessage event!', {
-      hasData: !!data,
-      conversationId: data?.conversationId,
-      currentConversationId: currentConversationIdRef.current,
-      senderId: data?.sender?._id || data?.sender,
-      currentUserId: user?._id,
-      messageId: data?._id,
-      messageText: data?.text?.substring(0, 30)
-    });
-
-    // Ignore own messages (same as web version) - handleMessageSent already handles them
+    // Ignore own messages — handleSend already adds them optimistically
     const messageSenderId = data.sender?._id?.toString() || data.sender?.toString() || data.sender;
     const currentUserId = user?._id?.toString();
     const isFromCurrentUser = messageSenderId && currentUserId && messageSenderId === currentUserId;
-    
-    if (isFromCurrentUser) {
-      console.log('💬 [ChatScreen] handleNewMessage: Ignoring own message (already handled by handleSend)');
-      return;
-    }
+    if (isFromCurrentUser) return;
 
     // Handle messages for current conversation - Use REF (like web version)
     const currentConvId = currentConversationIdRef.current;
@@ -202,22 +178,15 @@ const ChatScreen = ({ route, navigation }: any) => {
       (msgConvId && msgConvId === curConvStr) ||
       (msgConvId && !curConvStr && partnerIdStr && senderStr === partnerIdStr)
     ) {
-      // If this is the first message and we didn't have a conversationId, set it now
       if (!currentConvId && data.conversationId) {
-        console.log('💬 [ChatScreen] handleNewMessage: Setting conversationId', data.conversationId);
         setCurrentConversationId(data.conversationId);
       }
-      
-      // Prevent duplicate messages
+
       setMessages((prev) => {
-        const isDuplicate = prev.some(msg => 
+        const isDuplicate = prev.some(msg =>
           msg._id && data._id && msg._id.toString() === data._id.toString()
         );
-        if (isDuplicate) {
-          console.log('💬 [ChatScreen] handleNewMessage: Duplicate message detected, skipping');
-          return prev;
-        }
-        console.log('💬 [ChatScreen] handleNewMessage: Adding message to list');
+        if (isDuplicate) return prev;
         // While this screen is open, each new incoming message must mark the partner's messages as
         // seen (fetchMessages only emits markmessageasSeen once). Otherwise the sender never gets
         // `messagesSeen` and ticks stay gray even when both users are in the chat.
@@ -250,8 +219,6 @@ const ChatScreen = ({ route, navigation }: any) => {
           } catch (_) {}
         }, 80);
       }
-    } else {
-      console.log('💬 [ChatScreen] handleNewMessage: Message not for current conversation, ignoring');
     }
   }, [user?._id, userId, otherUser?._id, socket]);
 
@@ -299,9 +266,17 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const handleUserTyping = useCallback(
     (data: { userId?: string; conversationId?: string; isTyping?: boolean }) => {
-      const partnerStr = (otherUser?._id?.toString?.() ?? (userId != null ? String(userId) : '')) || '';
+      const isGroupConv = !!(isGroup || groupConversation?.isGroup);
       const fromStr = data?.userId != null ? String(data.userId) : '';
-      if (!partnerStr || fromStr !== partnerStr) return;
+
+      if (isGroupConv) {
+        // Group: show typing for anyone in the group except ourselves
+        if (!fromStr || fromStr === currentUserIdStr) return;
+      } else {
+        // 1-to-1: only show if from our chat partner
+        const partnerStr = (otherUser?._id?.toString?.() ?? (userId != null ? String(userId) : '')) || '';
+        if (!partnerStr || fromStr !== partnerStr) return;
+      }
 
       const evtConv = data.conversationId != null ? String(data.conversationId) : '';
       const myConv =
@@ -318,13 +293,14 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       setIsPartnerTyping(!!data.isTyping);
       if (data.isTyping) {
+        // Auto-clear after 3.5s in case typingStop is never received (network loss, crash)
         partnerTypingClearTimeoutRef.current = setTimeout(() => {
           setIsPartnerTyping(false);
           partnerTypingClearTimeoutRef.current = null;
-        }, 6000);
+        }, 3500);
       }
     },
-    [otherUser?._id, userId, conversationId]
+    [otherUser?._id, userId, conversationId, isGroup, groupConversation?.isGroup, currentUserIdStr]
   );
 
   const handleMessageDeleted = useCallback((data: { conversationId?: string; messageId?: string }) => {
@@ -368,6 +344,14 @@ const ChatScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     if (!socket || !user?._id) return;
 
+    const handleGroupDeleted = ({ conversationId: deletedId }: { conversationId: string }) => {
+      const thisId = currentConversationId || conversationId;
+      if (deletedId && String(deletedId) === String(thisId)) {
+        Alert.alert('Group Deleted', 'This group has been deleted by the admin.');
+        navigation.pop(1);
+      }
+    };
+
     const bind = () => {
       // If the socket instance was recreated on reconnect, ensure our listeners are attached to the new one.
       socket.off('newMessage', handleNewMessage);
@@ -376,12 +360,14 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('messagesSeen', handleMessagesSeen);
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
+      socket.off('groupDeleted', handleGroupDeleted);
       socket.on('newMessage', handleNewMessage);
       socket.on('messageReactionUpdated', handleMessageReactionUpdated);
       socket.on('messageDeleted', handleMessageDeleted);
       socket.on('messagesSeen', handleMessagesSeen);
       socket.on('userTyping', handleUserTyping);
       socket.on('messageDelivered', handleMessageDelivered);
+      socket.on('groupDeleted', handleGroupDeleted);
     };
 
     // Bind now (current socket instance)
@@ -399,6 +385,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('messagesSeen', handleMessagesSeen);
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
+      socket.off('groupDeleted', handleGroupDeleted);
     };
   }, [
     socket,
@@ -409,6 +396,9 @@ const ChatScreen = ({ route, navigation }: any) => {
     handleMessagesSeen,
     handleUserTyping,
     handleMessageDelivered,
+    navigation,
+    currentConversationId,
+    conversationId,
   ]);
 
   useEffect(() => {
@@ -425,27 +415,33 @@ const ChatScreen = ({ route, navigation }: any) => {
   }, []);
 
   const emitTypingStop = useCallback(() => {
-    const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
-    if (!socket || !user?._id || !toId) return;
-    const conv = currentConversationIdRef.current || conversationId;
-    socket.emit('typingStop', {
-      from: user._id,
-      to: toId,
-      conversationId: conv || undefined,
-    });
-  }, [socket, user?._id, otherUser?._id, userId, conversationId]);
+    if (!socket || !user?._id) return;
+    const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+    const conv = currentConversationIdRef.current || conversationId || groupConversation?._id;
+    if (isGroupConv) {
+      if (!conv) return;
+      socket.emit('typingStop', { from: user._id, conversationId: conv, isGroup: true });
+    } else {
+      const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
+      if (!toId) return;
+      socket.emit('typingStop', { from: user._id, to: toId, conversationId: conv || undefined });
+    }
+  }, [socket, user?._id, otherUser?._id, userId, conversationId, isGroup, groupConversation?.isGroup, groupConversation?._id]);
 
   const handleMessageTextChange = useCallback(
     (text: string) => {
       setNewMessage(text);
-      const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
-      if (!socket || !user?._id || !toId) return;
-      const conv = currentConversationIdRef.current || conversationId;
-      socket.emit('typingStart', {
-        from: user._id,
-        to: toId,
-        conversationId: conv || undefined,
-      });
+      if (!socket || !user?._id) return;
+      const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+      const conv = currentConversationIdRef.current || conversationId || groupConversation?._id;
+      if (isGroupConv) {
+        if (!conv) return;
+        socket.emit('typingStart', { from: user._id, conversationId: conv, isGroup: true });
+      } else {
+        const toId = (otherUser?._id ?? userId) != null ? String(otherUser?._id ?? userId) : '';
+        if (!toId) return;
+        socket.emit('typingStart', { from: user._id, to: toId, conversationId: conv || undefined });
+      }
       if (typingStopTimeoutRef.current) {
         clearTimeout(typingStopTimeoutRef.current);
         typingStopTimeoutRef.current = null;
@@ -455,44 +451,30 @@ const ChatScreen = ({ route, navigation }: any) => {
         typingStopTimeoutRef.current = null;
       }, 2000);
     },
-    [socket, user?._id, otherUser?._id, userId, conversationId, emitTypingStop]
+    [socket, user?._id, otherUser?._id, userId, conversationId, isGroup, groupConversation?.isGroup, groupConversation?._id, emitTypingStop]
   );
 
+  // Emit joinConversationRoom for groups so the user is always in the Socket.IO room,
+  // even when they were added to the group after their initial connection.
   useEffect(() => {
-    console.log('💬 [ChatScreen] useEffect: Mount/Update', { 
-      conversationId, 
-      userId, 
-      otherUser: otherUser?._id,
-      hasOtherUser: !!otherUser,
-      socket: !!socket,
-      user: !!user?._id
-    });
-    
-    // Reset mark seen flag and scroll ref when conversation changes (avoid auto load-more in new chat)
+    const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+    const groupConvId = conversationId || groupConversation?._id;
+    if (!isGroupConv || !groupConvId || !socket || !user?._id) return;
+    socket.emit('joinConversationRoom', { conversationId: String(groupConvId) });
+  }, [isGroup, groupConversation?.isGroup, conversationId, groupConversation?._id, socket, user?._id]);
+
+  useEffect(() => {
     hasMarkedSeenRef.current = false;
     previousScrollYRef.current = 0;
-    
-    // If we have userId but no conversationId, we're starting a new conversation
-    // The conversation will be created when we send the first message
+
     if (conversationId) {
-      console.log('💬 [ChatScreen] useEffect: Has conversationId, setting and fetching');
       setCurrentConversationId(conversationId);
-      // Call fetchMessages after a tiny delay to ensure state is set
-      setTimeout(() => {
-        fetchMessages();
-      }, 50);
+      setTimeout(() => { fetchMessages(); }, 50);
     } else if (userId && otherUser) {
-      // New conversation - no messages to fetch yet
-      console.log('💬 [ChatScreen] useEffect: New conversation (userId + otherUser), stopping loading');
       setLoading(false);
     } else if (otherUser?._id) {
-      // We have otherUser but no conversationId - try to fetch messages anyway
-      console.log('💬 [ChatScreen] useEffect: Has otherUser but no conversationId, fetching messages');
-      setTimeout(() => {
-        fetchMessages();
-      }, 50);
+      setTimeout(() => { fetchMessages(); }, 50);
     } else {
-      console.log('💬 [ChatScreen] useEffect: No conversationId or userId+otherUser, stopping loading');
       setLoading(false);
     }
   }, [conversationId, userId, otherUser?._id, user?._id]);
@@ -520,16 +502,13 @@ const ChatScreen = ({ route, navigation }: any) => {
     if (callEnded) {
       isCallInProgressRef.current = false;
       initiatedCallAtRef.current = 0;
-      console.log('✅ [ChatScreen] Call ended - isCallInProgressRef reset (ready to call again)');
       return;
     }
-    // Not in an active call: reset after short delay so we don't clear during the 300ms before callUser
     if (!isCalling && !callAccepted && initiatedCallAtRef.current) {
       const elapsed = Date.now() - initiatedCallAtRef.current;
       if (elapsed < 400) return;
       isCallInProgressRef.current = false;
       initiatedCallAtRef.current = 0;
-      console.log('✅ [ChatScreen] Idle (not calling/accepted) - isCallInProgressRef reset (ready to call again)');
     }
   }, [isCalling, callAccepted, callEnded]);
 
@@ -537,13 +516,24 @@ const ChatScreen = ({ route, navigation }: any) => {
   const MESSAGE_PAGE_SIZE = 12;
 
   const fetchMessages = useCallback(async (loadMore = false, beforeId: string | null = null) => {
-    const otherUserId = otherUser?._id || userId || (route.params?.otherUser?._id) || (route.params?.userId);
-    if (!otherUserId) {
+    const isGroupConv = isGroup || groupConversation?.isGroup;
+    const groupConvId = conversationId || groupConversation?._id;
+
+    // For 1-to-1, resolve the other user's ID as before
+    const otherUserId = !isGroupConv ? (otherUser?._id || userId || (route.params?.otherUser?._id) || (route.params?.userId)) : null;
+
+    if (!isGroupConv && !otherUserId) {
+      if (!loadMore) setLoading(false);
+      return;
+    }
+    if (isGroupConv && !groupConvId) {
       if (!loadMore) setLoading(false);
       return;
     }
 
-    const otherUserIdStr = typeof otherUserId === 'string' ? otherUserId : String((otherUserId as any)?._id ?? otherUserId);
+    const otherUserIdStr = !isGroupConv
+      ? (typeof otherUserId === 'string' ? otherUserId : String((otherUserId as any)?._id ?? otherUserId))
+      : 'group';
 
     if (loadMore) {
       loadingMoreRef.current = true;
@@ -553,7 +543,9 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
 
     try {
-      let url = `${ENDPOINTS.GET_MESSAGES}/${otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
+      // Group: use placeholder otherUserId but pass conversationId as query param
+      let url = `${ENDPOINTS.GET_MESSAGES}/${isGroupConv ? '_group' : otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
+      if (isGroupConv && groupConvId) url += `&conversationId=${groupConvId}`;
       if (beforeId) url += `&beforeId=${beforeId}`;
 
       const response = await apiService.get(url);
@@ -699,9 +691,12 @@ const ChatScreen = ({ route, navigation }: any) => {
   const handleSend = async (attempt = 0, clientMsgIdArg?: string) => {
     if (!newMessage.trim() && !pendingMedia) return;
 
-    const recipientIdRaw = otherUser?._id ?? userId;
+    const isGroupConv = isGroup || groupConversation?.isGroup;
+    const groupConvId = isGroupConv ? (currentConversationId || conversationId || groupConversation?._id) : null;
+    const recipientIdRaw = isGroupConv ? null : (otherUser?._id ?? userId);
     const recipientId = recipientIdRaw != null ? String(recipientIdRaw) : '';
-    if (!recipientId.trim()) return;
+    if (!isGroupConv && !recipientId.trim()) return;
+    if (isGroupConv && !groupConvId) return;
 
     if (typingStopTimeoutRef.current) {
       clearTimeout(typingStopTimeoutRef.current);
@@ -749,7 +744,11 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       if (mediaSnapshot) {
         const formData = new FormData();
-        formData.append('recipientId', recipientId);
+        if (isGroupConv) {
+          formData.append('conversationId', String(groupConvId));
+        } else {
+          formData.append('recipientId', recipientId);
+        }
         formData.append('message', textSnapshot);
         if (replySnapshot?._id) {
           formData.append('replyTo', String(replySnapshot._id));
@@ -767,7 +766,8 @@ const ChatScreen = ({ route, navigation }: any) => {
         response = await apiService.post(
           ENDPOINTS.SEND_MESSAGE,
           {
-            recipientId,
+            recipientId: isGroupConv ? undefined : recipientId,
+            conversationId: isGroupConv ? String(groupConvId) : undefined,
             message: textSnapshot,
             replyTo: replySnapshot?._id != null ? String(replySnapshot._id) : null,
           },
@@ -951,27 +951,10 @@ const ChatScreen = ({ route, navigation }: any) => {
       // reset WebRTC state once. Do NOT retry from here (setTimeout would close over stale state and cause infinite loop).
       // User can tap Call again after state is cleared.
       if (!isCallInProgressRef.current && !isCalling && callAccepted && !callEnded) {
-        console.log('✅ [ChatScreen] Stale call state (callAccepted, not calling) – resetting; tap Call again to start new call');
         leaveCall();
         return;
       }
-      console.warn('⚠️ [ChatScreen] Call already in progress - ignoring duplicate call request', {
-        isCallInProgress: isCallInProgressRef.current,
-        isCalling,
-        callAccepted,
-        callEnded,
-      });
       return;
-    }
-    
-    // CRITICAL: If callEnded is true OR callAccepted is false, allow new calls
-    // The check above already handles this, but we log for debugging
-    if (callEnded) {
-      console.log('✅ [ChatScreen] Previous call ended - allowing new call', {
-        callEnded,
-        callAccepted,
-        isCalling,
-      });
     }
     
     // Resolve target user: otherUser can be object, string (id), or null when from list with unpopulated participants
@@ -985,61 +968,31 @@ const ChatScreen = ({ route, navigation }: any) => {
       return;
     }
 
-    // Mark that we're initiating a call (and when - avoid reset during 300ms delay before callUser)
     isCallInProgressRef.current = true;
     initiatedCallAtRef.current = Date.now();
-    
+
     try {
       const callType = type === 'voice' ? 'audio' : 'video';
-      
-      console.log('═══════════════════════════════════════════════════════');
-      console.log(`📞 [ChatScreen] ========== INITIATING CALL ==========`);
-      console.log(`📞 [ChatScreen] Type: ${callType}`);
-      console.log(`📞 [ChatScreen] Target user: ${targetName} (${targetId})`);
-      console.log(`📞 [ChatScreen] Current user: ${user?._id}`);
-      
-      // Navigate to CallScreen first, then initiate call
-      // This ensures CallScreen is ready to show the calling state
-      console.log(`📞 [ChatScreen] Navigating to CallScreen...`);
-      navigation.navigate('CallScreen', { 
+      navigation.navigate('CallScreen', {
         userName: targetName,
         userId: targetId,
         userProfilePic: targetProfilePic,
         callType: callType,
-        isOutgoingCall: true, // Flag to indicate we're making the call
+        isOutgoingCall: true,
       });
-      console.log(`✅ [ChatScreen] Navigated to CallScreen`);
-      
-      // Small delay to let CallScreen mount, then initiate call
-      console.log(`📞 [ChatScreen] Waiting 300ms before initiating call...`);
       setTimeout(async () => {
         try {
-          console.log(`📞 [ChatScreen] Calling callUser function...`);
-          await callUser(
-            targetId,
-            targetName,
-            callType
-          );
-          console.log('✅ [ChatScreen] Call initiated successfully');
-          console.log('═══════════════════════════════════════════════════════');
+          await callUser(targetId, targetName, callType);
         } catch (error: any) {
-          console.error('❌ [ChatScreen] ========== CALL INITIATION ERROR ==========');
-          console.error('❌ [ChatScreen] Call initiation error:', error);
-          console.error('❌ [ChatScreen] Error message:', error?.message);
-          console.error('❌ [ChatScreen] Error stack:', error?.stack);
-          console.error('═══════════════════════════════════════════════════════');
+          console.error('❌ [ChatScreen] Call initiation error:', error?.message);
           isCallInProgressRef.current = false;
           initiatedCallAtRef.current = 0;
         }
       }, 300);
     } catch (error: any) {
-      console.error('❌ [ChatScreen] ========== HANDLE CALL PRESS ERROR ==========');
-      console.error('❌ [ChatScreen] Call failed:', error);
+      console.error('❌ [ChatScreen] handleCallPress error:', error?.message);
       isCallInProgressRef.current = false;
       initiatedCallAtRef.current = 0;
-      console.error('❌ [ChatScreen] Error message:', error?.message);
-      console.error('❌ [ChatScreen] Error stack:', error?.stack);
-      console.error('═══════════════════════════════════════════════════════');
     }
   };
 
@@ -1280,7 +1233,11 @@ const ChatScreen = ({ route, navigation }: any) => {
           <Text style={[styles.backButton, { color: colors.text }]}>←</Text>
         </TouchableOpacity>
 
-        {otherUser?.profilePic ? (
+        {(isGroup || groupConversation?.isGroup) ? (
+          <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: '#1a4a8a' }]}>
+            <Text style={[styles.avatarText, { fontSize: 20 }]}>👥</Text>
+          </View>
+        ) : otherUser?.profilePic ? (
           <Image source={{ uri: otherUser.profilePic }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
@@ -1290,27 +1247,43 @@ const ChatScreen = ({ route, navigation }: any) => {
           </View>
         )}
 
-        <View style={styles.headerInfo}>
+        <TouchableOpacity
+          style={styles.headerInfo}
+          onPress={() => {
+            if (isGroup || groupConversation?.isGroup) {
+              navigation.navigate('GroupInfo', {
+                conversation: groupConversation || { _id: conversationId, groupName, isGroup: true, participants: [] },
+              });
+            }
+          }}
+          activeOpacity={(isGroup || groupConversation?.isGroup) ? 0.7 : 1}
+        >
           <View style={styles.headerTitleRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>
-              {otherUser?.name || 'User'}
+              {(isGroup || groupConversation?.isGroup) ? (groupName || groupConversation?.groupName || 'Group') : (otherUser?.name || 'User')}
             </Text>
-            {isPartnerOnline && (
+            {!(isGroup || groupConversation?.isGroup) && isPartnerOnline && (
               <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
           <Text style={[styles.headerSubtitle, { color: colors.textGray }]} numberOfLines={1}>
-            {isPartnerOnline ? t('online') : t('offline')}
+            {(isGroup || groupConversation?.isGroup)
+              ? `${groupConversation?.participants?.length || '...'} members · tap for info`
+              : (isPartnerOnline ? t('online') : t('offline'))}
           </Text>
-        </View>
+        </TouchableOpacity>
 
-        {/* Call Buttons */}
-        <TouchableOpacity onPress={() => handleCallPress('voice')} style={styles.callButton}>
-          <Text style={styles.callIcon}>📞</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleCallPress('video')} style={styles.callButton}>
-          <Text style={styles.callIcon}>📹</Text>
-        </TouchableOpacity>
+        {/* Call Buttons (1-to-1 only) */}
+        {!(isGroup || groupConversation?.isGroup) && (
+          <>
+            <TouchableOpacity onPress={() => handleCallPress('voice')} style={styles.callButton}>
+              <Text style={styles.callIcon}>📞</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleCallPress('video')} style={styles.callButton}>
+              <Text style={styles.callIcon}>📹</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
 
       <FlatList
