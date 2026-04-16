@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DeviceEventEmitter, Vibration } from 'react-native';
+import { DeviceEventEmitter, Vibration, Alert } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
@@ -29,6 +29,8 @@ interface SocketContextType {
   setPresenceWatchUserIds: (userIds: string[]) => void;
   /** Returns true when the user currently has an active call (in-call badge, like web). */
   isUserBusy: (userId: unknown) => boolean;
+  /** Currently active live streams from followed users */
+  liveStreams: Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -871,6 +873,39 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     presenceSubscribeRef.current?.();
   }, []);
 
+  // ── Live streams ──────────────────────────────────────────────────────────
+  const [liveStreams, setLiveStreams] = useState<Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>>([]);
+
+  useEffect(() => {
+    if (!user?._id) return;
+    const onStreamStarted = (data: any) => {
+      setLiveStreams(prev => {
+        if (prev.some(s => s.streamerId === data.streamerId)) return prev;
+        return [...prev, data];
+      });
+      Alert.alert(
+        '🔴 Live Now',
+        `${data.streamerName} started a live stream. Watch now?`,
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Watch', onPress: () => {
+            DeviceEventEmitter.emit('NavigateToLiveViewer', data);
+          }},
+        ],
+        { cancelable: true }
+      );
+    };
+    const onStreamEnded = ({ streamerId }: any) => {
+      setLiveStreams(prev => prev.filter(s => s.streamerId !== streamerId));
+    };
+    socketService.on('livekit:streamStarted', onStreamStarted);
+    socketService.on('livekit:streamEnded',   onStreamEnded);
+    return () => {
+      socketService.off('livekit:streamStarted', onStreamStarted);
+      socketService.off('livekit:streamEnded',   onStreamEnded);
+    };
+  }, [user?._id]);
+
   return (
     <SocketContext.Provider value={{ 
       socket: socketService, 
@@ -889,6 +924,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setSelectedConversationPartnerId,
       setPresenceWatchUserIds,
       isUserBusy,
+      liveStreams,
     }}>
       {children}
     </SocketContext.Provider>

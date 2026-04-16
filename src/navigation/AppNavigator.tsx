@@ -5,7 +5,8 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../context/UserContext';
-import { useWebRTC } from '../context/WebRTCContext';
+import { useWebRTC } from '../context/LiveKitContext';
+import { useGroupCall } from '../context/GroupCallContext';
 import { useTheme } from '../context/ThemeContext';
 import fcmService from '../services/fcmService';
 import { getPendingCallData, clearCallData } from '../services/callData';
@@ -30,6 +31,9 @@ import ChatScreen from '../screens/Messages/ChatScreen';
 import CreateGroupScreen from '../screens/Messages/CreateGroupScreen';
 import GroupInfoScreen from '../screens/Messages/GroupInfoScreen';
 import CallScreen from '../screens/Call/CallScreen';
+import LiveBroadcastScreen from '../screens/Live/LiveBroadcastScreen';
+import LiveViewerScreen from '../screens/Live/LiveViewerScreen';
+import GroupCallScreen from '../screens/Call/GroupCallScreen';
 import ChessScreen from '../screens/Chess/ChessScreen';
 import ChessGameScreen from '../screens/Chess/ChessGameScreen';
 import ChessChallengeNotification from '../components/ChessChallengeNotification';
@@ -425,6 +429,21 @@ const MainStack = () => {
       />
       <Stack.Screen name="ChessGame" component={ChessGameScreen} />
       <Stack.Screen name="CardGame" component={CardGameScreen} />
+      <Stack.Screen
+        name="GroupCallScreen"
+        component={GroupCallScreen}
+        options={{ headerShown: false, presentation: 'fullScreenModal' }}
+      />
+      <Stack.Screen
+        name="LiveBroadcast"
+        component={LiveBroadcastScreen}
+        options={{ headerShown: false, presentation: 'fullScreenModal' }}
+      />
+      <Stack.Screen
+        name="LiveViewer"
+        component={LiveViewerScreen}
+        options={{ headerShown: false, presentation: 'fullScreenModal' }}
+      />
     </Stack.Navigator>
   );
 };
@@ -450,7 +469,11 @@ const MessagesIcon = ({ color }: { color: string }) => (
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
   const { colors, theme: appTheme } = useTheme();
-  const { call, pendingCancel, callEnded, isCalling, callAccepted, setIncomingCallFromNotification, getIncomingCallFromNotificationCallerId } = useWebRTC();
+  const { call, callEnded, isCalling, callAccepted } = useWebRTC();
+  // LiveKit: no pendingCancel / signal / setIncomingCallFromNotification — simplified flow
+  const pendingCancel = false;
+  const setIncomingCallFromNotification = (_id: string, _name: string, _type: string, _autoAnswer: boolean) => {};
+  const getIncomingCallFromNotificationCallerId = () => null;
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
   const callRef = useRef(call);
   const setIncomingCallFromNotificationRef = useRef(setIncomingCallFromNotification);
@@ -476,6 +499,25 @@ const AppNavigator = () => {
   const [hasPendingCancelFromPrefs, setHasPendingCancelFromPrefs] = useState(false);
   const [isInitialMount, setIsInitialMount] = useState(true);
 
+  // Navigate to LiveViewerScreen when socket context fires "Watch" from live alert
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('NavigateToLiveViewer', (data: any) => {
+      if (navigationRef.current) {
+        navigationRef.current.navigate('LiveViewer', data);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Navigate to GroupCallScreen when an incoming group call arrives
+  const { incomingGroupCall } = useGroupCall();
+  useEffect(() => {
+    if (!incomingGroupCall || !navigationRef.current || !navReady) return;
+    const currentRoute = navigationRef.current.getCurrentRoute?.();
+    if (currentRoute?.name === 'GroupCallScreen') return;
+    navigationRef.current.navigate('GroupCallScreen');
+  }, [incomingGroupCall, navReady]);
+
   // Keep latest cancel/end state for native event handlers (which run with stable [] deps).
   useEffect(() => {
     cancelGuardRef.current = {
@@ -490,24 +532,18 @@ const AppNavigator = () => {
     if (callEnded) lastSetUpForCallerRef.current = null;
   }, [callEnded]);
 
-  // Same user calling again after decline: reset duplicate-nav guard (new ring / new SDP).
+  // Reset duplicate-nav guard on each new incoming ring (LiveKit: no SDP signal).
   useEffect(() => {
-    const sdp: string | undefined = call.signal?.sdp;
     const receiving = !!(call.isReceivingCall && call.from);
-    if (receiving && sdp && sdp !== lastIncomingOfferSdpRef.current) {
-      lastIncomingOfferSdpRef.current = sdp;
-      lastNavigateToCallRef.current = null;
-      console.log('📞 [AppNavigator] New incoming offer — cleared lastNavigateToCallRef (callback/recall)');
-    }
-    if (!receiving) {
-      lastIncomingOfferSdpRef.current = undefined;
-    }
     if (receiving && !prevIsReceivingRef.current) {
       lastNavigateToCallRef.current = null;
       console.log('📞 [AppNavigator] Incoming ring edge — cleared lastNavigateToCallRef');
     }
+    if (!receiving) {
+      lastIncomingOfferSdpRef.current = undefined;
+    }
     prevIsReceivingRef.current = receiving;
-  }, [call.isReceivingCall, call.from, call.signal]);
+  }, [call.isReceivingCall, call.from]);
 
   // Check SharedPreferences for pending cancel on mount and when call state changes
   useEffect(() => {

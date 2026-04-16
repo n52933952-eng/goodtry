@@ -16,6 +16,7 @@ import {
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { useSocket } from '../../context/SocketContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
@@ -31,11 +32,53 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
   const { user } = useUser();
   const { colors } = useTheme();
   const { t, tn } = useLanguage();
+  const { socket } = useSocket();
 
   const [conversation, setConversation] = useState<any>(initialConversation || {});
   const [leaving, setLeaving] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+
+  // Real-time group updates
+  useEffect(() => {
+    if (!socket) return;
+    const convId = idStr(conversation._id);
+
+    const onMemberLeft = ({ conversationId, userId: leftId, newAdmin }: any) => {
+      if (idStr(conversationId) !== convId) return;
+      setConversation((prev: any) => {
+        const updatedParticipants = (prev.participants || []).filter(
+          (p: any) => idStr(p._id || p) !== idStr(leftId)
+        );
+        return {
+          ...prev,
+          participants: updatedParticipants,
+          admin: newAdmin ? newAdmin : prev.admin,
+        };
+      });
+    };
+
+    const onGroupDeleted = ({ conversationId }: any) => {
+      if (idStr(conversationId) !== convId) return;
+      Alert.alert(t('groupDeletedTitle') || 'Group Deleted', t('groupDeletedByAdmin') || 'This group has been deleted.');
+      navigation.pop(2);
+    };
+
+    const onMemberAdded = ({ conversationId, conversation: updatedConv }: any) => {
+      if (idStr(conversationId) !== convId) return;
+      if (updatedConv) setConversation(updatedConv);
+    };
+
+    socket.on('groupMemberLeft', onMemberLeft);
+    socket.on('groupDeleted', onGroupDeleted);
+    socket.on('groupMemberAdded', onMemberAdded);
+
+    return () => {
+      socket.off('groupMemberLeft', onMemberLeft);
+      socket.off('groupDeleted', onGroupDeleted);
+      socket.off('groupMemberAdded', onMemberAdded);
+    };
+  }, [socket, conversation._id, navigation, t]);
 
   // Edit group name
   const [editNameVisible, setEditNameVisible] = useState(false);

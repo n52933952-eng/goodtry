@@ -21,6 +21,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
+import LivePostCard from '../../components/LivePostCard';
 import ChannelsModal from '../../components/ChannelsModal';
 import ActivityModal from '../../components/ActivityModal';
 
@@ -226,6 +227,26 @@ const FeedScreen = ({ navigation }: any) => {
       fetchFeed(false);
     };
 
+    // Live stream: inject card at top when a followed user goes live
+    const handleStreamStarted = (data: any) => {
+      const pseudo = {
+        _id:          `live_${data.streamerId}`,
+        isLive:       true,
+        liveStreamId: data.streamerId,
+        roomName:     data.roomName,
+        postedBy:     { _id: data.streamerId, name: data.streamerName, profilePic: data.streamerProfilePic },
+        createdAt:    new Date().toISOString(),
+        updatedAt:    new Date().toISOString(),
+      };
+      setPosts((prev: any[]) => {
+        if (prev.some((p: any) => p._id === pseudo._id)) return prev;
+        return [pseudo, ...prev];
+      });
+    };
+    const handleStreamEnded = ({ streamerId }: any) => {
+      setPosts((prev: any[]) => prev.filter((p: any) => p._id !== `live_${streamerId}`));
+    };
+
     socket.on('chessChallenge', handleChessChallenge);
     socket.on('chessDeclined', handleChessDeclined);
     socket.on('cardChallenge', handleCardChallenge);
@@ -234,6 +255,8 @@ const FeedScreen = ({ navigation }: any) => {
     socket.on('footballPageUpdate', handleFootballUpdate);
     socket.on('footballMatchUpdate', handleFootballUpdate);
     socket.on('weatherUpdate', handleWeatherUpdate);
+    socket.on('livekit:streamStarted', handleStreamStarted);
+    socket.on('livekit:streamEnded',   handleStreamEnded);
 
     return () => {
       socket.off('chessChallenge', handleChessChallenge);
@@ -244,6 +267,8 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('footballPageUpdate', handleFootballUpdate);
       socket.off('footballMatchUpdate', handleFootballUpdate);
       socket.off('weatherUpdate', handleWeatherUpdate);
+      socket.off('livekit:streamStarted', handleStreamStarted);
+      socket.off('livekit:streamEnded',   handleStreamEnded);
     };
   }, [socket, user, navigation]);
 
@@ -544,6 +569,9 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const renderPost = ({ item }: { item: any }) => {
+    // Live stream pseudo-post — show dedicated live card
+    if (item.isLive) return <LivePostCard post={item} />;
+
     const uid = item.postedBy?._id?.toString?.() ?? '';
     const ring = uid ? storyByUserId[uid] : undefined;
     const postId = item?._id?.toString?.() ?? String(item?._id ?? '');

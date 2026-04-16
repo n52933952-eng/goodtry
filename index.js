@@ -4,6 +4,8 @@
 
 import 'react-native-gesture-handler';
 import '@react-native-firebase/app'; // Import Firebase app first to ensure initialization
+import { registerGlobals } from '@livekit/react-native';
+registerGlobals();
 import { AppRegistry, I18nManager } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import AsyncStorage from '@react-native-async-storage/async-storage';

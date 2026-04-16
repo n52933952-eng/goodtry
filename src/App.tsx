@@ -5,13 +5,14 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { UserProvider } from './context/UserContext';
 import { PostProvider } from './context/PostContext';
 import { SocketProvider } from './context/SocketContext';
-import { WebRTCProvider } from './context/WebRTCContext';
+import { LiveKitProvider } from './context/LiveKitContext';
+import { GroupCallProvider } from './context/GroupCallContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import AppNavigator from './navigation/AppNavigator';
 import fcmService from './services/fcmService';
 import './config/googleSignIn';
-
+//
 const App = () => {
   useEffect(() => {
     // LTR is enforced natively: AndroidManifest android:supportsRtl="false", iOS UIView appearance.
@@ -45,9 +46,11 @@ const App = () => {
             <UserProvider>
               <PostProvider>
                 <SocketProvider>
-                  <WebRTCProvider>
-                    <AppNavigator />
-                  </WebRTCProvider>
+                  <LiveKitProvider>
+                    <GroupCallProvider>
+                      <AppNavigator />
+                    </GroupCallProvider>
+                  </LiveKitProvider>
                 </SocketProvider>
               </PostProvider>
             </UserProvider>

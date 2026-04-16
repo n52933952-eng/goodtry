@@ -412,11 +412,13 @@ const MessagesScreen = ({ navigation }: any) => {
 
   const handleStartConversation = async (selectedUser: any) => {
     try {
-      // Check if conversation already exists
+      // Check if a 1-to-1 conversation already exists (exclude groups — a group can
+      // contain the searched user but is not a direct chat with them)
       const existingConvo = conversations.find((conv: any) => {
+        if (conv.isGroup) return false;
         const otherUser = getOtherUser(conv);
         const otherUserId = typeof otherUser === 'string' ? otherUser : otherUser?._id;
-        return otherUserId === selectedUser._id;
+        return String(otherUserId) === String(selectedUser._id);
       });
 
       if (existingConvo) {

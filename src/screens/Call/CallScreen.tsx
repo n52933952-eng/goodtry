@@ -1,204 +1,116 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Platform,
   Image,
 } from 'react-native';
-import { RTCView } from 'react-native-webrtc';
+import { VideoView, useLocalParticipant, useRemoteParticipants, useTracks } from '@livekit/react-native';
+import { Track, ConnectionState } from '@livekit/react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useWebRTC } from '../../context/WebRTCContext';
+import { useWebRTC } from '../../context/LiveKitContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
-
-/**
- * Call flow (best practice):
- * - User A calls User B → A goes to CallScreen first (from ChatScreen), then callUser() runs.
- * - User A sees: Avatar + name + "Ringing…" + Cancel (WhatsApp style).
- * - User B receives socket "callUser" → AppNavigator opens CallScreen.
- * - User B sees: "Incoming call from {A name}" + Decline + Answer.
- * - When User B is OFF the app and gets the call on NATIVE UI, then presses Answer there:
- *   → App opens, navigates to CallScreen with shouldAutoAnswer=true.
- *   → Call auto-starts (answerCall runs when signal is available). User B does NOT press Answer again.
- */
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { colors } = useTheme();
   const { user } = useUser();
+
   const {
-    localStream,
-    remoteStream,
     call,
     callAccepted,
     callEnded,
     isCalling,
-    callType,
     answerCall,
     leaveCall,
-    toggleMute,
-    toggleCamera,
-    switchCamera,
-    toggleSpeaker,
-    isMuted,
-    isCameraOff,
-    isSpeakerOn,
-    callDuration,
-    callStartTimeRef,
-    displayConnectedFromPeer,
+    room,
     connectionState,
-    setIncomingCallFromNotification,
-    callBusyReason,
+    localVideoTrack,
+    remoteVideoTrack,
   } = useWebRTC();
 
   const params = route.params || {};
-  const { userName, userId, userProfilePic, callType: paramCallType, shouldAutoAnswer, shouldDecline, isOutgoingCall, fromSocketIncoming } = params;
-  const hasTriggeredNotificationRef = useRef(false);
-  const hasDeclinedRef = useRef(false);
+  const { userName, userId, userProfilePic, callType: paramCallType, isOutgoingCall } = params;
+
+  // ── call control state ────────────────────────────────────────────────────
+  const [isMuted,    setIsMuted]    = useState(false);
+  const [isCamOff,  setIsCamOff]   = useState(false);
+  const [isSpeaker, setIsSpeaker]  = useState(true);
   const [durationSeconds, setDurationSeconds] = useState(0);
-  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Only dismiss when callEnded transitions to true DURING this screen session.
-  // Prevents immediate back-navigation when screen is opened with stale callEnded=true from the previous call.
-  const callWasActiveRef = useRef(false);
+  const callStartRef   = useRef<number>(0);
+  const durationRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const callWasActive  = useRef(false);
 
-  // Set up call from notification (when navigated with userId/userName) and optionally auto-answer
-  // Only for INCOMING calls from NOTIFICATION — NOT when: we're the caller (isOutgoingCall) OR we came from socket (fromSocketIncoming)
-  // When fromSocketIncoming, callUser handler already set state with signal - do NOT overwrite (would clear signal → Answer fails)
+  const isVideo = (paramCallType || call.callType) === 'video';
+  const isConnected = connectionState === ConnectionState.Connected && callAccepted;
+
+  // ── duration ticker ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (isOutgoingCall || fromSocketIncoming || !userId || !userName || hasTriggeredNotificationRef.current) return;
-    const type = paramCallType === 'audio' ? 'audio' : 'video';
-    hasTriggeredNotificationRef.current = true;
-    setIncomingCallFromNotification(userId, userName, type, !!shouldAutoAnswer);
-  }, [isOutgoingCall, fromSocketIncoming, userId, userName, paramCallType, shouldAutoAnswer, setIncomingCallFromNotification]);
+    if (!callAccepted) return;
+    callStartRef.current = Date.now();
+    durationRef.current = setInterval(() => {
+      setDurationSeconds(Math.floor((Date.now() - callStartRef.current) / 1000));
+    }, 1000);
+    return () => { if (durationRef.current) clearInterval(durationRef.current); };
+  }, [callAccepted]);
 
-  // Auto-answer after native "Answer" is handled ONLY in WebRTCContext (callUser handler → answerCall(sig, from)).
-  // Do not call answerCall here: parallel setTimeout(0) races Incoming's auto-answer → duplicate guard, wrong
-  // "Auto-answer completed" timing, and flaky callee/caller video.
-
-  // Decline on mount if requested
+  // ── track "was active" so we only navigate back when a real call ended ────
   useEffect(() => {
-    if (shouldDecline && !hasDeclinedRef.current) {
-      hasDeclinedRef.current = true;
-      leaveCall();
-      if (navigation.canGoBack()) navigation.goBack();
-    }
-  }, [shouldDecline, leaveCall, navigation]);
-
-  // Duration ticker when call is connected (receiver: use connectionState when answered from native)
-  useEffect(() => {
-    const connected = displayConnectedFromPeer || (!!shouldAutoAnswer && connectionState === 'connected');
-    if (!callAccepted || !connected) return;
-    const update = () => {
-      const startMs = callStartTimeRef.current;
-      if (!startMs) return;
-      setDurationSeconds(Math.floor((Date.now() - startMs) / 1000));
-    };
-    setDurationSeconds(0);
-    update();
-    durationIntervalRef.current = setInterval(update, 1000);
-    return () => {
-      if (durationIntervalRef.current) clearInterval(durationIntervalRef.current);
-      durationIntervalRef.current = null;
-    };
-  }, [callAccepted, displayConnectedFromPeer, shouldAutoAnswer, connectionState, callStartTimeRef]);
-
-  // Track once the call becomes active during this screen session
-  useEffect(() => {
-    if (isCalling || callAccepted) {
-      callWasActiveRef.current = true;
-    }
+    if (isCalling || callAccepted) callWasActive.current = true;
   }, [isCalling, callAccepted]);
 
-  // Navigate back when call ends — only if this screen saw an active call.
-  // Without this guard, a screen opened while callEnded=true (from previous call) would immediately dismiss.
   useEffect(() => {
-    if (callEnded && callWasActiveRef.current && navigation.canGoBack()) {
-      callWasActiveRef.current = false;
+    if (callEnded && callWasActive.current && navigation.canGoBack()) {
+      callWasActive.current = false;
       navigation.goBack();
     }
   }, [callEnded, navigation]);
 
-  const isReceiving = call.isReceivingCall && !callAccepted;
-  const isVideo = (paramCallType || callType || call.callType) === 'video';
-
-  /** Light pill (backgroundLight) needs dark text; primary/error pills use white. */
-  const controlLabelColor = (lightBackground: boolean) =>
-    lightBackground ? colors.text : colors.buttonText;
-  // When user answered from NATIVE UI (app was off), don't show in-app Answer/Decline — show Connecting until call is up.
-  const answeredFromNative = !!shouldAutoAnswer;
-  // Receiver (answered from notification): use connectionState so we show video + Connected when peer connects
-  const isConnected =
-    displayConnectedFromPeer || (answeredFromNative && connectionState === 'connected');
-
-  // FIRM: Receiver (answered from notification) stuck on "Connecting" – end call after 12s if no connection
-  const connectionFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── auto-cancel: outgoing ring timeout 35s ────────────────────────────────
+  const ringingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!answeredFromNative || isConnected) {
-      if (connectionFailsafeRef.current) {
-        clearTimeout(connectionFailsafeRef.current);
-        connectionFailsafeRef.current = null;
-      }
-      return;
+    const isRinging = (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
+    if (isRinging) {
+      ringingTimeoutRef.current = setTimeout(() => {
+        leaveCall();
+        if (navigation.canGoBack()) navigation.goBack();
+      }, 35000);
     }
-    connectionFailsafeRef.current = setTimeout(() => {
-      connectionFailsafeRef.current = null;
-      console.warn('⚠️ [CallScreen] Connection failsafe – no connection after 12s, ending call');
-      leaveCall();
-      if (navigation.canGoBack()) navigation.goBack();
-    }, 12000);
-    return () => {
-      if (connectionFailsafeRef.current) {
-        clearTimeout(connectionFailsafeRef.current);
-        connectionFailsafeRef.current = null;
-      }
-    };
-  }, [answeredFromNative, isConnected, leaveCall, navigation]);
-
-  // FIRM: Caller stuck on "Ringing…" – auto-cancel after 35s (prevents stale UI/state if callee never answers)
-  const outgoingRingFailsafeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    const isOutgoingRinging =
-      (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
-
-    if (!isOutgoingRinging) {
-      if (outgoingRingFailsafeRef.current) {
-        clearTimeout(outgoingRingFailsafeRef.current);
-        outgoingRingFailsafeRef.current = null;
-      }
-      return;
-    }
-
-    if (outgoingRingFailsafeRef.current) return;
-    outgoingRingFailsafeRef.current = setTimeout(() => {
-      outgoingRingFailsafeRef.current = null;
-      console.warn('⚠️ [CallScreen] Outgoing ring failsafe – no answer after 35s, ending call');
-      leaveCall();
-      if (navigation.canGoBack()) navigation.goBack();
-    }, 35000);
-
-    return () => {
-      if (outgoingRingFailsafeRef.current) {
-        clearTimeout(outgoingRingFailsafeRef.current);
-        outgoingRingFailsafeRef.current = null;
-      }
-    };
+    return () => { if (ringingTimeoutRef.current) clearTimeout(ringingTimeoutRef.current); };
   }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, leaveCall, navigation]);
 
-  const handleAnswer = async () => {
-    try {
-      await answerCall();
-    } catch (e) {
-      console.warn('Answer call error:', e);
-    }
-  };
+  // ── controls ──────────────────────────────────────────────────────────────
+  const handleMute = useCallback(async () => {
+    if (!room.current) return;
+    const next = !isMuted;
+    await room.current.localParticipant.setMicrophoneEnabled(!next);
+    setIsMuted(next);
+  }, [room, isMuted]);
+
+  const handleCamToggle = useCallback(async () => {
+    if (!room.current) return;
+    const next = !isCamOff;
+    await room.current.localParticipant.setCameraEnabled(!next);
+    setIsCamOff(next);
+  }, [room, isCamOff]);
+
+  const handleFlipCamera = useCallback(async () => {
+    if (!room.current) return;
+    const camPub = room.current.localParticipant.getTrackPublication(Track.Source.Camera);
+    await camPub?.track?.switchCamera?.();
+  }, [room]);
 
   const handleLeave = () => {
     leaveCall();
     if (navigation.canGoBack()) navigation.goBack();
+  };
+
+  const handleAnswer = async () => {
+    try { await answerCall(); } catch (e) { console.warn('Answer error:', e); }
   };
 
   const formatDuration = (sec: number) => {
@@ -207,37 +119,32 @@ const CallScreen = () => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // ——— User B (receiver): incoming call — show Decline + Answer (only when NOT already answered from native) ———
-  if (isReceiving && !answeredFromNative) {
-    const callerName = call.name || userName || 'Unknown';
+  const callerName    = call.name    || userName    || 'Unknown';
+  const callerAvatar  = call.profilePic || userProfilePic;
+  const myName        = user?.name   || user?.username || 'You';
+  const myAvatar      = user?.profilePic;
+
+  // ── Incoming call: show Decline + Answer ─────────────────────────────────
+  if (call.isReceivingCall && !callAccepted) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>
-          Incoming call from
-        </Text>
-        <Text style={[styles.callerName, { color: colors.text }]}>
-          {callerName}
-        </Text>
+        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>Incoming call from</Text>
+        {callerAvatar ? (
+          <Image source={{ uri: callerAvatar }} style={styles.outgoingAvatar} />
+        ) : (
+          <View style={[styles.outgoingAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+            <Text style={[styles.avatarInitial, { color: colors.textGray }]}>{callerName.charAt(0).toUpperCase()}</Text>
+          </View>
+        )}
+        <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
         <Text style={[styles.callStatus, { color: colors.textGray }]}>
-          {callBusyReason === 'offline'
-            ? 'User is offline'
-            : callBusyReason === 'busy'
-              ? 'User is busy'
-              : isVideo
-                ? 'Video call'
-                : 'Audio call'}
+          {isVideo ? 'Video call' : 'Voice call'}
         </Text>
         <View style={styles.incomingActions}>
-          <TouchableOpacity
-            style={[styles.declineBtn, { backgroundColor: colors.error }]}
-            onPress={handleLeave}
-          >
+          <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error }]} onPress={handleLeave}>
             <Text style={styles.btnLabel}>Decline</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.answerBtn, { backgroundColor: colors.success }]}
-            onPress={handleAnswer}
-          >
+          <TouchableOpacity style={[styles.btn, { backgroundColor: colors.success }]} onPress={handleAnswer}>
             <Text style={styles.btnLabel}>Answer</Text>
           </TouchableOpacity>
         </View>
@@ -245,234 +152,101 @@ const CallScreen = () => {
     );
   }
 
-  // ——— User B answered from native UI (app was off): show avatars + Connecting… until connected, then fall through to video UI ———
-  if (isReceiving && answeredFromNative && !isConnected) {
-    const callerName = call.name || userName || 'Unknown';
-    const callerAvatar = userProfilePic || (call as any).profilePic;
-    const myName = user?.name || user?.username || 'You';
-    const myAvatar = user?.profilePic;
+  // ── Outgoing: ringing ─────────────────────────────────────────────────────
+  if ((isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <View style={styles.dualAvatarRow}>
-          <View style={styles.connectedAvatarWrap}>
-            {callerAvatar ? (
-              <Image source={{ uri: callerAvatar }} style={styles.connectedAvatar} />
-            ) : (
-              <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                  {callerName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-            <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-              {callerName}
-            </Text>
+        {callerAvatar ? (
+          <Image source={{ uri: callerAvatar }} style={styles.outgoingAvatar} />
+        ) : (
+          <View style={[styles.outgoingAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+            <Text style={[styles.avatarInitial, { color: colors.textGray }]}>{callerName.charAt(0).toUpperCase()}</Text>
           </View>
-          <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
-          <View style={styles.connectedAvatarWrap}>
-            {myAvatar ? (
-              <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
-            ) : (
-              <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                  {myName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-            <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-              {myName}
-            </Text>
-          </View>
-        </View>
-        <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
-        <Text style={[styles.connectingText, { color: colors.text }]}>Connecting…</Text>
-        <TouchableOpacity style={[styles.hangUpBtn, { backgroundColor: colors.error, marginTop: 24 }]} onPress={handleLeave}>
-          <Text style={styles.btnLabel}>End call</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // ——— User A (caller): outgoing call — WhatsApp style: avatar + Ringing + Cancel ———
-  // Show immediately when isOutgoingCall (before callUser runs at 300ms) to avoid old UI flash
-  const isOutgoingRinging = (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
-  if (isOutgoingRinging) {
-    const calleeName = call.name || userName || '...';
-    const avatarUri = userProfilePic || (call as any).profilePic;
-    return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        {/* Avatar - large, centered like WhatsApp */}
-        <View style={styles.outgoingAvatarWrap}>
-          {avatarUri ? (
-            <Image source={{ uri: avatarUri }} style={styles.outgoingAvatar} />
-          ) : (
-            <View style={[styles.outgoingAvatar, styles.outgoingAvatarPlaceholder, { backgroundColor: colors.border }]}>
-              <Text style={[styles.outgoingAvatarText, { color: colors.textGray }]}>
-                {calleeName.charAt(0).toUpperCase()}
-              </Text>
-            </View>
-          )}
-        </View>
-        <Text style={[styles.calleeName, { color: colors.text }]}>
-          {calleeName}
-        </Text>
-        <Text style={[styles.ringingText, { color: colors.primary }]}>
-          Ringing…
-        </Text>
-        <TouchableOpacity style={[styles.hangUpBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
+        )}
+        <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
+        <Text style={[styles.ringingText, { color: colors.primary }]}>Ringing…</Text>
+        <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error, marginTop: 32 }]} onPress={handleLeave}>
           <Text style={styles.btnLabel}>Cancel</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // In-call: video/audio UI
-  const otherName = call.name || userName || 'User';
-  const otherAvatar = userProfilePic || (call as any).profilePic;
-  const myName = user?.name || user?.username || 'You';
-  const myAvatar = user?.profilePic;
-
+  // ── Active call ───────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, { backgroundColor: '#000' }]}>
-      {/* Remote video (full screen) - video call only */}
-      {isVideo && remoteStream && (
-        <RTCView
-          streamURL={remoteStream.toURL()}
+
+      {/* Remote video (full screen) */}
+      {isVideo && remoteVideoTrack ? (
+        <VideoView
+          videoTrack={remoteVideoTrack}
           style={styles.remoteVideo}
           objectFit="cover"
-          zOrder={0}
         />
-      )}
-      {isVideo && !remoteStream && (
+      ) : (
         <View style={[styles.remoteVideo, styles.placeholder]}>
           <View style={styles.dualAvatarRow}>
-            <View style={styles.connectedAvatarWrap}>
-              {otherAvatar ? (
-                <Image source={{ uri: otherAvatar }} style={styles.connectedAvatar} />
+            <View style={styles.avatarWrap}>
+              {callerAvatar ? (
+                <Image source={{ uri: callerAvatar }} style={styles.connectedAvatar} />
               ) : (
-                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                    {otherName.charAt(0).toUpperCase()}
-                  </Text>
+                <View style={[styles.connectedAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>{callerName.charAt(0).toUpperCase()}</Text>
                 </View>
               )}
-              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-                {otherName}
-              </Text>
+              <Text style={[styles.connectedAvatarLabel, { color: '#fff' }]} numberOfLines={1}>{callerName}</Text>
             </View>
-            <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
-            <View style={styles.connectedAvatarWrap}>
+            <Text style={{ color: '#fff', fontSize: 18, alignSelf: 'center' }}>•</Text>
+            <View style={styles.avatarWrap}>
               {myAvatar ? (
                 <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
               ) : (
-                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                    {myName.charAt(0).toUpperCase()}
-                  </Text>
+                <View style={[styles.connectedAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>{myName.charAt(0).toUpperCase()}</Text>
                 </View>
               )}
-              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-                {myName}
-              </Text>
+              <Text style={[styles.connectedAvatarLabel, { color: '#fff' }]} numberOfLines={1}>{myName}</Text>
             </View>
           </View>
           {isConnected ? (
-            <>
-              <Text style={[styles.connectedLabel, { color: colors.success }]}>Connected</Text>
-              <Text style={styles.durationLarge}>{formatDuration(durationSeconds)}</Text>
-            </>
+            <Text style={styles.durationLarge}>{formatDuration(durationSeconds)}</Text>
           ) : (
             <>
               <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
-              <Text style={[styles.connectingText, { color: colors.text }]}>Connecting...</Text>
+              <Text style={[styles.connectingText, { color: '#fff' }]}>Connecting…</Text>
             </>
           )}
         </View>
       )}
 
-      {/* Local video (pip) - video call only */}
-      {isVideo && localStream && (
+      {/* Local video PiP */}
+      {isVideo && localVideoTrack && (
         <View style={styles.localVideoWrap} pointerEvents="box-none">
-          <RTCView
-            streamURL={localStream.toURL()}
+          <VideoView
+            videoTrack={localVideoTrack}
             style={styles.localVideo}
             objectFit="cover"
             mirror
-            zOrder={1}
           />
-          {isCameraOff && (
-            <View style={styles.localVideoCameraOffOverlay}>
-              <Text style={styles.localVideoCameraOffText}>Camera off</Text>
-            </View>
-          )}
         </View>
       )}
 
-      {/* Audio call: center content - always show avatars; Connecting or Connected + timer */}
-      {!isVideo && (
-        <View style={styles.connectedContent}>
-          {/* Both avatars - always visible */}
-          <View style={styles.dualAvatarRow}>
-            <View style={styles.connectedAvatarWrap}>
-              {otherAvatar ? (
-                <Image source={{ uri: otherAvatar }} style={styles.connectedAvatar} />
-              ) : (
-                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                    {otherName.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-                {otherName}
-              </Text>
-            </View>
-            <Text style={[styles.connectedVs, { color: colors.textGray }]}>•</Text>
-            <View style={styles.connectedAvatarWrap}>
-              {myAvatar ? (
-                <Image source={{ uri: myAvatar }} style={styles.connectedAvatar} />
-              ) : (
-                <View style={[styles.connectedAvatar, styles.connectedAvatarPlaceholder, { backgroundColor: colors.border }]}>
-                  <Text style={[styles.connectedAvatarText, { color: colors.textGray }]}>
-                    {myName.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <Text style={[styles.connectedAvatarLabel, { color: colors.textGray }]} numberOfLines={1}>
-                {myName}
-              </Text>
-            </View>
-          </View>
-          {isConnected ? (
-            <>
-              <Text style={[styles.connectedLabel, { color: colors.success }]}>Connected</Text>
-              <Text style={styles.durationLarge}>{formatDuration(durationSeconds)}</Text>
-            </>
-          ) : (
-            <>
-              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
-              <Text style={[styles.connectingText, { color: colors.text }]}>Connecting...</Text>
-            </>
-          )}
-        </View>
-      )}
-
-      {/* Top bar: duration (video only; audio shows in center) */}
-      {isVideo && (
+      {/* Duration bar (video) */}
+      {isVideo && callAccepted && (
         <View style={styles.topBar}>
           <Text style={styles.durationText}>
-            {isConnected ? formatDuration(durationSeconds) : 'Connecting...'}
+            {isConnected ? formatDuration(durationSeconds) : 'Connecting…'}
           </Text>
         </View>
       )}
 
-      {/* Bottom controls */}
+      {/* Controls */}
       <View style={styles.controls}>
         <TouchableOpacity
           style={[styles.controlBtn, { backgroundColor: isMuted ? colors.error : colors.backgroundLight }]}
-          onPress={toggleMute}
+          onPress={handleMute}
         >
-          <Text style={[styles.controlLabel, { color: controlLabelColor(!isMuted) }]}>
+          <Text style={[styles.controlLabel, { color: isMuted ? '#fff' : colors.text }]}>
             {isMuted ? 'Unmute' : 'Mute'}
           </Text>
         </TouchableOpacity>
@@ -480,30 +254,26 @@ const CallScreen = () => {
         {isVideo && (
           <>
             <TouchableOpacity
-              style={[styles.controlBtn, { backgroundColor: isCameraOff ? colors.error : colors.backgroundLight }]}
-              onPress={toggleCamera}
+              style={[styles.controlBtn, { backgroundColor: isCamOff ? colors.error : colors.backgroundLight }]}
+              onPress={handleCamToggle}
             >
-              <Text style={[styles.controlLabel, { color: controlLabelColor(!isCameraOff) }]}>
-                {isCameraOff ? 'Camera On' : 'Camera Off'}
+              <Text style={[styles.controlLabel, { color: isCamOff ? '#fff' : colors.text }]}>
+                {isCamOff ? 'Cam On' : 'Cam Off'}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.controlBtn, { backgroundColor: colors.backgroundLight }]}
-              onPress={switchCamera}
+              onPress={handleFlipCamera}
             >
-              <Text style={[styles.controlLabel, { color: controlLabelColor(true) }]}>Flip</Text>
+              <Text style={[styles.controlLabel, { color: colors.text }]}>Flip</Text>
             </TouchableOpacity>
           </>
         )}
 
         <TouchableOpacity
-          style={[styles.controlBtn, { backgroundColor: isSpeakerOn ? colors.primary : colors.backgroundLight }]}
-          onPress={toggleSpeaker}
+          style={[styles.hangUpControlBtn, { backgroundColor: colors.error }]}
+          onPress={handleLeave}
         >
-          <Text style={[styles.controlLabel, { color: controlLabelColor(!isSpeakerOn) }]}>Speaker</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={[styles.hangUpControlBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
           <Text style={styles.btnLabel}>End</Text>
         </TouchableOpacity>
       </View>
@@ -512,210 +282,51 @@ const CallScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+  container:         { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  incomingTitle:     { fontSize: 16, marginTop: 24 },
+  callerName:        { fontSize: 22, fontWeight: 'bold', marginTop: 12 },
+  callStatus:        { fontSize: 16, marginTop: 8 },
+  incomingActions:   { flexDirection: 'row', marginTop: 32, gap: 24 },
+  btn:               { paddingVertical: 14, paddingHorizontal: 28, borderRadius: 12 },
+  btnLabel:          { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  outgoingAvatar:    { width: 120, height: 120, borderRadius: 60 },
+  avatarPlaceholder: { justifyContent: 'center', alignItems: 'center' },
+  avatarInitial:     { fontSize: 42, fontWeight: 'bold' },
+  ringingText:       { fontSize: 18, marginTop: 12 },
+  remoteVideo:       { ...StyleSheet.absoluteFillObject },
+  placeholder:       { backgroundColor: '#1a1a1a', justifyContent: 'center', alignItems: 'center' },
+  localVideoWrap:    {
+    position: 'absolute', top: 60, right: 16,
+    width: 100, height: 140, borderRadius: 12, overflow: 'hidden',
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)',
   },
-  incomingTitle: {
-    fontSize: 16,
-    color: '#8B98A5',
-    marginTop: 24,
+  localVideo:        { flex: 1 },
+  topBar:            {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    paddingTop: 48, paddingHorizontal: 16, alignItems: 'center',
   },
-  callerName: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginTop: 8,
+  durationText:      { color: '#fff', fontSize: 16, fontWeight: '600' },
+  controls:          {
+    position: 'absolute', bottom: 40, left: 0, right: 0,
+    flexDirection: 'row', justifyContent: 'center',
+    flexWrap: 'wrap', gap: 12, paddingHorizontal: 16,
   },
-  callStatus: {
-    fontSize: 16,
-    marginTop: 8,
+  controlBtn:        {
+    paddingVertical: 10, paddingHorizontal: 16,
+    borderRadius: 20, minWidth: 70, alignItems: 'center',
   },
-  incomingActions: {
-    flexDirection: 'row',
-    marginTop: 32,
-    gap: 24,
+  controlLabel:      { fontSize: 13, fontWeight: '600' },
+  hangUpControlBtn:  {
+    paddingVertical: 10, paddingHorizontal: 24,
+    borderRadius: 20, alignItems: 'center',
   },
-  declineBtn: {
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 12,
-  },
-  answerBtn: {
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 12,
-  },
-  hangUpBtn: {
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius: 12,
-    marginTop: 32,
-  },
-  outgoingAvatarWrap: {
-    marginBottom: 24,
-  },
-  outgoingAvatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-  },
-  outgoingAvatarPlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  outgoingAvatarText: {
-    fontSize: 48,
-    fontWeight: '600',
-  },
-  calleeName: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  ringingText: {
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  btnLabel: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  remoteVideo: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    width: '100%',
-    height: '100%',
-  },
-  placeholder: {
-    backgroundColor: '#1a1a1a',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  placeholderText: {
-    color: '#888',
-    fontSize: 16,
-  },
-  localVideoWrap: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 48,
-    right: 16,
-    width: 120,
-    height: 160,
-    borderRadius: 12,
-    overflow: 'hidden',
-    zIndex: 20,
-    elevation: 20,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.9)',
-    backgroundColor: '#111',
-  },
-  localVideo: {
-    width: '100%',
-    height: '100%',
-  },
-  localVideoCameraOffOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-  },
-  localVideoCameraOffText: {
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  connectedContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dualAvatarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-    gap: 20,
-  },
-  connectedAvatarWrap: {
-    alignItems: 'center',
-  },
-  connectedAvatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-  },
-  connectedAvatarPlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  connectedAvatarText: {
-    fontSize: 32,
-    fontWeight: '600',
-  },
-  connectedAvatarLabel: {
-    fontSize: 12,
-    marginTop: 6,
-    maxWidth: 90,
-  },
-  connectedVs: {
-    fontSize: 20,
-  },
-  connectedLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  durationLarge: {
-    color: '#FFF',
-    fontSize: 28,
-    fontWeight: '600',
-  },
-  connectingText: {
-    fontSize: 18,
-    marginTop: 16,
-  },
-  topBar: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 48,
-    left: 16,
-  },
-  durationText: {
-    color: '#FFF',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  controls: {
-    position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 40 : 24,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 12,
-    paddingHorizontal: 16,
-  },
-  controlBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-  },
-  controlLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  hangUpControlBtn: {
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 28,
-  },
+  dualAvatarRow:     { flexDirection: 'row', gap: 24, alignItems: 'center' },
+  avatarWrap:        { alignItems: 'center', gap: 6 },
+  connectedAvatar:   { width: 72, height: 72, borderRadius: 36 },
+  connectedAvatarText: { fontSize: 28, fontWeight: 'bold' },
+  connectedAvatarLabel: { color: '#fff', fontSize: 13, maxWidth: 80, textAlign: 'center' },
+  connectingText:    { color: '#fff', fontSize: 16, marginTop: 8 },
+  durationLarge:     { color: '#fff', fontSize: 24, fontWeight: '600', marginTop: 8 },
 });
 
 export default CallScreen;

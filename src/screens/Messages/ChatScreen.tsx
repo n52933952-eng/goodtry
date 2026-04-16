@@ -19,7 +19,8 @@ import {
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { useWebRTC } from '../../context/WebRTCContext';
+import { useWebRTC } from '../../context/LiveKitContext';
+import { useGroupCall } from '../../context/GroupCallContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
@@ -68,7 +69,8 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser, isGroup, groupName, conversation: groupConversation } = route.params || {};
   const { user } = useUser();
   const { socket, isUserOnline, isUserBusy, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
-  const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
+  const { callUser, isCalling, callAccepted, callEnded } = useWebRTC(); // useWebRTC → useLiveKit alias
+  const { startGroupCall, groupCallActive } = useGroupCall();
   const { colors, theme } = useTheme();
 
   /** Incoming bubbles are fixed white in WA; in dark theme that forced white-on-white with `colors.text`. */
@@ -1337,7 +1339,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           </Text>
         </TouchableOpacity>
 
-        {/* Call Buttons (1-to-1 only) */}
+        {/* Call Buttons — 1-to-1 only */}
         {!(isGroup || groupConversation?.isGroup) && (
           <>
             <TouchableOpacity onPress={() => handleCallPress('voice')} style={styles.callButton}>
@@ -1347,6 +1349,22 @@ const ChatScreen = ({ route, navigation }: any) => {
               <Text style={styles.callIcon}>📹</Text>
             </TouchableOpacity>
           </>
+        )}
+        {/* Group call button — group chats only */}
+        {(isGroup || groupConversation?.isGroup) && (
+          <TouchableOpacity
+            style={[styles.callButton, groupCallActive && { opacity: 0.4 }]}
+            disabled={groupCallActive}
+            onPress={() => {
+              const convId = String(conversationId || groupConversation?._id || '');
+              if (convId) {
+                startGroupCall(convId, 'video');
+                navigation.navigate('GroupCallScreen');
+              }
+            }}
+          >
+            <Text style={styles.callIcon}>📹</Text>
+          </TouchableOpacity>
         )}
       </View>
 

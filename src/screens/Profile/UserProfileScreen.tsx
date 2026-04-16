@@ -568,6 +568,15 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
               {isOwnProfile && (
                 <TouchableOpacity
+                  style={[styles.halfButton, { backgroundColor: '#E53E3E', alignSelf: 'center', marginTop: 8, paddingHorizontal: 24 }]}
+                  onPress={() => navigation.navigate('LiveBroadcast')}
+                >
+                  <Text style={[styles.halfButtonText, { color: '#fff' }]}>🔴 Go Live</Text>
+                </TouchableOpacity>
+              )}
+
+              {isOwnProfile && (
+                <TouchableOpacity
                   style={[
                     styles.dangerButton,
                     { borderColor: colors.error, backgroundColor: 'transparent' },
