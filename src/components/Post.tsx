@@ -109,9 +109,7 @@ const Post: React.FC<PostProps> = ({
         nav = nav.getParent?.();
       }
       navigation.navigate('Football');
-    } catch (e) {
-      console.warn('[Post] navigateToFootballTab failed', e);
-    }
+    } catch (e) {}
   };
 
   const { user } = useUser();
@@ -123,7 +121,7 @@ const Post: React.FC<PostProps> = ({
     hideFeedPostFromFeed,
     hideFeedSourceFromFeed,
   } = usePost();
-  const { t } = useLanguage();
+  const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
   const { socket } = useSocket();
   const showToast = useShowToast();
@@ -200,6 +198,10 @@ const Post: React.FC<PostProps> = ({
     Record<string, { liked: boolean; count: number }>
   >({});
   const [footballMatchLikingId, setFootballMatchLikingId] = useState<string | null>(null);
+  const [isFeedVideoMuted, setIsFeedVideoMuted] = useState(true);
+  const [feedVideoReady, setFeedVideoReady] = useState(false);
+  const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
+  const feedVideoWebViewRef = useRef<WebView>(null);
 
   useEffect(() => {
     setMatchLikeOverride({});
@@ -215,22 +217,8 @@ const Post: React.FC<PostProps> = ({
   const [weatherDataArray, setWeatherDataArray] = useState<any[]>([]);
   const [weatherLoading, setWeatherLoading] = useState(false);
 
-  // Football post detection - log all posts to debug
+  // Football post detection
   const isFootballPost = post.isFootballPost || post.postedBy?.username === 'Football';
-  if (isFootballPost || post.postedBy?.username === 'Football') {
-    console.log('⚽ [Post] Football post detected:', {
-      isFootballPost: post.isFootballPost,
-      username: post.postedBy?.username,
-      hasLiveMatches: !!post.liveMatches,
-      hasMatches: !!post.matches,
-      hasTodayMatches: !!post.todayMatches,
-      hasFootballData: !!post.footballData,
-      allKeys: Object.keys(post),
-      allKeysFull: Object.keys(post).join(', '), // Show all keys as string
-      text: post.text?.substring(0, 50),
-      fullPost: post // Log entire post structure
-    });
-  }
 
   // Chess game post state
   const isChessPost = !!post?.chessGameData;
@@ -267,7 +255,6 @@ const Post: React.FC<PostProps> = ({
     try {
       if (!silent) {
         setFootballLoading(true);
-        console.log('⚽ [Post] Starting to fetch matches...');
       }
       
       const today = new Date().toISOString().split('T')[0];
@@ -281,13 +268,6 @@ const Post: React.FC<PostProps> = ({
       // Only set live matches (no upcoming matches in feed)
       setFootballMatches(liveMatches);
       
-      if (!silent) {
-        console.log('⚽ [Post] Fetched LIVE matches only:', {
-          live: liveMatches.length,
-          total: liveMatches.length,
-          liveMatches: liveMatches
-        });
-      }
     } catch (error: any) {
       console.error('⚽ [Post] Error fetching football matches:', error);
     } finally {
@@ -299,11 +279,7 @@ const Post: React.FC<PostProps> = ({
 
   // Initial fetch on mount
   useEffect(() => {
-    console.log('⚽ [Post] useEffect triggered:', { isFootballPost, username: post.postedBy?.username });
-    if (!isFootballPost) {
-      console.log('⚽ [Post] Skipping fetch - not a football post');
-      return;
-    }
+    if (!isFootballPost) return;
 
     fetchFootballMatches();
   }, [isFootballPost, fetchFootballMatches]);
@@ -313,16 +289,10 @@ const Post: React.FC<PostProps> = ({
     if (!isFootballPost || !socket) return;
 
     const handleFootballMatchUpdate = () => {
-      console.log('⚽ [Post] Match update received via socket, refreshing matches silently...');
       fetchFootballMatches(true); // Silent refresh (no loading spinner)
     };
 
-    const handleFootballPageUpdate = (data: any) => {
-      console.log('⚽ [Post] Page update received via socket:', {
-        live: data.live?.length || 0,
-        upcoming: data.upcoming?.length || 0,
-        finished: data.finished?.length || 0
-      });
+    const handleFootballPageUpdate = (_data: any) => {
       fetchFootballMatches(true); // Silent refresh
     };
 
@@ -432,7 +402,6 @@ const Post: React.FC<PostProps> = ({
     }
 
     // Navigate to ChessGame screen as spectator
-    console.log('♟️ [Post] Navigating to chess game:', { roomId, opponentId, isSpectator: true });
     navigation.navigate('ChessGame', {
       roomId,
       opponentId: opponentId || player1Id,
@@ -446,6 +415,22 @@ const Post: React.FC<PostProps> = ({
     setLocalLiked(post.likes?.includes(user?._id));
     setLocalLikesCount(post.likes?.length || 0);
   }, [post.likes, user?._id]);
+
+  useEffect(() => {
+    // Default to muted in feed (Twitter/X style).
+    setIsFeedVideoMuted(true);
+  }, [post?._id]);
+
+  useEffect(() => {
+    setFeedVideoReady(false);
+  }, [post?._id, autoPlayMedia]);
+
+  useEffect(() => {
+    // New post or leaving viewport should reset manual pause so auto-play feels consistent.
+    if (!autoPlayMedia) {
+      setIsFeedVideoPausedByUser(false);
+    }
+  }, [autoPlayMedia, post?._id]);
 
   // Ensure media starts playing when opening PostDetail.
   useEffect(() => {
@@ -479,22 +464,15 @@ const Post: React.FC<PostProps> = ({
           return;
         }
 
-        console.log(`🌤️ [Post] Parsed weather data: ${allWeatherData.length} cities available`);
-        console.log(`🌤️ [Post] Available cities:`, allWeatherData.map((w: any) => w.city).slice(0, 10));
-
         // If user is logged in, fetch their preferences and filter
         if (user?._id) {
           try {
             const prefsRes = await apiService.get(ENDPOINTS.GET_WEATHER_PREFERENCES);
             const prefsData = prefsRes;
-            
-            console.log(`🌤️ [Post] User preferences response:`, prefsData);
-            
+
             // Get user's selected city names
             const selectedCityNames = prefsData?.selectedCities || prefsData?.cities?.map((c: any) => c.name || c) || [];
-            
-            console.log(`🌤️ [Post] User selected cities:`, selectedCityNames);
-            
+
             if (selectedCityNames.length > 0) {
               // Filter to show only user's selected cities
               // Use flexible matching: handle "Amman, JO" vs "Amman" or case differences
@@ -506,31 +484,17 @@ const Post: React.FC<PostProps> = ({
                 const matches = selectedCityNames.some((cityName: string) => {
                   const selectedCityName = cityName.toLowerCase().trim();
                   // Check exact match
-                  if (weatherCityName === selectedCityName || weatherCityBase === selectedCityName) {
-                    console.log(`✅ [Post] Match found: "${w.city}" matches "${cityName}"`);
-                    return true;
-                  }
+                  if (weatherCityName === selectedCityName || weatherCityBase === selectedCityName) return true;
                   // Check if weather city contains selected city name (for "Amman, JO" vs "Amman")
-                  if (weatherCityBase.includes(selectedCityName) || selectedCityName.includes(weatherCityBase)) {
-                    console.log(`✅ [Post] Partial match found: "${w.city}" matches "${cityName}"`);
-                    return true;
-                  }
+                  if (weatherCityBase.includes(selectedCityName) || selectedCityName.includes(weatherCityBase)) return true;
                   return false;
                 });
                 return matches;
               });
-              
-              console.log(`🌤️ [Post] Filtered weather: ${filtered.length} cities from ${allWeatherData.length} total (user selected: ${selectedCityNames.length})`);
-              console.log(`🌤️ [Post] Filtered cities:`, filtered.map((w: any) => w.city));
-              
-              if (filtered.length === 0) {
-                console.warn(`⚠️ [Post] No matches found! Selected: ${selectedCityNames.join(', ')}, Available: ${allWeatherData.map((w: any) => w.city).join(', ')}`);
-              }
-              
+
               setWeatherDataArray(filtered);
             } else {
               // No cities selected, show default cities (first 5)
-              console.log('🌤️ [Post] No cities selected, showing default cities');
               setWeatherDataArray(allWeatherData.slice(0, 5));
             }
           } catch (error) {
@@ -790,15 +754,78 @@ const Post: React.FC<PostProps> = ({
     !post?.channelAddedBy &&
     (isOwner || (!!post.isCollaborative && isContributor));
   
-  // Debug log for channel detection
-  if (isYouTubePost) {
-    console.log('📺 [Post] Detected as YouTube post:', { username: post.postedBy?.username, youtubeVideoId, img: post.img });
-  }
-  
   // Check if post has regular video (mp4, webm, etc.)
   const isVideoPost = post.img && (
     post.img.match(/\.(mp4|webm|ogg|mov)$/i) || 
     post.img.includes('/video/upload/')
+  );
+  const optimizedImageUrl = (() => {
+    const raw = String(post.img || '');
+    if (!raw.includes('res.cloudinary.com') || !raw.includes('/image/upload/')) return raw;
+    return raw.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
+  })();
+  const optimizedVideoUrl = (() => {
+    const raw = String(post.img || '');
+    if (!isVideoPost || !raw.includes('res.cloudinary.com') || !raw.includes('/video/upload/')) return raw;
+    // Cloudinary delivery optimization for faster mobile playback.
+    // Keep this as delivery-time transform so existing videos benefit immediately.
+    return raw.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
+  })();
+  const feedAutoPlaySource = useMemo(
+    () => ({
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              html, body {
+                width: 100%;
+                height: 100%;
+                background: #000;
+                overflow: hidden;
+              }
+              video {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                background: #000;
+              }
+            </style>
+          </head>
+          <body>
+            <video id="v"
+              src="${optimizedVideoUrl}"
+              autoplay
+              loop
+              playsinline
+              webkit-playsinline
+              preload="auto"
+              poster="${post.thumbnail || ''}"
+              muted
+            ></video>
+            <script>
+              (function () {
+                var v = document.getElementById('v');
+                if (!v) return;
+                function send(name) {
+                  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(name);
+                }
+                v.addEventListener('playing', function(){ send('playing'); });
+                v.addEventListener('pause', function(){ send('paused'); });
+                v.addEventListener('canplay', function(){ send('canplay'); });
+                v.addEventListener('loadeddata', function(){ send('loadeddata'); });
+                v.addEventListener('error', function(){ send('error'); });
+                var p = v.play();
+                if (p && p.catch) p.catch(function(){ send('play-blocked'); });
+              })();
+            </script>
+          </body>
+        </html>
+      `,
+    }),
+    [optimizedVideoUrl, post.thumbnail]
   );
 
   const { width } = Dimensions.get('window');
@@ -912,13 +939,23 @@ const Post: React.FC<PostProps> = ({
               {post.isCollaborative && (
                 <Text style={styles.collaborativeBadge}>👥</Text>
               )}
-              <Text style={[styles.time, { color: colors.textGray }]}>
-                {`· ${formatTime(post.createdAt)}${
-                  post.editedAt
-                    ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
-                    : ''
-                }`}
-              </Text>
+              <View style={styles.timeMetaRow}>
+                <Text style={[styles.time, styles.timeLtr, { color: colors.textGray }]}>
+                  {`· ${formatTime(post.createdAt)}`}
+                </Text>
+                {post.editedAt ? (
+                  <Text
+                    style={[
+                      styles.time,
+                      styles.timeLtr,
+                      { color: colors.textGray },
+                      isRTL ? styles.timeEditedRtl : null,
+                    ]}
+                  >
+                    {` · ${t('editedPost')}`}
+                  </Text>
+                ) : null}
+              </View>
             </View>
             <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
           </TouchableOpacity>
@@ -929,13 +966,23 @@ const Post: React.FC<PostProps> = ({
               {post.isCollaborative && (
                 <Text style={styles.collaborativeBadge}>👥</Text>
               )}
-              <Text style={[styles.time, { color: colors.textGray }]}>
-                {`· ${formatTime(post.createdAt)}${
-                  post.editedAt
-                    ? ` · ${t('editedPost')} ${formatTime(post.editedAt)}`
-                    : ''
-                }`}
-              </Text>
+              <View style={styles.timeMetaRow}>
+                <Text style={[styles.time, styles.timeLtr, { color: colors.textGray }]}>
+                  {`· ${formatTime(post.createdAt)}`}
+                </Text>
+                {post.editedAt ? (
+                  <Text
+                    style={[
+                      styles.time,
+                      styles.timeLtr,
+                      { color: colors.textGray },
+                      isRTL ? styles.timeEditedRtl : null,
+                    ]}
+                  >
+                    {` · ${t('editedPost')}`}
+                  </Text>
+                ) : null}
+              </View>
             </View>
             <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
           </View>
@@ -1087,11 +1134,9 @@ const Post: React.FC<PostProps> = ({
               console.error('❌ [Post] YouTube player error:', error);
             }}
             onReady={() => {
-              console.log('✅ [Post] YouTube player ready - auto-playing');
               setYoutubePlaying(true);
             }}
             onChangeState={(state: string) => {
-              console.log('📺 [Post] YouTube state:', state);
               // Update state based on player state
               if (state === 'playing') {
                 setYoutubePlaying(true);
@@ -1171,7 +1216,7 @@ const Post: React.FC<PostProps> = ({
                   </head>
                   <body>
                     <video
-                      src="${post.img}"
+                      src="${optimizedVideoUrl}"
                       controls
                       autoplay
                       ${autoPlayMedia ? '' : 'muted'}
@@ -1208,28 +1253,119 @@ const Post: React.FC<PostProps> = ({
           />
           </View>
         ) : (
-          // FEED OPTIMIZATION: render a lightweight placeholder instead of mounting WebView in a scrolling list
-          <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
+          autoPlayMedia ? (
             <View style={styles.videoContainer}>
-              <VideoFeedPreview
-                videoUrl={post.img}
-                serverThumbnail={post.thumbnail}
-                placeholderColor={colors.background}
-                spinnerColor={colors.primary}
-              />
-              <View style={styles.youtubeOverlay}>
-                <View style={styles.youtubePlayButton}>
-                  <Text style={styles.youtubePlayIcon}>▶</Text>
+              {!feedVideoReady && (
+                <View style={styles.feedVideoPreviewOverlay}>
+                  <VideoFeedPreview
+                    videoUrl={post.img}
+                    serverThumbnail={post.thumbnail}
+                    placeholderColor={colors.background}
+                    spinnerColor={colors.primary}
+                  />
                 </View>
-                <Text style={styles.youtubeWatchText}>Tap to play</Text>
-              </View>
+              )}
+              <WebView
+                ref={feedVideoWebViewRef}
+                source={feedAutoPlaySource}
+                style={styles.videoWebView}
+                allowsFullscreenVideo={false}
+                mediaPlaybackRequiresUserAction={false}
+                javaScriptEnabled
+                domStorageEnabled
+                allowsInlineMediaPlayback
+                mixedContentMode="always"
+                originWhitelist={['*']}
+                onLoadStart={() => setFeedVideoReady(false)}
+                onLoadEnd={() => {
+                  feedVideoWebViewRef.current?.injectJavaScript(`
+                    (function () {
+                      var v = document.getElementById('v');
+                      if (!v) return;
+                      v.muted = ${isFeedVideoMuted ? 'true' : 'false'};
+                      ${isFeedVideoPausedByUser ? 'v.pause();' : 'var p = v.play(); if (p && p.catch) p.catch(function(){});'}
+                    })();
+                    true;
+                  `);
+                }}
+                onMessage={(event) => {
+                  const msg = String(event?.nativeEvent?.data || '');
+                  if (msg === 'playing' || msg === 'canplay' || msg === 'loadeddata') {
+                    setFeedVideoReady(true);
+                    return;
+                  }
+                  if (msg === 'paused') {
+                    setFeedVideoReady(true);
+                    return;
+                  }
+                  if (msg === 'error') setFeedVideoReady(false);
+                }}
+                onError={() => setFeedVideoReady(false)}
+              />
+              <TouchableOpacity
+                style={styles.feedPlayPauseButton}
+                onPress={() => {
+                  const nextPaused = !isFeedVideoPausedByUser;
+                  setIsFeedVideoPausedByUser(nextPaused);
+                  feedVideoWebViewRef.current?.injectJavaScript(`
+                    (function () {
+                      var v = document.getElementById('v');
+                      if (!v) return;
+                      if (${nextPaused ? 'true' : 'false'}) {
+                        v.pause();
+                      } else {
+                        var p = v.play();
+                        if (p && p.catch) p.catch(function(){});
+                      }
+                    })();
+                    true;
+                  `);
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.feedPlayPauseButtonText}>{isFeedVideoPausedByUser ? '▶' : '⏸'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.feedMuteButton}
+                onPress={() => {
+                  const nextMuted = !isFeedVideoMuted;
+                  setIsFeedVideoMuted(nextMuted);
+                  feedVideoWebViewRef.current?.injectJavaScript(`
+                    (function () {
+                      var v = document.getElementById('v');
+                      if (v) v.muted = ${nextMuted ? 'true' : 'false'};
+                    })();
+                    true;
+                  `);
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.feedMuteButtonText}>{isFeedVideoMuted ? '🔇' : '🔊'}</Text>
+              </TouchableOpacity>
             </View>
-          </TouchableOpacity>
+          ) : (
+            // Keep lightweight preview for off-screen posts.
+            <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
+              <View style={styles.videoContainer}>
+                <VideoFeedPreview
+                  videoUrl={optimizedVideoUrl}
+                  serverThumbnail={post.thumbnail}
+                  placeholderColor={colors.background}
+                  spinnerColor={colors.primary}
+                />
+                <View style={styles.feedPreviewOverlay} pointerEvents="none">
+                  <View style={styles.feedPreviewPlayButton}>
+                    <Text style={styles.feedPreviewPlayIcon}>▶</Text>
+                  </View>
+                </View>
+              </View>
+            </TouchableOpacity>
+          )
         )
       ) : post.img ? (
         disableNavigation ? (
           <Image 
-            source={{ uri: post.img }} 
+            source={{ uri: optimizedImageUrl }} 
             style={styles.postImage}
             resizeMode="cover"
           />
@@ -1242,7 +1378,7 @@ const Post: React.FC<PostProps> = ({
             activeOpacity={0.9}
           >
             <Image 
-              source={{ uri: post.img }} 
+              source={{ uri: optimizedImageUrl }} 
               style={styles.postImage}
               resizeMode="cover"
             />
@@ -1581,6 +1717,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  timeMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    flexShrink: 1,
+  },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1619,6 +1761,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textGray,
     marginLeft: 5,
+  },
+  timeLtr: {
+    writingDirection: 'ltr',
+    textAlign: 'left',
+  },
+  timeEditedRtl: {
+    marginLeft: 2,
   },
   username: {
     fontSize: 14,
@@ -1703,6 +1852,58 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#000',
+  },
+  feedMuteButton: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  feedPlayPauseButton: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  feedPlayPauseButtonText: {
+    fontSize: 16,
+    color: '#fff',
+  },
+  feedMuteButtonText: {
+    fontSize: 16,
+    color: '#fff',
+  },
+  feedVideoPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
+  },
+  feedPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  feedPreviewPlayButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  feedPreviewPlayIcon: {
+    fontSize: 24,
+    color: '#fff',
+    marginLeft: 2,
   },
   weatherContainer: {
     marginBottom: 10,

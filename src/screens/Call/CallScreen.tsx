@@ -61,6 +61,9 @@ const CallScreen = () => {
   const hasDeclinedRef = useRef(false);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Only dismiss when callEnded transitions to true DURING this screen session.
+  // Prevents immediate back-navigation when screen is opened with stale callEnded=true from the previous call.
+  const callWasActiveRef = useRef(false);
 
   // Set up call from notification (when navigated with userId/userName) and optionally auto-answer
   // Only for INCOMING calls from NOTIFICATION — NOT when: we're the caller (isOutgoingCall) OR we came from socket (fromSocketIncoming)
@@ -103,9 +106,18 @@ const CallScreen = () => {
     };
   }, [callAccepted, displayConnectedFromPeer, shouldAutoAnswer, connectionState, callStartTimeRef]);
 
-  // Navigate back when call ends
+  // Track once the call becomes active during this screen session
   useEffect(() => {
-    if (callEnded && navigation.canGoBack()) {
+    if (isCalling || callAccepted) {
+      callWasActiveRef.current = true;
+    }
+  }, [isCalling, callAccepted]);
+
+  // Navigate back when call ends — only if this screen saw an active call.
+  // Without this guard, a screen opened while callEnded=true (from previous call) would immediately dismiss.
+  useEffect(() => {
+    if (callEnded && callWasActiveRef.current && navigation.canGoBack()) {
+      callWasActiveRef.current = false;
       navigation.goBack();
     }
   }, [callEnded, navigation]);

@@ -55,6 +55,16 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const [index, setIndex] = useState(0);
   const slides: Slide[] = story?.slides || [];
   const slide = slides[index];
+  const optimizeCloudinaryMediaUrl = useCallback((rawUrl: string, kind: 'image' | 'video') => {
+    const url = String(rawUrl || '');
+    if (!url.includes('res.cloudinary.com')) return url;
+    if (kind === 'video') {
+      if (!url.includes('/video/upload/')) return url;
+      return url.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
+    }
+    if (!url.includes('/image/upload/')) return url;
+    return url.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
+  }, []);
 
   // Safety: after deleting a slide (or story refresh), keep index in bounds to avoid `slide` becoming undefined.
   useEffect(() => {
@@ -371,7 +381,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={styles.mediaWrap}>
         {slide.type === 'image' ? (
           <>
-            <Image source={{ uri: slide.url }} style={styles.media} resizeMode="cover" />
+            <Image source={{ uri: optimizeCloudinaryMediaUrl(slide.url, 'image') }} style={styles.media} resizeMode="cover" />
             <Pressable
               style={styles.imageHoldOverlay}
               onPressIn={onImageHoldPressIn}
@@ -380,7 +390,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
           </>
         ) : (
           <>
-            <StoryVideo uri={slide.url} onEnded={onVideoEnd} />
+            <StoryVideo uri={optimizeCloudinaryMediaUrl(slide.url, 'video')} onEnded={onVideoEnd} />
             <TouchableOpacity style={styles.tapLeft} activeOpacity={1} onPress={goPrev} />
             <TouchableOpacity style={styles.tapRight} activeOpacity={1} onPress={goNext} />
           </>

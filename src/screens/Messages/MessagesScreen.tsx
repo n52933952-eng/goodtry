@@ -28,6 +28,28 @@ const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
 const LIST_RING_STROKE = 2;
 
+const toIdString = (value: any): string => {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    if (typeof value.$oid === 'string') return value.$oid;
+    if (value._id) return toIdString(value._id);
+    if (typeof value.toString === 'function') {
+      const parsed = value.toString();
+      if (parsed && parsed !== '[object Object]') return parsed;
+    }
+    try {
+      const raw = JSON.stringify(value);
+      const match = raw.match(/[0-9a-fA-F]{24}/);
+      if (match) return match[0];
+    } catch (_) {
+      // ignore
+    }
+    return '';
+  }
+  return String(value);
+};
+
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
   const { socket, selectedConversationId, setPresenceWatchUserIds, isUserOnline, refreshPresenceSubscription } = useSocket();
@@ -568,7 +590,7 @@ const MessagesScreen = ({ navigation }: any) => {
       <TouchableOpacity
         style={[styles.conversationItem, { borderBottomColor: colors.border }]}
         onPress={() => navigation.navigate('ChatScreen', { 
-          conversationId: item._id,
+          conversationId: toIdString(item._id),
           otherUser: isGroupConv ? null : otherUserData,
           isGroup: isGroupConv,
           groupName: isGroupConv ? item.groupName : undefined,

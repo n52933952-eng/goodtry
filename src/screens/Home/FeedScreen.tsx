@@ -53,6 +53,7 @@ const FeedScreen = ({ navigation }: any) => {
   const [busyCardUserIds, setBusyCardUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
+  const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
   /** userId -> story ring info for post avatars */
   const [storyByUserId, setStoryByUserId] = useState<
     Record<string, { storyId: string; hasUnviewed: boolean }>
@@ -64,11 +65,32 @@ const FeedScreen = ({ navigation }: any) => {
   const weatherFollowBoostTsRef = useRef<number>(0);
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
+  const activeVideoPostIdRef = useRef<string | null>(null);
+  const pendingVideoSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const LOAD_MORE_DEBOUNCE_MS = 2000;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 65,
+    minimumViewTime: 180,
+  }).current;
+  const VIDEO_SWITCH_DELAY_MS = 220;
+  const VIDEO_CLEAR_DELAY_MS = 420;
 
   useEffect(() => {
     feedSessionUserIdRef.current = user?._id;
   }, [user?._id]);
+
+  useEffect(() => {
+    activeVideoPostIdRef.current = activeVideoPostId;
+  }, [activeVideoPostId]);
+
+  useEffect(() => {
+    return () => {
+      if (pendingVideoSwitchTimerRef.current) {
+        clearTimeout(pendingVideoSwitchTimerRef.current);
+        pendingVideoSwitchTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Refetch feed when screen comes into focus (e.g., navigating back from another screen)
   const fetchStoryStrip = useCallback(async () => {
@@ -524,10 +546,48 @@ const FeedScreen = ({ navigation }: any) => {
   const renderPost = ({ item }: { item: any }) => {
     const uid = item.postedBy?._id?.toString?.() ?? '';
     const ring = uid ? storyByUserId[uid] : undefined;
+    const postId = item?._id?.toString?.() ?? String(item?._id ?? '');
     return (
-      <Post post={item} storyRing={ring} storyRingReplayKey={storyRingReplayKey} />
+      <Post
+        post={item}
+        storyRing={ring}
+        storyRingReplayKey={storyRingReplayKey}
+        autoPlayMedia={!!postId && activeVideoPostId === postId}
+      />
     );
   };
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean }> }) => {
+    const visibleVideos = viewableItems.filter((entry) => {
+      if (!entry?.isViewable) return false;
+      const p = entry?.item;
+      const img = String(p?.img || '');
+      const isVideo =
+        !!img &&
+        (/\.(mp4|webm|ogg|mov)$/i.test(img) || img.includes('/video/upload/'));
+      const isYouTube = /youtube\.com|youtu\.be|ytimg\.com|img\.youtube\.com/i.test(img);
+      return isVideo && !isYouTube;
+    });
+
+    // Prefer the lower/next visible video so scrolling down activates the post in focus.
+    const preferred = visibleVideos.length > 0 ? visibleVideos[visibleVideos.length - 1] : null;
+    const nextId = preferred?.item?._id?.toString?.() ?? null;
+    const currentId = activeVideoPostIdRef.current;
+    if (currentId === nextId) return;
+
+    if (pendingVideoSwitchTimerRef.current) {
+      clearTimeout(pendingVideoSwitchTimerRef.current);
+      pendingVideoSwitchTimerRef.current = null;
+    }
+
+    const delayMs = nextId ? VIDEO_SWITCH_DELAY_MS : VIDEO_CLEAR_DELAY_MS;
+    pendingVideoSwitchTimerRef.current = setTimeout(() => {
+      // Apply only the latest stable candidate to avoid rapid toggling jitter.
+      setActiveVideoPostId(nextId);
+      activeVideoPostIdRef.current = nextId;
+      pendingVideoSwitchTimerRef.current = null;
+    }, delayMs);
+  }).current;
 
   const quickActionsHeader = (
     <View style={styles.quickAccessHeaderContainer}>
@@ -639,6 +699,7 @@ const FeedScreen = ({ navigation }: any) => {
       <FlatList
         data={loading ? [] : posts}
         renderItem={renderPost}
+        removeClippedSubviews={false}
         ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
         keyExtractor={(item, index) => {
           // Ensure unique keys by using both _id and index as fallback
@@ -655,6 +716,8 @@ const FeedScreen = ({ navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         ListHeaderComponent={
           <View>
             {quickActionsHeader}

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
@@ -29,6 +30,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
   const { conversation: initialConversation } = route.params || {};
   const { user } = useUser();
   const { colors } = useTheme();
+  const { t, tn } = useLanguage();
 
   const [conversation, setConversation] = useState<any>(initialConversation || {});
   const [leaving, setLeaving] = useState(false);
@@ -61,11 +63,11 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
       const list = Array.isArray(data) ? data : data?.following || [];
       setFollowingUsers(list);
     } catch (_) {
-      Alert.alert('Error', 'Could not load your following list');
+      Alert.alert(t('error'), t('couldNotLoadFollowingList'));
     } finally {
       setLoadingFollowing(false);
     }
-  }, [myId]);
+  }, [myId, t]);
 
   const handleOpenAddMembers = useCallback(() => {
     setAddMembersVisible(true);
@@ -107,8 +109,8 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
 
   const handleLeave = useCallback(() => {
     Alert.alert(
-      'Leave Group',
-      `Leave "${conversation.groupName || 'group'}"? You will no longer receive messages.`,
+      t('leaveGroup'),
+      tn('leaveGroupConfirm', { name: conversation.groupName || 'group' }),
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -121,7 +123,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
               // Pop back to messages list
               navigation.pop(2);
             } catch (e: any) {
-              Alert.alert('Error', e?.message || 'Failed to leave group');
+              Alert.alert(t('error'), e?.message || t('failedToLeaveGroup'));
             } finally {
               setLeaving(false);
             }
@@ -129,12 +131,12 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         },
       ]
     );
-  }, [conversation._id, conversation.groupName, navigation]);
+  }, [conversation._id, conversation.groupName, navigation, t, tn]);
 
   const handleDeleteGroup = useCallback(() => {
     Alert.alert(
-      'Delete Group',
-      `Permanently delete "${conversation.groupName || 'group'}" and all its messages? This cannot be undone.`,
+      t('deleteGroup'),
+      tn('deleteGroupConfirm', { name: conversation.groupName || 'group' }),
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -146,7 +148,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
               await apiService.delete(`${ENDPOINTS.DELETE_GROUP}/${conversation._id}`);
               navigation.pop(2);
             } catch (e: any) {
-              Alert.alert('Error', e?.message || 'Failed to delete group');
+              Alert.alert(t('error'), e?.message || t('failedToDeleteGroup'));
             } finally {
               setDeletingGroup(false);
             }
@@ -154,13 +156,13 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         },
       ]
     );
-  }, [conversation._id, conversation.groupName, navigation]);
+  }, [conversation._id, conversation.groupName, navigation, t, tn]);
 
   const handleRemoveMember = useCallback(
     (memberId: string, memberName: string) => {
       Alert.alert(
-        'Remove Member',
-        `Remove ${memberName} from the group?`,
+        t('removeMember'),
+        tn('removeMemberConfirm', { name: memberName }),
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -179,7 +181,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                   ),
                 }));
               } catch (e: any) {
-                Alert.alert('Error', e?.message || 'Failed to remove member');
+                Alert.alert(t('error'), e?.message || t('failedToRemoveMember'));
               } finally {
                 setRemovingId(null);
               }
@@ -188,7 +190,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         ]
       );
     },
-    [conversation._id]
+    [conversation._id, t, tn]
   );
 
   const participants: any[] = conversation.participants || [];
@@ -217,12 +219,12 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
             </Text>
             {isAdmin && (
               <View style={[styles.badge, { backgroundColor: '#f59e0b' }]}>
-                <Text style={styles.badgeText}>Admin</Text>
+                <Text style={styles.badgeText}>{t('admin')}</Text>
               </View>
             )}
             {isMe && (
               <View style={[styles.badge, { backgroundColor: colors.border }]}>
-                <Text style={[styles.badgeText, { color: colors.textGray }]}>You</Text>
+                <Text style={[styles.badgeText, { color: colors.textGray }]}>{t('you')}</Text>
               </View>
             )}
           </View>
@@ -234,7 +236,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         {/* Admin remove button */}
         {iAmAdmin && !isMe && (
           <TouchableOpacity
-            onPress={() => handleRemoveMember(pid, item.name || item.username || 'this member')}
+            onPress={() => handleRemoveMember(pid, item.name || item.username || t('unknown'))}
             disabled={removingId === pid}
             style={styles.removeBtn}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -257,9 +259,9 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Text style={[styles.backText, { color: colors.primary }]}>← Back</Text>
+          <Text style={[styles.backText, { color: colors.primary }]}>{`← ${t('back')}`}</Text>
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Group Info</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('groupInfo')}</Text>
         <View style={{ minWidth: 60 }} />
       </View>
 
@@ -278,18 +280,18 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
               style={[styles.editNameBtn, { backgroundColor: colors.border }]}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={{ fontSize: 13, color: colors.primary }}>✏️ Edit</Text>
+              <Text style={{ fontSize: 13, color: colors.primary }}>{`✏️ ${t('edit')}`}</Text>
             </TouchableOpacity>
           )}
         </View>
         <Text style={[styles.memberCount, { color: colors.textGray }]}>
-          {participants.length} member{participants.length !== 1 ? 's' : ''}
+          {participants.length} {t('members')}
         </Text>
       </View>
 
       {/* Members list */}
       <Text style={[styles.sectionHeader, { color: colors.textGray, backgroundColor: colors.background }]}>
-        MEMBERS
+        {t('members').toUpperCase()}
       </Text>
       <FlatList
         data={participants}
@@ -303,7 +305,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                 style={[styles.addMembersBtn, { backgroundColor: colors.primary }]}
                 onPress={handleOpenAddMembers}
               >
-                <Text style={styles.addMembersBtnText}>➕ Add Members</Text>
+                <Text style={styles.addMembersBtnText}>{`➕ ${t('addMembers')}`}</Text>
               </TouchableOpacity>
             )}
             {!iAmAdmin && (
@@ -315,7 +317,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                 {leaving ? (
                   <ActivityIndicator size="small" color={colors.error} />
                 ) : (
-                  <Text style={[styles.leaveBtnText, { color: colors.error }]}>🚪 Leave Group</Text>
+                  <Text style={[styles.leaveBtnText, { color: colors.error }]}>{`🚪 ${t('leaveGroup')}`}</Text>
                 )}
               </TouchableOpacity>
             )}
@@ -328,7 +330,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                 {deletingGroup ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.deleteGroupBtnText}>🗑️ Delete Group</Text>
+                  <Text style={styles.deleteGroupBtnText}>{`🗑️ ${t('deleteGroup')}`}</Text>
                 )}
               </TouchableOpacity>
             )}
@@ -339,12 +341,12 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
       <Modal visible={editNameVisible} transparent animationType="fade" onRequestClose={() => setEditNameVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalBox, { backgroundColor: colors.backgroundLight }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Group Name</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('editGroupName')}</Text>
             <TextInput
               style={[styles.modalInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
               value={editNameValue}
               onChangeText={setEditNameValue}
-              placeholder="Group name"
+              placeholder={t('groupNamePlaceholder')}
               placeholderTextColor={colors.textGray}
               maxLength={50}
               autoFocus
@@ -358,7 +360,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                 disabled={savingName || !editNameValue.trim()}
                 style={[styles.modalSaveBtn, { backgroundColor: colors.primary, opacity: (!editNameValue.trim() || savingName) ? 0.5 : 1 }]}
               >
-                {savingName ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalSaveText}>Save</Text>}
+                {savingName ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalSaveText}>{t('save')}</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -370,7 +372,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         <View style={styles.modalOverlay}>
           <View style={[styles.addMembersBox, { backgroundColor: colors.backgroundLight }]}>
             <View style={[styles.addMembersHeader, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>Add Members</Text>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>{t('addMembers')}</Text>
               <TouchableOpacity onPress={() => setAddMembersVisible(false)}>
                 <Text style={{ fontSize: 20, color: colors.textGray }}>✕</Text>
               </TouchableOpacity>
@@ -378,7 +380,7 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
             {loadingFollowing ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 32 }} />
             ) : followingUsers.length === 0 ? (
-              <Text style={[styles.emptyFollowing, { color: colors.textGray }]}>No one to add from your following list</Text>
+              <Text style={[styles.emptyFollowing, { color: colors.textGray }]}>{t('noOneToAddFromFollowing')}</Text>
             ) : (
               <FlatList
                 data={followingUsers.filter((u: any) => !currentParticipantIds.has(idStr(u._id || u)))}
@@ -403,20 +405,20 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
                         )}
                       </View>
                       {alreadyIn ? (
-                        <Text style={[{ fontSize: 12 }, { color: colors.textGray }]}>Already in</Text>
+                        <Text style={[{ fontSize: 12 }, { color: colors.textGray }]}>{t('alreadyIn')}</Text>
                       ) : (
                         <TouchableOpacity
                           onPress={() => handleAddMember(uid)}
                           disabled={adding}
                           style={[styles.addBtn, { backgroundColor: colors.primary }]}
                         >
-                          {adding ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.addBtnText}>Add</Text>}
+                          {adding ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.addBtnText}>{t('addMember')}</Text>}
                         </TouchableOpacity>
                       )}
                     </View>
                   );
                 }}
-                ListEmptyComponent={<Text style={[styles.emptyFollowing, { color: colors.textGray }]}>Everyone you follow is already in this group</Text>}
+                ListEmptyComponent={<Text style={[styles.emptyFollowing, { color: colors.textGray }]}>{t('everyoneAlreadyInGroup')}</Text>}
               />
             )}
           </View>

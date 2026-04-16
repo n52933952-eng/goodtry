@@ -27,6 +27,8 @@ interface SocketContextType {
   selectedConversationPartnerId: string | null;
   setSelectedConversationPartnerId: (userId: string | null) => void;
   setPresenceWatchUserIds: (userIds: string[]) => void;
+  /** Returns true when the user currently has an active call (in-call badge, like web). */
+  isUserBusy: (userId: unknown) => boolean;
 }
 
 const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -35,6 +37,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
   const { addPost, updatePost, deletePost } = usePost();
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
+  const [busyUsers, setBusyUsers] = useState<Set<string>>(new Set());
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
   const [cardChallenges,  setCardChallenges]  = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
@@ -268,11 +271,21 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     [socketReachable, presenceMap, onlineUsers]
   );
 
+  const isUserBusy = useCallback(
+    (rawUserId: unknown): boolean => {
+      const id = normalizePresenceUserId(rawUserId);
+      if (!id) return false;
+      return busyUsers.has(id);
+    },
+    [busyUsers]
+  );
+
   useEffect(() => {
     return socketService.addDisconnectListener(() => {
       setSocketReachable(false);
       setOnlineUsers([]);
       setPresenceMap({});
+      setBusyUsers(new Set());
       presenceExplicitOfflineRef.current.clear();
       presenceSubscribedUserIdsRef.current = new Set();
     });
@@ -287,6 +300,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setIsNotificationCountLoaded(false);
       setOnlineUsers([]);
       setPresenceMap({});
+      setBusyUsers(new Set());
       setSocketReachable(false);
       presenceExplicitOfflineRef.current.clear();
       presenceSubscribedUserIdsRef.current = new Set();
@@ -345,6 +359,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Otherwise handlers stay on the old socket and chessChallenge / posts / etc. never fire.
     const installCoreSocketListeners = () => {
     socketService.off('getOnlineUser');
+    socketService.off('callBusy');
+    socketService.off('cancleCall');
     socketService.off('presenceSnapshot');
     socketService.off('presenceUpdate');
     socketService.off(SOCKET_EVENTS.NEW_POST);
@@ -438,6 +454,35 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       });
       console.log('👥 Online users event received!', incoming.length, '→', filtered.length, 'after offline filter');
       setOnlineUsers(filtered);
+      // Parse inCall field — backend already includes it (same source as web busyUsers)
+      const busy = new Set<string>();
+      incoming.forEach((u: any) => {
+        if (u?.inCall) {
+          const uid = extractOnlineEntryUserId(u);
+          if (uid) busy.add(uid);
+        }
+      });
+      setBusyUsers(busy);
+    });
+
+    // Real-time busy tracking: mark both users busy when a call is initiated
+    socketService.on('callBusy', ({ userToCall, from }: { userToCall?: string; from?: string }) => {
+      setBusyUsers((prev) => {
+        const next = new Set(prev);
+        if (userToCall) next.add(String(userToCall));
+        if (from) next.add(String(from));
+        return next;
+      });
+    });
+
+    // Real-time busy tracking: unmark users when a call is cancelled or ended
+    socketService.on('cancleCall', ({ userToCall, from }: { userToCall?: string; from?: string }) => {
+      setBusyUsers((prev) => {
+        const next = new Set(prev);
+        if (userToCall) next.delete(String(userToCall));
+        if (from) next.delete(String(from));
+        return next;
+      });
     });
 
     // Listen for new posts
@@ -843,6 +888,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       selectedConversationPartnerId,
       setSelectedConversationPartnerId,
       setPresenceWatchUserIds,
+      isUserBusy,
     }}>
       {children}
     </SocketContext.Provider>

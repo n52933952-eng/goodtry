@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 
@@ -21,10 +22,46 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
   const { followingUsers = [] } = route.params || {};
   const { user } = useUser();
   const { colors } = useTheme();
+  const { t, tn, language } = useLanguage();
 
   const [groupName, setGroupName] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
+  const EXCLUDED_SYSTEM_USERNAMES = useMemo(
+    () =>
+      new Set(
+        [
+          'Football',
+          'Weather',
+          'AlJazeera',
+          'NBCNews',
+          'BeinSportsNews',
+          'SkyNews',
+          'Cartoonito',
+          'NatGeoKids',
+          'SciShowKids',
+          'JJAnimalTime',
+          'KidsArabic',
+          'NatGeoAnimals',
+          'MBCDrama',
+          'Fox11',
+        ].map((u) => u.toLowerCase())
+      ),
+    []
+  );
+
+  const realUsersOnly = useMemo(() => {
+    return (followingUsers || []).filter((u: any) => {
+      const username = String(u?.username || '').trim().toLowerCase();
+      return username && !EXCLUDED_SYSTEM_USERNAMES.has(username);
+    });
+  }, [followingUsers, EXCLUDED_SYSTEM_USERNAMES]);
+
+  useEffect(() => {
+    // Keep selection valid if list updates (e.g. user had selected a system account before filter).
+    const allowed = new Set(realUsersOnly.map((u: any) => String(u._id)));
+    setSelectedIds((prev) => prev.filter((id) => allowed.has(String(id))));
+  }, [realUsersOnly]);
 
   const toggleMember = useCallback((id: string) => {
     setSelectedIds((prev) =>
@@ -34,11 +71,11 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
 
   const handleCreate = async () => {
     if (!groupName.trim()) {
-      Alert.alert('Error', 'Please enter a group name');
+      Alert.alert(t('error'), t('pleaseEnterGroupName'));
       return;
     }
     if (selectedIds.length === 0) {
-      Alert.alert('Error', 'Select at least one member');
+      Alert.alert(t('error'), t('selectAtLeastOneMember'));
       return;
     }
 
@@ -57,7 +94,7 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
         conversation: data,
       });
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to create group');
+      Alert.alert(t('error'), e?.message || t('failedToCreateGroup'));
     } finally {
       setCreating(false);
     }
@@ -83,9 +120,9 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
           </View>
         )}
         <View style={styles.userInfo}>
-          <Text style={[styles.userName, { color: colors.text }]}>{item.name || item.username}</Text>
+          <Text style={[styles.userName, styles.userNameFixedAlign, { color: colors.text }]}>{item.name || item.username}</Text>
           {item.username && item.name !== item.username && (
-            <Text style={[styles.userHandle, { color: colors.textGray }]}>@{item.username}</Text>
+            <Text style={[styles.userHandle, styles.userNameFixedAlign, { color: colors.textGray }]}>@{item.username}</Text>
           )}
         </View>
         <View style={[styles.checkbox, { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary : 'transparent' }]}>
@@ -102,9 +139,9 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.cancelBtn}>
-          <Text style={[styles.cancelText, { color: colors.textGray }]}>Cancel</Text>
+          <Text style={[styles.cancelText, { color: colors.textGray }]}>{t('cancel')}</Text>
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>New Group</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('newGroup')}</Text>
         <TouchableOpacity
           onPress={handleCreate}
           disabled={creating || !groupName.trim() || selectedIds.length === 0}
@@ -119,7 +156,7 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
                 { color: (!groupName.trim() || selectedIds.length === 0) ? colors.textGray : colors.primary },
               ]}
             >
-              Create
+              {t('create')}
             </Text>
           )}
         </TouchableOpacity>
@@ -127,10 +164,10 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
 
       {/* Group Name Input */}
       <View style={[styles.nameSection, { borderBottomColor: colors.border, backgroundColor: colors.backgroundLight }]}>
-        <Text style={[styles.sectionLabel, { color: colors.textGray }]}>GROUP NAME</Text>
+        <Text style={[styles.sectionLabel, { color: colors.textGray }]}>{t('groupNameLabel')}</Text>
         <TextInput
           style={[styles.nameInput, { color: colors.text }]}
-          placeholder="Enter group name..."
+          placeholder={t('enterGroupName')}
           placeholderTextColor={colors.textGray}
           value={groupName}
           onChangeText={setGroupName}
@@ -144,23 +181,26 @@ const CreateGroupScreen = ({ route, navigation }: any) => {
       <View style={[styles.countRow, { borderBottomColor: colors.border }]}>
         <Text style={[styles.countText, { color: colors.textGray }]}>
           {selectedIds.length > 0
-            ? `${selectedIds.length} member${selectedIds.length > 1 ? 's' : ''} selected`
-            : 'Select members from your following list'}
+            ? tn('membersSelected', {
+                count: selectedIds.length,
+                suffix: language === 'en' ? (selectedIds.length > 1 ? 's' : '') : '',
+              })
+            : t('selectMembersFromFollowing')}
         </Text>
       </View>
 
       {/* Following Users List */}
-      {followingUsers.length === 0 ? (
+      {realUsersOnly.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={[styles.emptyText, { color: colors.text }]}>👥</Text>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>No following users</Text>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>{t('noFollowingUsers')}</Text>
           <Text style={[styles.emptySubtitle, { color: colors.textGray }]}>
-            Follow people to add them to a group
+            {t('followPeopleToAddGroup')}
           </Text>
         </View>
       ) : (
         <FlatList
-          data={followingUsers}
+          data={realUsersOnly}
           keyExtractor={(item) => item._id}
           renderItem={renderUser}
           showsVerticalScrollIndicator={false}
@@ -219,6 +259,9 @@ const styles = StyleSheet.create({
   userInfo: { flex: 1, marginLeft: 12 },
   userName: { fontSize: 15, fontWeight: '600' },
   userHandle: { fontSize: 13, marginTop: 1 },
+  userNameFixedAlign: {
+    textAlign: 'left',
+  },
   checkbox: {
     width: 24,
     height: 24,

@@ -1159,10 +1159,9 @@ export const WebRTCProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     clearCallData().catch(() => {});
     lastCallStateResetAtRef.current = Date.now(); // Allow next incoming call even if React state is still stale
     console.log('✅ [WebRTC] resetAllCallState – state cleared');
-    // IMMEDIATE reset - no delays, camera/mic already released in cleanupPeer
-    setCallEnded(false);
+    // Keep callEnded=true until a fresh call starts so AppNavigator can reliably dismiss CallScreen.
     processingCallCanceledRef.current = false;
-    console.log('✅ [WebRTC] resetAllCallState – ready for new calls (IMMEDIATE)');
+    console.log('✅ [WebRTC] resetAllCallState – call UI should be dismissed');
     // DISABLED: Media warmup causes camera lock conflicts - WhatsApp doesn't do this
     // scheduleMediaWarmup('post-call-reset');
   }, [scheduleMediaWarmup]);

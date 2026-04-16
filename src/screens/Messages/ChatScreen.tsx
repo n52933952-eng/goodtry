@@ -67,7 +67,7 @@ const WA = {
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser, isGroup, groupName, conversation: groupConversation } = route.params || {};
   const { user } = useUser();
-  const { socket, isUserOnline, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
+  const { socket, isUserOnline, isUserBusy, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC();
   const { colors, theme } = useTheme();
 
@@ -122,6 +122,31 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
+  const toIdString = useCallback((value: any): string => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object') {
+      if (typeof value.$oid === 'string') return value.$oid;
+      if (value._id) return toIdString(value._id);
+      if (typeof value.toString === 'function') {
+        const parsed = value.toString();
+        if (parsed && parsed !== '[object Object]') return parsed;
+      }
+      try {
+        const raw = JSON.stringify(value);
+        const match = raw.match(/[0-9a-fA-F]{24}/);
+        if (match) return match[0];
+      } catch (_) {
+        // ignore
+      }
+      return '';
+    }
+    return String(value);
+  }, []);
+
+  const routeConversationIdStr = useMemo(() => toIdString(conversationId), [conversationId, toIdString]);
+  const routeGroupConversationIdStr = useMemo(() => toIdString(groupConversation?._id), [groupConversation?._id, toIdString]);
+
   const currentUserIdStr = useMemo(() => (user?._id?.toString?.() ?? String(user?._id ?? '')), [user?._id]);
   
   // Track current conversation ID with ref (like web version)
@@ -144,11 +169,25 @@ const ChatScreen = ({ route, navigation }: any) => {
     () => isUserOnline(partnerPresenceId),
     [isUserOnline, partnerPresenceId]
   );
+  const isPartnerBusy = useMemo(
+    () => isUserBusy(partnerPresenceId),
+    [isUserBusy, partnerPresenceId]
+  );
 
   const isVideoUrl = (url: string) => {
     if (!url) return false;
     return url.includes('/video/upload/') || /\.(mp4|webm|ogg|mov)$/i.test(url);
   };
+  const optimizeCloudinaryMediaUrl = useCallback((rawUrl: string, kind: 'image' | 'video') => {
+    const url = String(rawUrl || '');
+    if (!url.includes('res.cloudinary.com')) return url;
+    if (kind === 'video') {
+      if (!url.includes('/video/upload/')) return url;
+      return url.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
+    }
+    if (!url.includes('/image/upload/')) return url;
+    return url.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
+  }, []);
 
   const handleNewMessage = useCallback((data: any) => {
     // Ignore own messages — handleSend already adds them optimistically
@@ -179,7 +218,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       (msgConvId && !curConvStr && partnerIdStr && senderStr === partnerIdStr)
     ) {
       if (!currentConvId && data.conversationId) {
-        setCurrentConversationId(data.conversationId);
+        setCurrentConversationId(toIdString(data.conversationId));
       }
 
       setMessages((prev) => {
@@ -190,16 +229,10 @@ const ChatScreen = ({ route, navigation }: any) => {
         // While this screen is open, each new incoming message must mark the partner's messages as
         // seen (fetchMessages only emits markmessageasSeen once). Otherwise the sender never gets
         // `messagesSeen` and ticks stay gray even when both users are in the chat.
-        const convForSeen =
-          curConvStr ||
-          msgConvId ||
-          (data.conversationId != null
-            ? typeof data.conversationId === 'string'
-              ? data.conversationId
-              : data.conversationId.toString?.() ?? String(data.conversationId)
-            : '');
-        const partnerForSeen = otherUser?._id ?? (userId != null ? userId : null);
-        if (socket && convForSeen && partnerForSeen && user?._id) {
+        const convForSeen = curConvStr || msgConvId || toIdString(data.conversationId);
+        const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+        const partnerForSeen = isGroupConv ? null : (otherUser?._id ?? (userId != null ? userId : null));
+        if (socket && convForSeen && user?._id && (isGroupConv || partnerForSeen)) {
           socket.emit('markmessageasSeen', { conversationId: convForSeen, userId: partnerForSeen });
         }
         return [...prev, data];
@@ -220,7 +253,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         }, 80);
       }
     }
-  }, [user?._id, userId, otherUser?._id, socket]);
+  }, [user?._id, userId, otherUser?._id, socket, isGroup, groupConversation?.isGroup, toIdString]);
 
   // Real-time: reaction on a message – backend emits messageReactionUpdated with { conversationId, messageId } (same as web)
   const handleMessageReactionUpdated = useCallback(async (data: { conversationId?: string; messageId?: string }) => {
@@ -230,16 +263,22 @@ const ChatScreen = ({ route, navigation }: any) => {
 
     // Backend only sends conversationId + messageId; refetch messages to get updated reactions (same as web)
     try {
+      const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+      const existingConversationId = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
+      const groupConvId = existingConversationId;
       const otherUserId = otherUser?._id ?? userId;
-      if (!otherUserId) return;
-      const url = `${ENDPOINTS.GET_MESSAGES}/${typeof otherUserId === 'string' ? otherUserId : (otherUserId as any)?._id ?? otherUserId}`;
+      if (!existingConversationId && !isGroupConv && !otherUserId) return;
+      if (isGroupConv && !groupConvId) return;
+      const url = existingConversationId
+        ? `${ENDPOINTS.GET_MESSAGES}/${String(existingConversationId)}?conversationId=${String(existingConversationId)}&limit=${MESSAGE_PAGE_SIZE}`
+        : `${ENDPOINTS.GET_MESSAGES}/${typeof otherUserId === 'string' ? otherUserId : (otherUserId as any)?._id ?? otherUserId}?limit=${MESSAGE_PAGE_SIZE}`;
       const response = await apiService.get(url);
       const messagesData = response?.messages ?? (Array.isArray(response) ? response : []);
       setMessages(messagesData);
     } catch (e) {
       console.warn('❌ [ChatScreen] messageReactionUpdated refetch failed:', e);
     }
-  }, [otherUser?._id, userId]);
+  }, [otherUser?._id, userId, isGroup, groupConversation?.isGroup, routeConversationIdStr, routeGroupConversationIdStr, toIdString]);
 
   // Real-time: message deleted – backend emits messageDeleted with { conversationId, messageId } (same as web)
   const handleMessagesSeen = useCallback(
@@ -337,17 +376,17 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   // Update current conversation ID ref whenever it changes
   useEffect(() => {
-    currentConversationIdRef.current = currentConversationId || conversationId || null;
-  }, [currentConversationId, conversationId]);
+    currentConversationIdRef.current = toIdString(currentConversationId) || routeConversationIdStr || null;
+  }, [currentConversationId, routeConversationIdStr, toIdString]);
 
   // Set up socket listeners: newMessage, messageReactionUpdated, messageDeleted (match backend + web)
   useEffect(() => {
     if (!socket || !user?._id) return;
 
     const handleGroupDeleted = ({ conversationId: deletedId }: { conversationId: string }) => {
-      const thisId = currentConversationId || conversationId;
+      const thisId = toIdString(currentConversationId) || routeConversationIdStr;
       if (deletedId && String(deletedId) === String(thisId)) {
-        Alert.alert('Group Deleted', 'This group has been deleted by the admin.');
+        Alert.alert(t('groupDeletedTitle'), t('groupDeletedByAdmin'));
         navigation.pop(1);
       }
     };
@@ -398,7 +437,8 @@ const ChatScreen = ({ route, navigation }: any) => {
     handleMessageDelivered,
     navigation,
     currentConversationId,
-    conversationId,
+    routeConversationIdStr,
+    toIdString,
   ]);
 
   useEffect(() => {
@@ -417,7 +457,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const emitTypingStop = useCallback(() => {
     if (!socket || !user?._id) return;
     const isGroupConv = !!(isGroup || groupConversation?.isGroup);
-    const conv = currentConversationIdRef.current || conversationId || groupConversation?._id;
+    const conv = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
     if (isGroupConv) {
       if (!conv) return;
       socket.emit('typingStop', { from: user._id, conversationId: conv, isGroup: true });
@@ -426,14 +466,14 @@ const ChatScreen = ({ route, navigation }: any) => {
       if (!toId) return;
       socket.emit('typingStop', { from: user._id, to: toId, conversationId: conv || undefined });
     }
-  }, [socket, user?._id, otherUser?._id, userId, conversationId, isGroup, groupConversation?.isGroup, groupConversation?._id]);
+  }, [socket, user?._id, otherUser?._id, userId, routeConversationIdStr, routeGroupConversationIdStr, isGroup, groupConversation?.isGroup, toIdString]);
 
   const handleMessageTextChange = useCallback(
     (text: string) => {
       setNewMessage(text);
       if (!socket || !user?._id) return;
       const isGroupConv = !!(isGroup || groupConversation?.isGroup);
-      const conv = currentConversationIdRef.current || conversationId || groupConversation?._id;
+      const conv = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
       if (isGroupConv) {
         if (!conv) return;
         socket.emit('typingStart', { from: user._id, conversationId: conv, isGroup: true });
@@ -451,24 +491,24 @@ const ChatScreen = ({ route, navigation }: any) => {
         typingStopTimeoutRef.current = null;
       }, 2000);
     },
-    [socket, user?._id, otherUser?._id, userId, conversationId, isGroup, groupConversation?.isGroup, groupConversation?._id, emitTypingStop]
+    [socket, user?._id, otherUser?._id, userId, routeConversationIdStr, routeGroupConversationIdStr, isGroup, groupConversation?.isGroup, emitTypingStop, toIdString]
   );
 
   // Emit joinConversationRoom for groups so the user is always in the Socket.IO room,
   // even when they were added to the group after their initial connection.
   useEffect(() => {
     const isGroupConv = !!(isGroup || groupConversation?.isGroup);
-    const groupConvId = conversationId || groupConversation?._id;
+    const groupConvId = routeConversationIdStr || routeGroupConversationIdStr;
     if (!isGroupConv || !groupConvId || !socket || !user?._id) return;
     socket.emit('joinConversationRoom', { conversationId: String(groupConvId) });
-  }, [isGroup, groupConversation?.isGroup, conversationId, groupConversation?._id, socket, user?._id]);
+  }, [isGroup, groupConversation?.isGroup, routeConversationIdStr, routeGroupConversationIdStr, socket, user?._id]);
 
   useEffect(() => {
     hasMarkedSeenRef.current = false;
     previousScrollYRef.current = 0;
 
-    if (conversationId) {
-      setCurrentConversationId(conversationId);
+    if (routeConversationIdStr) {
+      setCurrentConversationId(routeConversationIdStr);
       setTimeout(() => { fetchMessages(); }, 50);
     } else if (userId && otherUser) {
       setLoading(false);
@@ -477,11 +517,11 @@ const ChatScreen = ({ route, navigation }: any) => {
     } else {
       setLoading(false);
     }
-  }, [conversationId, userId, otherUser?._id, user?._id]);
+  }, [routeConversationIdStr, userId, otherUser?._id, user?._id]);
 
   // Track currently open conversation globally (used to avoid incrementing unread while viewing)
   useEffect(() => {
-    const id = (currentConversationId || conversationId || null)?.toString?.() ?? (currentConversationId || conversationId || null);
+    const id = toIdString(currentConversationId) || routeConversationIdStr || null;
     setSelectedConversationId(id);
     const partnerId = otherUser?._id != null ? String(otherUser._id) : null;
     setSelectedConversationPartnerId(partnerId);
@@ -489,7 +529,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       setSelectedConversationId(null);
       setSelectedConversationPartnerId(null);
     };
-  }, [setSelectedConversationId, setSelectedConversationPartnerId, currentConversationId, conversationId, otherUser?._id]);
+  }, [setSelectedConversationId, setSelectedConversationPartnerId, currentConversationId, routeConversationIdStr, otherUser?._id, toIdString]);
 
   useFocusEffect(
     useCallback(() => {
@@ -517,12 +557,15 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const fetchMessages = useCallback(async (loadMore = false, beforeId: string | null = null) => {
     const isGroupConv = isGroup || groupConversation?.isGroup;
-    const groupConvId = conversationId || groupConversation?._id;
+    const existingConversationId = toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr;
+    const groupConvId = existingConversationId;
 
     // For 1-to-1, resolve the other user's ID as before
     const otherUserId = !isGroupConv ? (otherUser?._id || userId || (route.params?.otherUser?._id) || (route.params?.userId)) : null;
 
-    if (!isGroupConv && !otherUserId) {
+    // If we have a conversation id (from list/opened chat), always fetch by conversationId.
+    // This mirrors web behavior and avoids relying on isGroup detection from route state.
+    if (!existingConversationId && !isGroupConv && !otherUserId) {
       if (!loadMore) setLoading(false);
       return;
     }
@@ -543,9 +586,12 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
 
     try {
-      // Group: use placeholder otherUserId but pass conversationId as query param
-      let url = `${ENDPOINTS.GET_MESSAGES}/${isGroupConv ? '_group' : otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
-      if (isGroupConv && groupConvId) url += `&conversationId=${groupConvId}`;
+      let url = '';
+      if (existingConversationId) {
+        url = `${ENDPOINTS.GET_MESSAGES}/${String(existingConversationId)}?limit=${MESSAGE_PAGE_SIZE}&conversationId=${String(existingConversationId)}`;
+      } else {
+        url = `${ENDPOINTS.GET_MESSAGES}/${otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
+      }
       if (beforeId) url += `&beforeId=${beforeId}`;
 
       const response = await apiService.get(url);
@@ -588,15 +634,16 @@ const ChatScreen = ({ route, navigation }: any) => {
       }
       setHasMoreMessages(hasMore);
 
-      const convId = currentConversationId || conversationId;
-      const partnerId = otherUser?._id ?? userId;
+      const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+      const convId = toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr;
+      const partnerId = isGroupConv ? null : (otherUser?._id ?? userId);
       const sk = socket as { isSocketConnected?: () => boolean; emit: (e: string, p?: unknown) => void };
       // Only set hasMarkedSeenRef when the socket is actually connected — socketService.emit no-ops
       // if TCP is not up yet; setting the ref anyway used to skip mark-seen forever (kill app / cold start).
       if (
         convId &&
-        partnerId &&
         user?._id &&
+        (isGroupConv || partnerId) &&
         !hasMarkedSeenRef.current &&
         typeof sk.isSocketConnected === 'function' &&
         sk.isSocketConnected()
@@ -618,12 +665,14 @@ const ChatScreen = ({ route, navigation }: any) => {
   }, [
     otherUser?._id,
     userId,
-    conversationId,
+    routeConversationIdStr,
+    routeGroupConversationIdStr,
     currentConversationId,
     socket,
     user?._id,
     currentUserIdStr,
     getSenderId,
+    toIdString,
   ]);
 
   // After socket connects/reconnects, ack delivery + mark conversation read (fetch may have run before TCP was up).
@@ -640,16 +689,17 @@ const ChatScreen = ({ route, navigation }: any) => {
         if (ackIds.length) {
           sk.emit?.('ackMessageDelivered', { messageIds: ackIds });
         }
-        const convId = currentConversationIdRef.current ?? conversationId;
-        const partnerId = otherUser?._id ?? userId;
-        if (convId && partnerId && user?._id && sk.isSocketConnected?.()) {
+        const isGroupConv = !!(isGroup || groupConversation?.isGroup);
+        const convId = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
+        const partnerId = isGroupConv ? null : (otherUser?._id ?? userId);
+        if (convId && user?._id && (isGroupConv || partnerId) && sk.isSocketConnected?.()) {
           sk.emit?.('markmessageasSeen', { conversationId: convId, userId: partnerId });
           hasMarkedSeenRef.current = true;
         }
       }, 500);
     });
     return () => remove?.();
-  }, [socket, currentUserIdStr, getSenderId, conversationId, otherUser?._id, userId, user?._id]);
+  }, [socket, currentUserIdStr, getSenderId, routeConversationIdStr, routeGroupConversationIdStr, groupConversation?.isGroup, isGroup, otherUser?._id, userId, user?._id, toIdString]);
 
   // When returning from background, refresh messages + re-mark as seen.
   // This prevents "push stops but chat list still stale until I leave and come back".
@@ -692,7 +742,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     if (!newMessage.trim() && !pendingMedia) return;
 
     const isGroupConv = isGroup || groupConversation?.isGroup;
-    const groupConvId = isGroupConv ? (currentConversationId || conversationId || groupConversation?._id) : null;
+    const groupConvId = isGroupConv ? (toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr) : null;
     const recipientIdRaw = isGroupConv ? null : (otherUser?._id ?? userId);
     const recipientId = recipientIdRaw != null ? String(recipientIdRaw) : '';
     if (!isGroupConv && !recipientId.trim()) return;
@@ -941,6 +991,12 @@ const ChatScreen = ({ route, navigation }: any) => {
   };
 
   const handleCallPress = async (type: 'voice' | 'video') => {
+    // Block if partner is already in a call
+    if (isPartnerBusy) {
+      Alert.alert(t('userBusyTitle') || 'User Busy', t('userBusyMessage') || 'This user is currently in a call.');
+      return;
+    }
+
     // CRITICAL: Prevent duplicate calls if already calling or a call is in progress
     // Allow new calls if callEnded is true (previous call finished) OR if callAccepted is false (no active call)
     // Only block if: actively calling OR (call accepted AND call not ended)
@@ -987,6 +1043,8 @@ const ChatScreen = ({ route, navigation }: any) => {
           console.error('❌ [ChatScreen] Call initiation error:', error?.message);
           isCallInProgressRef.current = false;
           initiatedCallAtRef.current = 0;
+          // If callUser failed before isCalling was set, CallScreen won't auto-dismiss — go back manually.
+          if (navigation.canGoBack()) navigation.goBack();
         }
       }, 300);
     } catch (error: any) {
@@ -1014,7 +1072,8 @@ const ChatScreen = ({ route, navigation }: any) => {
   const CHAT_MEDIA_SIZE = 220;
 
   const buildChatVideoHtml = (videoUrl: string) => {
-    const safe = String(videoUrl).replace(/"/g, '&quot;').replace(/</g, '');
+    const optimized = optimizeCloudinaryMediaUrl(videoUrl, 'video');
+    const safe = String(optimized).replace(/"/g, '&quot;').replace(/</g, '');
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata" src="${safe}"></video></body></html>`;
   };
 
@@ -1117,7 +1176,7 @@ const ChatScreen = ({ route, navigation }: any) => {
 
           {!!item.img && !isVideoUrl(item.img) && (
             <Image
-              source={{ uri: item.img }}
+              source={{ uri: optimizeCloudinaryMediaUrl(item.img, 'image') }}
               style={styles.chatImage}
               resizeMode="cover"
               onLoadEnd={() => {
@@ -1262,14 +1321,19 @@ const ChatScreen = ({ route, navigation }: any) => {
             <Text style={[styles.headerTitle, { color: colors.text }]}>
               {(isGroup || groupConversation?.isGroup) ? (groupName || groupConversation?.groupName || 'Group') : (otherUser?.name || 'User')}
             </Text>
-            {!(isGroup || groupConversation?.isGroup) && isPartnerOnline && (
+            {!(isGroup || groupConversation?.isGroup) && isPartnerBusy && (
+              <View style={[styles.headerOnlineDot, { backgroundColor: '#E53E3E', marginLeft: 4 }]} />
+            )}
+            {!(isGroup || groupConversation?.isGroup) && !isPartnerBusy && isPartnerOnline && (
               <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
-          <Text style={[styles.headerSubtitle, { color: colors.textGray }]} numberOfLines={1}>
+          <Text style={[styles.headerSubtitle, { color: isPartnerBusy ? '#E53E3E' : colors.textGray }]} numberOfLines={1}>
             {(isGroup || groupConversation?.isGroup)
               ? `${groupConversation?.participants?.length || '...'} members · tap for info`
-              : (isPartnerOnline ? t('online') : t('offline'))}
+              : isPartnerBusy
+                ? (t('inACall') || 'In a call')
+                : (isPartnerOnline ? t('online') : t('offline'))}
           </Text>
         </TouchableOpacity>
 
@@ -1569,6 +1633,7 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 12,
     marginTop: 2,
+    textAlign: 'left',
   },
   headerTitleRow: {
     flexDirection: 'row',
