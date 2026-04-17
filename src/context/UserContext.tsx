@@ -36,6 +36,8 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Avoid marking "online" on brief active↔inactive flaps (volume HUD, permission sheets, task-switch animation). */
   const onlinePresenceDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Staggered clientPresence retries — some OEMs / slow radios connect late; first emit often no-ops (socket.ts). */
+  const presenceOnlineRetryTimeoutsRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   // Persisted setter: keeps AsyncStorage in sync whenever someone calls setUser from context.
   // This prevents "must logout/login to see changes" after profile updates.
@@ -93,6 +95,29 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
+  const clearPresenceOnlineRetries = () => {
+    presenceOnlineRetryTimeoutsRef.current.forEach((t) => clearTimeout(t));
+    presenceOnlineRetryTimeoutsRef.current = [];
+  };
+
+  /** Emit online after socket is up — safe to call multiple times; backs up cold-open-from-push on one device. */
+  const schedulePresenceOnlineRetries = () => {
+    clearPresenceOnlineRetries();
+    const delays = [0, 400, 1000, 2500, 6000, 12000];
+    delays.forEach((ms) => {
+      const t = setTimeout(() => {
+        if (AppState.currentState !== 'active') return;
+        if (!socketService.isSocketConnected()) return;
+        try {
+          socketService.emit('clientPresence', { status: 'online' });
+        } catch (_) {
+          /* ignore */
+        }
+      }, ms);
+      presenceOnlineRetryTimeoutsRef.current.push(t);
+    });
+  };
+
   // Connect socket when we have a user id. Use `user?._id` only — not `[user]`.
   // `updateUser` / `setUser` replace the user object often (following, profile); re-running
   // connect on every new reference aborts a socket that is still handshaking (`connected === false`
@@ -104,8 +129,12 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     if (uid) {
       if (AppState.currentState === 'active') {
         socketService.connect(uid);
+        // Cold start / open from notification: AppState may never transition to `active` again, so the
+        // debounced handler below never runs — still retry presence after the socket handshakes.
+        schedulePresenceOnlineRetries();
       }
     } else {
+      clearPresenceOnlineRetries();
       socketService.disconnect();
     }
   }, [user?._id]);
@@ -117,6 +146,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background') {
+        clearPresenceOnlineRetries();
         if (onlinePresenceDebounceRef.current) {
           clearTimeout(onlinePresenceDebounceRef.current);
           onlinePresenceDebounceRef.current = null;
@@ -146,7 +176,8 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
           if (AppState.currentState !== 'active') return;
           socketService.connect(uid);
           socketService.emit('clientPresence', { status: 'online' });
-          console.log('📱 [UserContext] App active – online presence (debounced)');
+          schedulePresenceOnlineRetries();
+          console.log('📱 [UserContext] App active – online presence (debounced + retries)');
         }, 450);
       }
       // `inactive`: intentionally no presence/socket change (see comment above).
@@ -155,6 +186,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     const sub = AppState.addEventListener('change', handleAppStateChange);
     return () => {
       sub.remove();
+      clearPresenceOnlineRetries();
       if (disconnectTimerRef.current) {
         clearTimeout(disconnectTimerRef.current);
         disconnectTimerRef.current = null;

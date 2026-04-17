@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DeviceEventEmitter, Vibration, Alert } from 'react-native';
+import { DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
@@ -281,6 +281,22 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     },
     [busyUsers]
   );
+
+  /** LiveKit ended / disconnected — server may omit `cancleCall`; mirror that cleanup locally. */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      'playsocial:clearCallBusy',
+      ({ userToCall, from }: { userToCall?: string; from?: string }) => {
+        setBusyUsers((prev) => {
+          const next = new Set(prev);
+          if (userToCall) next.delete(String(userToCall));
+          if (from) next.delete(String(from));
+          return next;
+        });
+      },
+    );
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     return socketService.addDisconnectListener(() => {
@@ -883,17 +899,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         if (prev.some(s => s.streamerId === data.streamerId)) return prev;
         return [...prev, data];
       });
-      Alert.alert(
-        '🔴 Live Now',
-        `${data.streamerName} started a live stream. Watch now?`,
-        [
-          { text: 'Later', style: 'cancel' },
-          { text: 'Watch', onPress: () => {
-            DeviceEventEmitter.emit('NavigateToLiveViewer', data);
-          }},
-        ],
-        { cancelable: true }
-      );
     };
     const onStreamEnded = ({ streamerId }: any) => {
       setLiveStreams(prev => prev.filter(s => s.streamerId !== streamerId));

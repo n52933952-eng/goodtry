@@ -14,17 +14,16 @@ import React, {
 import {
   View, Text, TouchableOpacity, StyleSheet, TextInput,
   KeyboardAvoidingView, Platform, Image, Animated,
-  FlatList, Dimensions,
+  FlatList, useWindowDimensions,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
-import { Room, RoomEvent } from '@livekit/react-native';
+import { Room, RoomEvent } from 'livekit-client';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
+import InCallManager from 'react-native-incall-manager';
 import { API_URL } from '../../utils/constants';
-
-const { height: SCREEN_H } = Dimensions.get('window');
 
 // ── Floating message (animates up then fades) ─────────────────────────────────
 interface FloatMsg { id: string; sender: string; text: string; anim: Animated.Value; opacity: Animated.Value }
@@ -53,6 +52,7 @@ const LiveViewerScreen = () => {
   const socketCtx  = useSocket();
   const socket     = socketCtx?.socket;
   const { colors } = useTheme();
+  const { width: winW, height: winH } = useWindowDimensions();
 
   const { streamerId, streamerName, streamerProfilePic } = route.params || {};
 
@@ -68,6 +68,7 @@ const LiveViewerScreen = () => {
   const roomRef    = useRef<Room | null>(null);
   const flatRef    = useRef<FlatList>(null);
   let msgCounter   = useRef(0);
+  const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // ── add message ─────────────────────────────────────────────────────────
   const addMessage = useCallback((sender: string, text: string) => {
@@ -94,9 +95,13 @@ const LiveViewerScreen = () => {
           useNativeDriver: true,
         }),
       ]),
-    ]).start(() => {
+    ]).start();
+
+    const timer = setTimeout(() => {
       setFloatMsgs(prev => prev.filter(m => m.id !== id));
-    });
+      removeTimersRef.current = removeTimersRef.current.filter(t => t !== timer);
+    }, 4200);
+    removeTimersRef.current.push(timer);
   }, []);
 
   // ── connect room ─────────────────────────────────────────────────────────
@@ -133,6 +138,10 @@ const LiveViewerScreen = () => {
         });
 
         await lkRoom.connect(livekitUrl, token);
+        try {
+          InCallManager.start({ media: 'video', auto: false, ringback: '' });
+          InCallManager.setForceSpeakerphoneOn(true);
+        } catch (_) {}
         if (mounted) setIsConnected(true);
       } catch (_) {
         if (mounted) navigation.goBack();
@@ -141,6 +150,9 @@ const LiveViewerScreen = () => {
     join();
     return () => {
       mounted = false;
+      removeTimersRef.current.forEach(clearTimeout);
+      removeTimersRef.current = [];
+      try { InCallManager.stop(); } catch (_) {}
       roomRef.current?.disconnect().catch(() => {});
     };
   }, []);
@@ -177,7 +189,14 @@ const LiveViewerScreen = () => {
       <View style={styles.container}>
         {/* Full-screen video */}
         {remoteVideoTrack ? (
-          <VideoView videoTrack={remoteVideoTrack} style={StyleSheet.absoluteFill} objectFit="cover" />
+          <View style={[styles.videoRoot, { width: winW, height: winH }]} pointerEvents="none">
+            <VideoView
+              videoTrack={remoteVideoTrack}
+              style={{ width: winW, height: winH }}
+              objectFit="cover"
+              zOrder={0}
+            />
+          </View>
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.placeholder]}>
             {streamerProfilePic
@@ -264,6 +283,15 @@ const LiveViewerScreen = () => {
 
 const styles = StyleSheet.create({
   container:        { flex: 1, backgroundColor: '#000' },
+  videoRoot:        {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   placeholder:      { justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
   placeholderAvatar:{ width: 100, height: 100, borderRadius: 50 },
   avatarPlaceholder:{ justifyContent: 'center', alignItems: 'center' },

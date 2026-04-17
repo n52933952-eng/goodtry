@@ -1,6 +1,6 @@
 /**
  * Deep links from FCM notification `data` payloads (likes, messages, chess, etc.).
- * Call / incoming-call flows stay in native + WebRTC; do not route those here.
+ * Incoming calls: `type === incoming_call` is handled in fcmService → DeviceEventEmitter NavigateToCallScreen.
  */
 
 export function navigateFromPushData(

@@ -14,19 +14,22 @@
 import React, {
   createContext, useContext, useEffect, useRef, useState, useCallback,
 } from 'react';
-import { Alert } from 'react-native';
+import { DeviceEventEmitter } from 'react-native';
 import {
   Room,
   RoomEvent,
+  ParticipantEvent,
+  ConnectionState,
   Track,
   LocalTrack,
   RemoteTrack,
-  ConnectionState,
   type RemoteParticipant,
-} from '@livekit/react-native';
+  type LocalTrackPublication,
+} from 'livekit-client';
 import { useSocket } from './SocketContext';
 import { useUser } from './UserContext';
 import { API_URL } from '../utils/constants';
+import { onCallSessionEndedNative, clearCallCancelFlagsNative } from '../services/callData';
 
 // ─── types ───────────────────────────────────────────────────────────────────
 interface Call {
@@ -48,6 +51,14 @@ interface LiveKitContextType {
   callUser: (userId: string, userName: string, type: 'audio' | 'video') => Promise<void>;
   answerCall: () => Promise<void>;
   leaveCall: () => void;
+  /** Cold start / FCM / native Answer — hydrate incoming ring before socket delivers livekit:incomingCall */
+  setIncomingCallFromNotification: (
+    callerId: string,
+    callerName: string,
+    callType: 'audio' | 'video',
+    autoAnswer: boolean
+  ) => void;
+  getIncomingCallFromNotificationCallerId: () => string | null;
   // ── LiveKit tracks for UI ──
   localVideoTrack: LocalTrack | null;
   remoteVideoTrack: RemoteTrack | null;
@@ -95,6 +106,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const roomRef        = useRef<Room | null>(null);
   const callPartnerRef = useRef<{ id: string; name: string } | null>(null);
+  /** Set when user taps Answer on native UI / FCM — AppNavigator matches socket `from` for auto-route params */
+  const notificationAnswerCallerIdRef = useRef<string | null>(null);
+  const answerCallInFlightRef = useRef(false);
+  const callAcceptedRef = useRef(false);
+  /** When the callee’s phone rings, start fetching the join token immediately so Answer is not blocked on HTTP. */
+  const incomingTokenPrefetchRef = useRef<{ key: string; promise: Promise<{ token: string; roomName: string; livekitUrl: string }> } | null>(null);
 
   // ── fetch token from backend ─────────────────────────────────────────────
   const fetchToken = useCallback(async (targetId: string, type: 'audio' | 'video') => {
@@ -121,6 +138,13 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setConnectionState(ConnectionState.Disconnected);
   }, []);
 
+  const startIncomingTokenPrefetch = useCallback((callerId: string, callType: 'audio' | 'video') => {
+    const id = idStr(callerId);
+    if (!id) return;
+    const key = `${id}:${callType}`;
+    incomingTokenPrefetchRef.current = { key, promise: fetchToken(id, callType) };
+  }, [fetchToken]);
+
   // ── connect to room ──────────────────────────────────────────────────────
   const connectRoom = useCallback(async (token: string, livekitUrl: string, type: 'audio' | 'video') => {
     await disconnectRoom();
@@ -129,11 +153,39 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     roomRef.current = lkRoom;
     setRoom(lkRoom);
 
+    // Keep local camera preview resilient to Android publish/unpublish races.
+    const syncLocalVideoFromParticipant = () => {
+      try {
+        const pub = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+        const t = pub?.track;
+        if (t && t.kind === Track.Kind.Video) {
+          setLocalVideoTrack(t as LocalTrack);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    };
+
     lkRoom.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
       setConnectionState(state);
+      if (state === ConnectionState.Connected) {
+        syncLocalVideoFromParticipant();
+      }
     });
 
-    lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: any, _participant: RemoteParticipant) => {
+    /** Callee may join before caller finishes connect — ParticipantConnected does NOT fire for remotes already in room. */
+    const markConnectedIfRemotePresent = () => {
+      if (lkRoom.remoteParticipants.size > 0) {
+        setCallAccepted(true);
+        setIsCalling(false);
+      }
+    };
+
+    lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: any, participant: RemoteParticipant) => {
+      if (!participant.isLocal) {
+        setCallAccepted(true);
+        setIsCalling(false);
+      }
       if (track.kind === Track.Kind.Video) setRemoteVideoTrack(track);
       if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(track);
     });
@@ -144,7 +196,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     lkRoom.on(RoomEvent.ParticipantConnected, () => {
-      setCallAccepted(true);
+      markConnectedIfRemotePresent();
+    });
+
+    lkRoom.on(RoomEvent.Connected, () => {
+      markConnectedIfRemotePresent();
     });
 
     lkRoom.on(RoomEvent.ParticipantDisconnected, () => {
@@ -155,42 +211,122 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       handleCallEnded();
     });
 
+    lkRoom.localParticipant.on(
+      ParticipantEvent.LocalTrackPublished,
+      (publication: LocalTrackPublication) => {
+        if (publication.source !== Track.Source.Camera) return;
+        const t = publication.track;
+        if (t && t.kind === Track.Kind.Video) {
+          setLocalVideoTrack(t as LocalTrack);
+        } else {
+          // Track can be attached a moment later on some devices.
+          requestAnimationFrame(() => syncLocalVideoFromParticipant());
+          setTimeout(() => syncLocalVideoFromParticipant(), 120);
+        }
+      },
+    );
+
+    lkRoom.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication: LocalTrackPublication) => {
+      if (publication.source === Track.Source.Camera) {
+        setLocalVideoTrack(null);
+        // During restarts we may get unpublished then immediate republish.
+        setTimeout(() => syncLocalVideoFromParticipant(), 120);
+        setTimeout(() => syncLocalVideoFromParticipant(), 450);
+      }
+    });
+
     await lkRoom.connect(livekitUrl, token);
 
-    // Publish local tracks
-    if (type === 'video') {
-      await lkRoom.localParticipant.setCameraEnabled(true);
-    }
     await lkRoom.localParticipant.setMicrophoneEnabled(true);
+    if (type === 'video') {
+      try {
+        await lkRoom.localParticipant.setCameraEnabled(true);
+        syncLocalVideoFromParticipant();
+        requestAnimationFrame(() => syncLocalVideoFromParticipant());
+        setTimeout(() => syncLocalVideoFromParticipant(), 120);
+        setTimeout(() => syncLocalVideoFromParticipant(), 450);
+      } catch (_) {}
+    }
 
-    // Expose local video track
-    const localCam = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
-    if (localCam?.track) setLocalVideoTrack(localCam.track as LocalTrack);
+    // If the other side connected first (common after early socket ring), remotes are already present.
+    markConnectedIfRemotePresent();
   }, [disconnectRoom]);
 
   // ── internal: mark call ended ────────────────────────────────────────────
+  useEffect(() => {
+    callAcceptedRef.current = callAccepted;
+  }, [callAccepted]);
+
   const handleCallEnded = useCallback(() => {
+    const partnerId = callPartnerRef.current?.id || call.from;
+    const myId = user ? idStr(user._id) : '';
+    if (partnerId || myId) {
+      setBusyUsers(prev => {
+        const n = new Set(prev);
+        if (partnerId) n.delete(idStr(partnerId));
+        if (myId) n.delete(myId);
+        return n;
+      });
+      DeviceEventEmitter.emit('playsocial:clearCallBusy', {
+        userToCall: partnerId || '',
+        from:       myId || '',
+      });
+    }
+    notificationAnswerCallerIdRef.current = null;
+    answerCallInFlightRef.current = false;
+    incomingTokenPrefetchRef.current = null;
     setCallEnded(true);
     setCallAccepted(false);
     setIsCalling(false);
     setCall({});
     disconnectRoom();
     callPartnerRef.current = null;
+    void onCallSessionEndedNative();
     setTimeout(() => setCallEnded(false), 400);
-  }, [disconnectRoom]);
+  }, [disconnectRoom, user, call.from]);
+
+  const setIncomingCallFromNotification = useCallback(
+    (callerId: string, callerName: string, callType: 'audio' | 'video', autoAnswer: boolean) => {
+      const id = idStr(callerId);
+      if (!id) return;
+      void clearCallCancelFlagsNative();
+      DeviceEventEmitter.emit('playsocial:newIncomingRing', { callerId: id });
+      setCallEnded(false);
+      setCall({
+        isReceivingCall: true,
+        from:            id,
+        name:            callerName || 'Unknown',
+        profilePic:      undefined,
+        callType:        callType,
+        roomName:        '',
+      });
+      callPartnerRef.current = { id, name: callerName || 'Unknown' };
+      if (autoAnswer) notificationAnswerCallerIdRef.current = id;
+      startIncomingTokenPrefetch(id, callType);
+    },
+    [startIncomingTokenPrefetch],
+  );
+
+  const getIncomingCallFromNotificationCallerId = useCallback(
+    () => notificationAnswerCallerIdRef.current,
+    [],
+  );
 
   // ── PUBLIC: callUser (outgoing) ──────────────────────────────────────────
   const callUser = useCallback(async (userId: string, userName: string, type: 'audio' | 'video') => {
     if (!user || !socket) return;
     const myId = idStr(user._id);
+    let roomNameForCancel = '';
     try {
+      incomingTokenPrefetchRef.current = null;
       setIsCalling(true);
       setCallEnded(false);
       callPartnerRef.current = { id: userId, name: userName };
 
       const { token, livekitUrl, roomName } = await fetchToken(userId, type);
-      await connectRoom(token, livekitUrl, type);
+      roomNameForCancel = roomName || '';
 
+      // Ring the callee immediately — do not wait for local camera/LiveKit connect (avoids timeouts).
       socket.emit('livekit:callUser', {
         userToCall:       userId,
         callerId:         myId,
@@ -199,10 +335,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         callType:         type,
         roomName,
       });
+
+      await connectRoom(token, livekitUrl, type);
     } catch (err: any) {
       console.error('❌ [LiveKit Mobile] callUser error:', err?.message);
       setIsCalling(false);
       await disconnectRoom();
+      if (socket && userId) {
+        socket.emit('livekit:cancelCall', { userToCall: userId, roomName: roomNameForCancel });
+      }
       throw err; // let ChatScreen catch and navigate back
     }
   }, [user, socket, fetchToken, connectRoom, disconnectRoom]);
@@ -210,9 +351,34 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // ── PUBLIC: answerCall (receiver accepts) ────────────────────────────────
   const answerCall = useCallback(async () => {
     if (!call.from) return;
+    if (callAcceptedRef.current || answerCallInFlightRef.current) return;
+    if (roomRef.current && connectionState === ConnectionState.Connected) return;
+    answerCallInFlightRef.current = true;
     try {
+      notificationAnswerCallerIdRef.current = null;
       const type = (call.callType as 'audio' | 'video') || 'video';
-      const { token, livekitUrl } = await fetchToken(call.from, type);
+      const fromId = idStr(call.from);
+      const prefetchKey = `${fromId}:${type}`;
+      const prefetch = incomingTokenPrefetchRef.current;
+      let token: string;
+      let livekitUrl: string;
+      if (prefetch && prefetch.key === prefetchKey) {
+        incomingTokenPrefetchRef.current = null;
+        try {
+          const bundle = await prefetch.promise;
+          token = bundle.token;
+          livekitUrl = bundle.livekitUrl;
+        } catch {
+          const bundle = await fetchToken(fromId, type);
+          token = bundle.token;
+          livekitUrl = bundle.livekitUrl;
+        }
+      } else {
+        incomingTokenPrefetchRef.current = null;
+        const bundle = await fetchToken(fromId, type);
+        token = bundle.token;
+        livekitUrl = bundle.livekitUrl;
+      }
       await connectRoom(token, livekitUrl, type);
       setCallAccepted(true);
       setCall(prev => ({ ...prev, isReceivingCall: false }));
@@ -220,8 +386,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.error('❌ [LiveKit Mobile] answerCall error:', err?.message);
       setCallAccepted(false);
       await disconnectRoom();
+    } finally {
+      answerCallInFlightRef.current = false;
     }
-  }, [call, fetchToken, connectRoom, disconnectRoom]);
+  }, [call, fetchToken, connectRoom, disconnectRoom, connectionState]);
 
   // ── PUBLIC: leaveCall ────────────────────────────────────────────────────
   const leaveCall = useCallback(() => {
@@ -240,12 +408,16 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!socket) return;
 
     const onIncomingCall = (data: any) => {
+      void clearCallCancelFlagsNative();
+      DeviceEventEmitter.emit('playsocial:newIncomingRing', { callerId: data?.from });
+      const ct: 'audio' | 'video' = data.callType === 'audio' ? 'audio' : 'video';
+      startIncomingTokenPrefetch(data.from, ct);
       setCall({
         isReceivingCall: true,
         from:            data.from,
         name:            data.callerName,
         profilePic:      data.callerProfilePic,
-        callType:        data.callType || 'video',
+        callType:        ct,
         roomName:        data.roomName,
       });
       callPartnerRef.current = { id: data.from, name: data.callerName };
@@ -253,11 +425,29 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     const onCallCanceled = () => {
+      const partnerId = callPartnerRef.current?.id;
+      const myId = user ? idStr(user._id) : '';
+      if (partnerId || myId) {
+        setBusyUsers(prev => {
+          const n = new Set(prev);
+          if (partnerId) n.delete(idStr(partnerId));
+          if (myId) n.delete(myId);
+          return n;
+        });
+        DeviceEventEmitter.emit('playsocial:clearCallBusy', {
+          userToCall: partnerId || '',
+          from:       myId || '',
+        });
+      }
+      answerCallInFlightRef.current = false;
+      incomingTokenPrefetchRef.current = null;
       setCall({});
       setIsCalling(false);
       setCallAccepted(false);
       disconnectRoom();
+      callPartnerRef.current = null;
       setCallEnded(true);
+      void onCallSessionEndedNative();
       setTimeout(() => setCallEnded(false), 400);
     };
 
@@ -283,20 +473,42 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
     };
 
-    socket.on('livekit:incomingCall',  onIncomingCall);
-    socket.on('livekit:callCanceled',  onCallCanceled);
-    socket.on('livekit:callDeclined',  onCallDeclined);
-    socket.on('callBusy',              onCallBusy);
-    socket.on('cancleCall',            onCancleCall);
+    const bind = () => {
+      try {
+        socket.off('livekit:incomingCall', onIncomingCall);
+        socket.off('livekit:callCanceled', onCallCanceled);
+        socket.off('livekit:callDeclined', onCallDeclined);
+        socket.off('callBusy', onCallBusy);
+        socket.off('cancleCall', onCancleCall);
+      } catch (_) {
+        /* ignore */
+      }
+      socket.on('livekit:incomingCall', onIncomingCall);
+      socket.on('livekit:callCanceled', onCallCanceled);
+      socket.on('livekit:callDeclined', onCallDeclined);
+      socket.on('callBusy', onCallBusy);
+      socket.on('cancleCall', onCancleCall);
+    };
+
+    bind();
+    const removeReady =
+      typeof (socket as any).addSocketReadyListener === 'function'
+        ? (socket as any).addSocketReadyListener(bind)
+        : null;
 
     return () => {
-      socket.off('livekit:incomingCall',  onIncomingCall);
-      socket.off('livekit:callCanceled',  onCallCanceled);
-      socket.off('livekit:callDeclined',  onCallDeclined);
-      socket.off('callBusy',              onCallBusy);
-      socket.off('cancleCall',            onCancleCall);
+      try {
+        removeReady?.();
+      } catch (_) {
+        /* ignore */
+      }
+      socket.off('livekit:incomingCall', onIncomingCall);
+      socket.off('livekit:callCanceled', onCallCanceled);
+      socket.off('livekit:callDeclined', onCallDeclined);
+      socket.off('callBusy', onCallBusy);
+      socket.off('cancleCall', onCancleCall);
     };
-  }, [socket, disconnectRoom, handleCallEnded]);
+  }, [socket, disconnectRoom, handleCallEnded, startIncomingTokenPrefetch, user]);
 
   const isUserBusy = useCallback((rawUserId: unknown): boolean => {
     const id = idStr(rawUserId);
@@ -308,6 +520,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     <LiveKitContext.Provider value={{
       call, isCalling, callAccepted, callEnded,
       callUser, answerCall, leaveCall,
+      setIncomingCallFromNotification,
+      getIncomingCallFromNotificationCallerId,
       localVideoTrack, remoteVideoTrack, remoteAudioTrack,
       room, connectionState,
       busyUsers, isUserBusy,

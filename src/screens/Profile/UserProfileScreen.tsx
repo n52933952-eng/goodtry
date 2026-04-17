@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -54,6 +54,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteMenuOpen, setDeleteMenuOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deletingAccount, setDeletingAccount] = useState(false);
   /** Full-screen profile photo (Instagram-style). */
@@ -327,6 +328,30 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   };
 
+  const isOwnProfile = profileUser?._id === currentUser?._id;
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () =>
+        isOwnProfile ? (
+          <TouchableOpacity
+            onPress={() => setDeleteMenuOpen(true)}
+            style={{
+              marginRight: 10,
+              width: 34,
+              height: 34,
+              borderRadius: 17,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={{ color: colors.text, fontSize: 22, lineHeight: 22 }}>⋮</Text>
+          </TouchableOpacity>
+        ) : null,
+    });
+  }, [navigation, isOwnProfile, colors.text]);
+
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
@@ -342,8 +367,6 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       </View>
     );
   }
-
-  const isOwnProfile = profileUser._id === currentUser?._id;
 
   const PROFILE_AVATAR = 84;
   /** Tight ring: thin stroke + ~3px gap to avatar edge */
@@ -364,6 +387,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const openCreateStory = () => navigateToMainStack(navigation, 'CreateStory');
 
   const openDeleteAccount = () => {
+    setDeleteMenuOpen(false);
     setDeleteConfirmText('');
     setDeleteOpen(true);
   };
@@ -545,7 +569,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                     style={[styles.halfButton, { backgroundColor: colors.primary }]}
                     onPress={() => navigation.navigate('UpdateProfile')}
                   >
-                    <Text style={[styles.halfButtonText, { color: colors.buttonText }]}>{t('updateProfile')}</Text>
+                    <Text style={[styles.halfButtonText, { color: colors.buttonText }]} numberOfLines={1}>
+                      {t('updateProfile')}
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.halfButton, { backgroundColor: colors.border }]}
@@ -560,34 +586,22 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                           strokeLinecap="round"
                         />
                       </Svg>
-                      <Text style={[styles.halfButtonText, { color: colors.text }]}>Add story</Text>
+                      <Text style={[styles.halfButtonText, { color: colors.text }]} numberOfLines={1}>
+                        Add story
+                      </Text>
                     </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.halfButton, { backgroundColor: '#E53E3E' }]}
+                    onPress={() => navigation.navigate('LiveBroadcast')}
+                  >
+                    <Text style={[styles.halfButtonText, { color: '#fff' }]} numberOfLines={1}>
+                      🔴 Go Live
+                    </Text>
                   </TouchableOpacity>
                 </View>
               )}
 
-              {isOwnProfile && (
-                <TouchableOpacity
-                  style={[styles.halfButton, { backgroundColor: '#E53E3E', alignSelf: 'center', marginTop: 8, paddingHorizontal: 24 }]}
-                  onPress={() => navigation.navigate('LiveBroadcast')}
-                >
-                  <Text style={[styles.halfButtonText, { color: '#fff' }]}>🔴 Go Live</Text>
-                </TouchableOpacity>
-              )}
-
-              {isOwnProfile && (
-                <TouchableOpacity
-                  style={[
-                    styles.dangerButton,
-                    { borderColor: colors.error, backgroundColor: 'transparent' },
-                  ]}
-                  onPress={openDeleteAccount}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.dangerButtonText, { color: colors.error }]}>{t('deleteAccount')}</Text>
-                </TouchableOpacity>
-              )}
-              
               {!isOwnProfile && (
                 <View style={styles.buttonRow}>
                   <TouchableOpacity
@@ -768,6 +782,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         </View>
       </Modal>
 
+      <Modal visible={deleteMenuOpen} transparent animationType="fade" onRequestClose={() => setDeleteMenuOpen(false)}>
+        <Pressable style={styles.deleteMenuOverlay} onPress={() => setDeleteMenuOpen(false)}>
+          <Pressable
+            style={[styles.deleteMenuSheet, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <TouchableOpacity style={styles.deleteMenuAction} onPress={openDeleteAccount} activeOpacity={0.85}>
+              <Text style={[styles.deleteMenuActionText, { color: colors.error }]}>{t('deleteAccount')}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
         <KeyboardAvoidingView style={styles.deleteOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <Pressable style={styles.deleteBackdrop} onPress={() => setDeleteOpen(false)} />
@@ -843,6 +870,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
+    direction: 'ltr',
   },
   profileAvatarCol: {
     marginRight: 14,
@@ -851,6 +879,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     justifyContent: 'center',
+    alignItems: 'flex-start',
   },
   profileAvatarBig: {
     overflow: 'hidden',
@@ -880,6 +909,7 @@ const styles = StyleSheet.create({
   },
   halfButton: {
     flex: 1,
+    minWidth: 0,
     paddingVertical: 10,
     borderRadius: 12,
     alignItems: 'center',
@@ -890,6 +920,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    minWidth: 0,
+    maxWidth: '100%',
   },
   halfButtonText: {
     fontWeight: '700',
@@ -903,10 +935,14 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: 'bold',
     color: COLORS.text,
+    textAlign: 'left',
+    alignSelf: 'flex-start',
   },
   username: {
     fontSize: 15,
     color: COLORS.textGray,
+    textAlign: 'left',
+    alignSelf: 'flex-start',
   },
   bio: {
     fontSize: 14,
@@ -1064,6 +1100,28 @@ const styles = StyleSheet.create({
   deleteBtnText: {
     fontSize: 14,
     fontWeight: '800',
+  },
+  deleteMenuOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 56,
+    paddingRight: 10,
+  },
+  deleteMenuSheet: {
+    minWidth: 170,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  deleteMenuAction: {
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  deleteMenuActionText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
   profilePicPreviewRoot: {
     flex: 1,

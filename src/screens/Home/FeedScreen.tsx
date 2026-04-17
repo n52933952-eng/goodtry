@@ -17,8 +17,10 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from '../../services/api';
-import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
+import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
+import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
@@ -128,6 +130,26 @@ const FeedScreen = ({ navigation }: any) => {
   useEffect(() => {
     fetchFeed();
   }, []);
+
+  /** First visit to home after login: ask camera + mic so calls/live do not block on permission dialogs. */
+  useEffect(() => {
+    if (!user?._id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const key = `${STORAGE_KEYS.MEDIA_PERMISSIONS_PROMPTED_PREFIX}${String(user._id)}`;
+        const done = await AsyncStorage.getItem(key);
+        if (done === '1' || cancelled) return;
+        await requestCameraAndMicrophone();
+        await AsyncStorage.setItem(key, '1');
+      } catch {
+        /* non-fatal */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?._id]);
 
   useEffect(() => {
     fetchStoryStrip();

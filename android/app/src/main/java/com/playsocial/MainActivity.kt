@@ -9,6 +9,8 @@ import android.content.Context.RECEIVER_EXPORTED
 import android.app.KeyguardManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -18,6 +20,8 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.bridge.WritableMap
 
 class MainActivity : ReactActivity() {
+
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   private fun ensureVisibleOverLockScreenForIncomingCall() {
     try {
@@ -215,10 +219,9 @@ class MainActivity : ReactActivity() {
         
         android.util.Log.e("MainActivity", "✅✅✅ [MainActivity] Starting event emission process...")
         
-        // Wait for React Native to be ready, then send NavigateToCallScreen and CallAnswered events
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        // Wait for React Native to be ready, then send NavigateToCallScreen (prefs are already written).
         var attempts = 0
-        val maxAttempts = 20
+        val maxAttempts = 24
         
         fun trySendEvents() {
           attempts++
@@ -231,7 +234,7 @@ class MainActivity : ReactActivity() {
               // Send NavigateToCallScreen event multiple times with delays to ensure it's caught
               // IMPORTANT: Create a NEW WritableMap for each emit() call (they can't be reused!)
               fun sendNavigateEvent(delay: Long) {
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                mainHandler.postDelayed({
                   android.util.Log.d("MainActivity", "🔥 [MainActivity] Sending NavigateToCallScreen event (delay: ${delay}ms)")
                   try {
                     // Create a NEW map for each emit call - WritableMap can't be reused
@@ -252,23 +255,16 @@ class MainActivity : ReactActivity() {
                 }, delay)
               }
               
-              // Send NavigateToCallScreen at multiple intervals to ensure React Native catches it
-              // Send more frequently and for longer to ensure listener is set up
-              sendNavigateEvent(0)      // Immediate
-              sendNavigateEvent(500)    // After 500ms
-              sendNavigateEvent(1000)   // After 1 second
-              sendNavigateEvent(1500)   // After 1.5 seconds
-              sendNavigateEvent(2000)   // After 2 seconds
-              sendNavigateEvent(3000)   // After 3 seconds (backup)
-              sendNavigateEvent(4000)   // After 4 seconds (backup)
-              sendNavigateEvent(5000)   // After 5 seconds (backup)
-              sendNavigateEvent(8000)   // Slow devices / cold start
-              sendNavigateEvent(12000)
+              // Immediate + short backup — faster than 800ms wait if the first emit races JS listeners.
+              sendNavigateEvent(0)
+              sendNavigateEvent(400)
               
             } ?: run {
               if (attempts < maxAttempts) {
                 android.util.Log.e("MainActivity", "⏳⏳⏳ [MainActivity] React Native NOT READY, retrying... (attempt $attempts/$maxAttempts)")
-                handler.postDelayed({ trySendEvents() }, 500)
+                // Tighter polling after cold start so Answer → CallScreen connects sooner.
+                val backoff = if (attempts <= 8) 120L else 250L
+                mainHandler.postDelayed({ trySendEvents() }, backoff)
               } else {
                 android.util.Log.e("MainActivity", "❌❌❌ [MainActivity] FAILED: React Native context not available after $maxAttempts attempts")
               }
@@ -290,9 +286,8 @@ class MainActivity : ReactActivity() {
       android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] ShouldAutoAnswer: ${intent.getBooleanExtra("shouldAutoAnswer", false)}")
       
       // Wait for React Native to be ready, then send event
-      val handler = android.os.Handler(android.os.Looper.getMainLooper())
       var attempts = 0
-      val maxAttempts = 20
+      val maxAttempts = 24
       
       fun trySendEvent() {
         attempts++
@@ -318,7 +313,8 @@ class MainActivity : ReactActivity() {
             // React Native not ready yet, try again
             if (attempts < maxAttempts) {
               android.util.Log.e("MainActivity", "⏳⏳⏳ [MainActivity] React Native NOT READY, retrying... (attempt $attempts/$maxAttempts)")
-              handler.postDelayed({ trySendEvent() }, 500)
+              val backoff = if (attempts <= 8) 120L else 250L
+              mainHandler.postDelayed({ trySendEvent() }, backoff)
             } else {
               android.util.Log.e("MainActivity", "❌❌❌ [MainActivity] FAILED: React Native context not available after $maxAttempts attempts")
             }
@@ -397,15 +393,11 @@ class MainActivity : ReactActivity() {
       val shouldCancelCall = intent.getBooleanExtra("shouldCancelCall", false)
       if (shouldCancelCall) {
         android.util.Log.e("MainActivity", "📴📴📴 [MainActivity] shouldCancelCall detected in onCreate - will handle after React Native ready")
-        // Wait for React Native to be ready, then handle cancel (no navigation)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-          handleIntent(intent)
-        }, 300)
+        // Next frame — avoid fixed 300ms delay; handleIntent already retries until RN is ready.
+        mainHandler.post { handleIntent(intent) }
       } else {
-        // Wait a bit for React Native to initialize, then handle intent
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-          handleIntent(intent)
-        }, 300)
+        // Next frame — same as above (faster cold start for incoming-call Answer).
+        mainHandler.post { handleIntent(intent) }
       }
     } else {
       android.util.Log.d("MainActivity", "⚠️ [MainActivity] No intent found")

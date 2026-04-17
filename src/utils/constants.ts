@@ -164,6 +164,8 @@ export const STORAGE_KEYS = {
   THEME: '@theme',
   /** Pending delivery acks from FCM (messageId[]), flushed on next socket connect. */
   PENDING_DELIVERY_ACKS: '@pending_delivery_acks',
+  /** Per-user: camera/mic prompts were shown once on home (avoid delaying calls/live). */
+  MEDIA_PERMISSIONS_PROMPTED_PREFIX: '@media_perms_prompted_',
 };
 
 // Colors

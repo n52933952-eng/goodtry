@@ -1038,17 +1038,18 @@ const ChatScreen = ({ route, navigation }: any) => {
         callType: callType,
         isOutgoingCall: true,
       });
-      setTimeout(async () => {
-        try {
-          await callUser(targetId, targetName, callType);
-        } catch (error: any) {
-          console.error('❌ [ChatScreen] Call initiation error:', error?.message);
-          isCallInProgressRef.current = false;
-          initiatedCallAtRef.current = 0;
-          // If callUser failed before isCalling was set, CallScreen won't auto-dismiss — go back manually.
-          if (navigation.canGoBack()) navigation.goBack();
-        }
-      }, 300);
+      requestAnimationFrame(() => {
+        void (async () => {
+          try {
+            await callUser(targetId, targetName, callType);
+          } catch (error: any) {
+            console.error('❌ [ChatScreen] Call initiation error:', error?.message);
+            isCallInProgressRef.current = false;
+            initiatedCallAtRef.current = 0;
+            if (navigation.canGoBack()) navigation.goBack();
+          }
+        })();
+      });
     } catch (error: any) {
       console.error('❌ [ChatScreen] handleCallPress error:', error?.message);
       isCallInProgressRef.current = false;

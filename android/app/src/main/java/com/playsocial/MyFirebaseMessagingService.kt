@@ -91,7 +91,14 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                     Log.w(TAG, "⚠️ [FCM] No current user ID found - showing incoming call UI anyway (might be first launch)")
                 }
 
-                // Launch IncomingCallActivity (full-screen UI + ringtone) - like thredmobile
+                // App already open: socket + CallScreen handle the ring — native IncomingCallActivity + tray
+                // duplicates the in-app Answer/Decline and confuses users.
+                if (isAppInForeground()) {
+                    Log.d(TAG, "📞 [FCM] Foreground — skip native incoming-call UI & ringtone (RN handles call)")
+                    return
+                }
+
+                // Background / killed: full-screen IncomingCallActivity + ringtone
                 launchIncomingCallActivity(callerId, callerName, callType)
             } else if (type == "message") {
                 handleMessagePush(data)
@@ -182,37 +189,9 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            // Answer: open IncomingCallActivity first (call UI in manifest: showWhenLocked, turnScreenOn).
-            // Many OEMs block or drop starting MainActivity directly from a notification action; this path
-            // matches the full-screen intent target, then immediately forwards to MainActivity inside answerCall().
-            val reqBase = 3100 + (callerId.hashCode() and 0x7FFF)
-            val answerActivityIntent = Intent(this, IncomingCallActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("callerId", callerId)
-                putExtra("callerName", callerName)
-                putExtra("callType", callType)
-                putExtra("answerFromNotificationAction", true)
-            }
-            val answerActionPending = PendingIntent.getActivity(
-                this,
-                reqBase,
-                answerActivityIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
-                action = CallActionReceiver.ACTION_DECLINE
-                putExtra("callerId", callerId)
-                putExtra("callerName", callerName)
-                putExtra("callType", callType)
-            }
-            val declineActionPending = PendingIntent.getBroadcast(
-                this,
-                reqBase + 1,
-                declineIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            // Do NOT add Answer/Decline notification actions: setFullScreenIntent already opens IncomingCallActivity
+            // with Answer/Decline. Duplicate actions + full-screen UI felt like "two" native call screens.
+            // User answers from IncomingCallActivity, or taps the notification body (contentIntent → same activity).
             
             // Create notification channel if needed
             createNotificationChannel()
@@ -225,18 +204,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setContentIntent(contentIntent) // Handle tap on notification - opens IncomingCallActivity
-                .setFullScreenIntent(fullScreenIntent, true) // This shows IncomingCallActivity over lock screen
-                .addAction(
-                    R.drawable.ic_stat_ic_launcher,
-                    getString(R.string.notification_action_decline),
-                    declineActionPending
-                )
-                .addAction(
-                    R.drawable.ic_stat_ic_launcher,
-                    getString(R.string.notification_action_answer),
-                    answerActionPending
-                )
+                .setContentIntent(contentIntent) // Tap notification → IncomingCallActivity (same as full-screen)
+                .setFullScreenIntent(fullScreenIntent, true) // Incoming call UI over lock screen
                 .setOngoing(true) // Keep notification persistent - activity will dismiss it
                 .setAutoCancel(false) // Don't auto-dismiss - let activity handle it
                 // Note: No setDefaults() - RingtoneService handles sound/vibration continuously
@@ -246,29 +215,9 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(1001, notification)
             Log.d(TAG, "Full-screen notification shown")
-            
-            // Also try to launch activity directly (backup) - use Handler to ensure UI thread
-            try {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    try {
-                        Log.e(TAG, "========== ATTEMPTING DIRECT ACTIVITY LAUNCH ==========")
-                        Log.e(TAG, "Intent: $activityIntent")
-                        Log.e(TAG, "Intent extras: callerId=$callerId, callerName=$callerName, callType=$callType")
-                        Log.e(TAG, "Intent flags: ${activityIntent.flags}")
-                        startActivity(activityIntent)
-                        Log.e(TAG, "✅ Direct activity launch SUCCEEDED")
-                        Log.d(TAG, "Activity also launched directly")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Direct activity launch FAILED:", e)
-                        Log.e(TAG, "Error message: ${e.message}")
-                        Log.e(TAG, "Error stack:", e)
-                        e.printStackTrace()
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Handler post failed:", e)
-                Log.e(TAG, "Error message: ${e.message}")
-            }
+            // Do NOT also startActivity(IncomingCallActivity) here — it duplicates the UI:
+            // setFullScreenIntent + notify() already surfaces IncomingCallActivity on many devices,
+            // and a second launch stacks another native "Answer" screen before MainActivity/React Native.
             
         } catch (e: Exception) {
             Log.e(TAG, "Error launching IncomingCallActivity:", e)

@@ -13,17 +13,20 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, TextInput,
   KeyboardAvoidingView, Platform, Image, Animated,
-  FlatList, Dimensions,
+  FlatList, useWindowDimensions, Alert, ActivityIndicator,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
-import { Room, RoomEvent, Track } from '@livekit/react-native';
+import { Room, RoomEvent, Track } from 'livekit-client';
 import { useNavigation } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
+import InCallManager from 'react-native-incall-manager';
 import { API_URL } from '../../utils/constants';
 
-const { height: SCREEN_H } = Dimensions.get('window');
+/** Matches backend `getLiveKitToken`: livestream JWT TTL is 25m — end UI cleanly before expiry. */
+const LIVESTREAM_MAX_MS = 25 * 60 * 1000;
+const LIVESTREAM_AUTO_END_BEFORE_MS = 90 * 1000;
 
 interface FloatMsg {
   id: string; sender: string; text: string;
@@ -46,6 +49,7 @@ const LiveBroadcastScreen = () => {
   const socketCtx  = useSocket();
   const socket     = socketCtx?.socket;
   const { colors } = useTheme();
+  const { width: winW, height: winH } = useWindowDimensions();
 
   const [isLive,        setIsLive]       = useState(false);
   const [localTrack,    setLocalTrack]   = useState<any>(null);
@@ -54,11 +58,14 @@ const LiveBroadcastScreen = () => {
   const [chatLog,       setChatLog]      = useState<{ id: string; sender: string; text: string }[]>([]);
   const [floatMsgs,     setFloatMsgs]    = useState<FloatMsg[]>([]);
   const [showLog,       setShowLog]      = useState(false);
+  const [startingLive,  setStartingLive] = useState(false);
 
   const roomRef    = useRef<Room | null>(null);
   const roomNameRef = useRef('');
   const flatRef    = useRef<FlatList>(null);
   const ctr        = useRef(0);
+  const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const endLiveRef = useRef<() => Promise<void>>(async () => {});
 
   const addMessage = useCallback((sender: string, text: string) => {
     const id      = `msg_${++ctr.current}_${Date.now()}`;
@@ -72,17 +79,25 @@ const LiveBroadcastScreen = () => {
         Animated.delay(2500),
         Animated.timing(opacity, { toValue: 0, duration: 1500, useNativeDriver: true }),
       ]),
-    ]).start(() => setFloatMsgs(prev => prev.filter(m => m.id !== id)));
+    ]).start();
+
+    const timer = setTimeout(() => {
+      setFloatMsgs(prev => prev.filter(m => m.id !== id));
+      removeTimersRef.current = removeTimersRef.current.filter(t => t !== timer);
+    }, 4200);
+    removeTimersRef.current.push(timer);
   }, []);
 
   const disconnect = useCallback(async () => {
+    try { InCallManager.stop(); } catch (_) {}
     try { await roomRef.current?.disconnect(); } catch (_) {}
     roomRef.current = null;
     setLocalTrack(null);
   }, []);
 
   const goLive = useCallback(async () => {
-    if (!user || !socket) return;
+    if (!user || !socket || startingLive) return;
+    setStartingLive(true);
     try {
       const res = await fetch(`${API_URL}/api/call/token`, {
         method:      'POST',
@@ -105,10 +120,23 @@ const LiveBroadcastScreen = () => {
           if (msg.type === 'chat') addMessage(msg.sender, msg.text);
         } catch (_) {}
       });
+      lkRoom.on(RoomEvent.Disconnected, () => {
+        roomRef.current = null;
+        setLocalTrack(null);
+        setIsLive(false);
+        if (navigation.canGoBack()) navigation.goBack();
+      });
 
       await lkRoom.connect(livekitUrl, token);
-      await lkRoom.localParticipant.setCameraEnabled(true);
+
+      // Route live audio to loudspeaker (watching-a-live feel); mic before camera for faster readiness.
+      try {
+        InCallManager.start({ media: 'video', auto: false, ringback: '' });
+        InCallManager.setForceSpeakerphoneOn(true);
+      } catch (_) {}
+
       await lkRoom.localParticipant.setMicrophoneEnabled(true);
+      await lkRoom.localParticipant.setCameraEnabled(true);
 
       const camPub = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
       if (camPub?.track) setLocalTrack(camPub.track);
@@ -122,15 +150,54 @@ const LiveBroadcastScreen = () => {
       });
     } catch (err) {
       console.error('[LiveBroadcast] goLive:', err);
+    } finally {
+      setStartingLive(false);
     }
-  }, [user, socket, addMessage]);
+  }, [user, socket, addMessage, navigation, startingLive]);
 
   const endLive = useCallback(async () => {
-    if (socket) socket.emit('livekit:endLive', { streamerId: String(user._id), roomName: roomNameRef.current });
+    if (socket && user?._id) {
+      socket.emit('livekit:endLive', { streamerId: String(user._id), roomName: roomNameRef.current });
+    }
     await disconnect();
     setIsLive(false);
     navigation.goBack();
   }, [socket, user, disconnect, navigation]);
+
+  endLiveRef.current = endLive;
+
+  useEffect(() => {
+    if (!isLive) return;
+    const ms = Math.max(60_000, LIVESTREAM_MAX_MS - LIVESTREAM_AUTO_END_BEFORE_MS);
+    const t = setTimeout(() => {
+      Alert.alert(
+        'Live session limit',
+        'Your broadcast reached the maximum session length (about 25 minutes). The stream is ending so you can start a new one.',
+      );
+      void endLiveRef.current?.();
+    }, ms);
+    return () => clearTimeout(t);
+  }, [isLive]);
+
+  useEffect(() => {
+    if (!socket || !isLive || !user?._id) return;
+    const onStreamEnded = async (payload: any) => {
+      if (String(payload?.streamerId || '') !== String(user._id)) return;
+      await disconnect();
+      setIsLive(false);
+      if (payload?.reason === 'timeout') {
+        Alert.alert(
+          'Live session limit',
+          'Your broadcast reached the maximum session length (25 minutes).',
+        );
+      }
+      if (navigation.canGoBack()) navigation.goBack();
+    };
+    socket.on('livekit:streamEnded', onStreamEnded);
+    return () => {
+      socket.off('livekit:streamEnded', onStreamEnded);
+    };
+  }, [socket, isLive, user?._id, disconnect, navigation]);
 
   const sendChat = useCallback(async () => {
     const text = chatInput.trim();
@@ -142,14 +209,32 @@ const LiveBroadcastScreen = () => {
     setChatInput('');
   }, [chatInput, user, addMessage]);
 
-  useEffect(() => () => { disconnect(); }, []);
+  useEffect(() => () => {
+    removeTimersRef.current.forEach(clearTimeout);
+    removeTimersRef.current = [];
+    disconnect();
+  }, [disconnect]);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.container}>
-        {/* Camera preview */}
+        {/* Camera: explicit size + overflow fixes Android RTCView not filling width */}
         {localTrack ? (
-          <VideoView videoTrack={localTrack} style={StyleSheet.absoluteFill} objectFit="cover" mirror />
+          <View
+            style={[
+              styles.videoRoot,
+              { width: winW, height: winH },
+            ]}
+            pointerEvents="none"
+          >
+            <VideoView
+              videoTrack={localTrack}
+              style={{ width: winW, height: winH }}
+              objectFit="cover"
+              mirror
+              zOrder={0}
+            />
+          </View>
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.placeholder]}>
             {user?.profilePic
@@ -185,8 +270,16 @@ const LiveBroadcastScreen = () => {
         {/* Go Live button (before starting) */}
         {!isLive && (
           <View style={styles.goLiveWrap}>
-            <TouchableOpacity style={styles.goLiveBtn} onPress={goLive}>
-              <Text style={styles.goLiveBtnText}>🔴  Go Live</Text>
+            <TouchableOpacity
+              style={[styles.goLiveBtn, { opacity: startingLive ? 0.85 : 1 }]}
+              onPress={goLive}
+              disabled={startingLive}
+            >
+              {startingLive ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.goLiveBtnText}>🔴  Go Live</Text>
+              )}
             </TouchableOpacity>
           </View>
         )}
@@ -248,6 +341,15 @@ const LiveBroadcastScreen = () => {
 
 const styles = StyleSheet.create({
   container:        { flex: 1, backgroundColor: '#000' },
+  videoRoot:        {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   placeholder:      { justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
   placeholderAvatar:{ width: 90, height: 90, borderRadius: 45 },
   topBar:           {

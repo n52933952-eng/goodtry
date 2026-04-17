@@ -469,11 +469,15 @@ const MessagesIcon = ({ color }: { color: string }) => (
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
   const { colors, theme: appTheme } = useTheme();
-  const { call, callEnded, isCalling, callAccepted } = useWebRTC();
-  // LiveKit: no pendingCancel / signal / setIncomingCallFromNotification — simplified flow
+  const {
+    call,
+    callEnded,
+    isCalling,
+    callAccepted,
+    setIncomingCallFromNotification,
+    getIncomingCallFromNotificationCallerId,
+  } = useWebRTC();
   const pendingCancel = false;
-  const setIncomingCallFromNotification = (_id: string, _name: string, _type: string, _autoAnswer: boolean) => {};
-  const getIncomingCallFromNotificationCallerId = () => null;
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
   const callRef = useRef(call);
   const setIncomingCallFromNotificationRef = useRef(setIncomingCallFromNotification);
@@ -575,6 +579,14 @@ const AppNavigator = () => {
     }
   }, [call.isReceivingCall, isInitialMount]); // Re-check when call state changes
 
+  // New socket ring: cancel prefs must not block the next incoming call (User B recall after hangup).
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('playsocial:newIncomingRing', () => {
+      setHasPendingCancelFromPrefs(false);
+    });
+    return () => sub.remove();
+  }, []);
+
   // When cancel guard state is cleared (pendingCancel/callEnded false), re-check SharedPreferences
   // so we pick up cleared prefs after WebRTCContext treats a pending cancel as stale and clears it
   useEffect(() => {
@@ -616,13 +628,12 @@ const AppNavigator = () => {
         return;
       }
       
-      // Check if we're already on CallScreen (to avoid duplicate navigation)
       const currentRoute = navigationRef.current.getCurrentRoute?.();
-      if (currentRoute?.name === 'CallScreen') {
-        console.log('⏸️ [AppNavigator] Already on CallScreen - skipping navigation');
-        return;
+      const alreadyOnCall = currentRoute?.name === 'CallScreen';
+      if (alreadyOnCall) {
+        console.log('📞 [AppNavigator] New incoming while already on CallScreen — pushing fresh params (fixes second call not showing)');
       }
-      
+
       console.log('📞 [AppNavigator] Incoming call detected from socket, navigating to CallScreen...');
       console.log('📞 [AppNavigator] Caller:', call.name, '(', call.from, ')');
       console.log('📞 [AppNavigator] Call type:', call.callType);
@@ -637,6 +648,7 @@ const AppNavigator = () => {
         isFromNotification: fromNotificationAnswer,
         shouldAutoAnswer: fromNotificationAnswer,
         fromSocketIncoming: true, // Call state already set by callUser handler - do NOT overwrite with setIncomingCallFromNotification
+        incomingCallKey: Date.now(),
       });
       // CRITICAL: Set lastNavigateToCallRef so later NavigateToCallScreen events are treated as duplicates.
       // Otherwise they call setIncomingCallFromNotification again and reset processingCallUserRef, isAnsweringRef, etc.
@@ -719,6 +731,7 @@ const AppNavigator = () => {
           isFromNotification: data.isFromNotification !== false,
           shouldAutoAnswer: data.shouldAutoAnswer === true,
           shouldDecline: data.shouldDecline || false,
+          incomingCallKey: Date.now(),
         });
         if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
         pendingNavigationEvent.current = null;
@@ -762,6 +775,7 @@ const AppNavigator = () => {
             isFromNotification: true,
             shouldAutoAnswer: callData.shouldAutoAnswer === true,
             shouldDecline: callData.shouldDecline === true,
+            incomingCallKey: Date.now(),
           });
           if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
           clearCallData();
@@ -855,12 +869,11 @@ const AppNavigator = () => {
     }
   }, [navReady, tryNavigateChessAccept, tryNavigateCardAccept]);
 
-  // Listen for navigation events from native code (e.g., from IncomingCallActivity via MainActivity)
+  // Incoming call: native Android activity, iOS bridge, or FCM (`emitNavigateToCallFromPushData`)
   useEffect(() => {
-    if (Platform.OS === 'android') {
-      console.log('📞 [AppNavigator] Setting up NavigateToCallScreen listener...');
-      
-      const listener = DeviceEventEmitter.addListener('NavigateToCallScreen', (data: any) => {
+    console.log('📞 [AppNavigator] Setting up NavigateToCallScreen listener...');
+
+    const listener = DeviceEventEmitter.addListener('NavigateToCallScreen', (data: any) => {
         console.log('📞 [AppNavigator] ========== NavigateToCallScreen EVENT RECEIVED ==========');
         console.log('📞 [AppNavigator] Event data:', JSON.stringify(data));
         console.log('📞 [AppNavigator] Navigation ref available:', !!navigationRef.current);
@@ -900,11 +913,11 @@ const AppNavigator = () => {
         const currentRouteForSetup = navigationRef.current?.getCurrentRoute?.();
         const cr = callRef.current;
         const alreadyHasSignalFromCallUser =
-          currentRouteForSetup?.name === 'CallScreen' && cr.from === callerId && !!cr.signal;
+          currentRouteForSetup?.name === 'CallScreen' && cr.from === callerId && !!cr.isReceivingCall;
         const setNotif = setIncomingCallFromNotificationRef.current;
-        if (isAnswerFromNative && setNotif && callerId && !alreadyHasSignalFromCallUser) {
+        if (setNotif && callerId && !alreadyHasSignalFromCallUser) {
           lastSetUpForCallerRef.current = callerId;
-          setNotif(data.callerId || '', data.callerName || 'Unknown', callType, true);
+          setNotif(data.callerId || '', data.callerName || 'Unknown', callType, isAnswerFromNative);
         }
         
         if (navigationRef.current && data) {
@@ -923,6 +936,7 @@ const AppNavigator = () => {
               isFromNotification: data.isFromNotification !== false,
               shouldAutoAnswer: true,
               shouldDecline: data.shouldDecline || false,
+              incomingCallKey: Date.now(),
             });
             if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
             console.log('✅ [AppNavigator] Updated CallScreen route params with shouldAutoAnswer=true');
@@ -941,6 +955,7 @@ const AppNavigator = () => {
               isFromNotification: data.isFromNotification !== false,
               shouldAutoAnswer: data.shouldAutoAnswer === true,
               shouldDecline: data.shouldDecline || false,
+              incomingCallKey: Date.now(),
             });
             if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
             console.log('✅ [AppNavigator] Navigated to CallScreen - shouldAutoAnswer:', data.shouldAutoAnswer === true);
@@ -973,6 +988,7 @@ const AppNavigator = () => {
                 isFromNotification: storedData.isFromNotification !== false,
                 shouldAutoAnswer: storedData.shouldAutoAnswer === true,
                 shouldDecline: storedData.shouldDecline || false,
+                incomingCallKey: Date.now(),
               });
               if (sid) lastNavigateToCallRef.current = { callerId: sid, ts: Date.now() };
               pendingNavigationEvent.current = null;
@@ -980,14 +996,13 @@ const AppNavigator = () => {
             }, 500);
           }
         }
-      });
+    });
 
-      console.log('✅ [AppNavigator] NavigateToCallScreen listener set up');
+    console.log('✅ [AppNavigator] NavigateToCallScreen listener set up');
 
-      return () => {
-        listener.remove();
-      };
-    }
+    return () => {
+      listener.remove();
+    };
   }, []);
 
   // Poll SharedPreferences for pending call data while app is active

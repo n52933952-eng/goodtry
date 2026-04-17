@@ -8,11 +8,15 @@ import {
   Image,
 } from 'react-native';
 import { VideoView, useLocalParticipant, useRemoteParticipants, useTracks } from '@livekit/react-native';
-import { Track, ConnectionState } from '@livekit/react-native';
+import { Track, ConnectionState, RoomEvent } from 'livekit-client';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
+
+const idEq = (a: unknown, b: unknown) =>
+  String(a ?? '').trim() === String(b ?? '').trim();
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
@@ -34,11 +38,39 @@ const CallScreen = () => {
   } = useWebRTC();
 
   const params = route.params || {};
-  const { userName, userId, userProfilePic, callType: paramCallType, isOutgoingCall } = params;
+  const {
+    userName,
+    userId,
+    userProfilePic,
+    callType: paramCallType,
+    isOutgoingCall,
+    shouldAutoAnswer,
+    incomingCallKey,
+  } = params;
+  const autoAnswerStartedRef = useRef(false);
+
+  // New ring while still on CallScreen (AppNavigator passes fresh incomingCallKey) — allow auto-answer again.
+  useEffect(() => {
+    autoAnswerStartedRef.current = false;
+  }, [incomingCallKey]);
+
+  // Native Answer / FCM: join room as soon as incoming state is ready (socket may arrive after hydrate).
+  useEffect(() => {
+    if (!shouldAutoAnswer || autoAnswerStartedRef.current) return;
+    if (!call.isReceivingCall || !call.from) return;
+    const routeOk = !userId || idEq(userId, call.from);
+    if (!routeOk) return;
+    autoAnswerStartedRef.current = true;
+    void answerCall().catch(() => {
+      autoAnswerStartedRef.current = false;
+    });
+  }, [shouldAutoAnswer, call.isReceivingCall, call.from, userId, answerCall, incomingCallKey]);
 
   // ── call control state ────────────────────────────────────────────────────
   const [isMuted,    setIsMuted]    = useState(false);
   const [isCamOff,  setIsCamOff]   = useState(false);
+  const [isAnswering, setIsAnswering] = useState(false);
+  /** Default to speaker for both voice/video calls for louder output (toggle still available). */
   const [isSpeaker, setIsSpeaker]  = useState(true);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const callStartRef   = useRef<number>(0);
@@ -47,6 +79,66 @@ const CallScreen = () => {
 
   const isVideo = (paramCallType || call.callType) === 'video';
   const isConnected = connectionState === ConnectionState.Connected && callAccepted;
+  const [localPreviewFallbackTrack, setLocalPreviewFallbackTrack] = useState<any>(null);
+
+  const syncLocalPreviewFallback = useCallback(() => {
+    if (!room || !isVideo) {
+      setLocalPreviewFallbackTrack(null);
+      return;
+    }
+    try {
+      const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      const t = pub?.track;
+      if (t && t.kind === Track.Kind.Video) {
+        setLocalPreviewFallbackTrack(t);
+      } else {
+        setLocalPreviewFallbackTrack(null);
+      }
+    } catch (_) {
+      setLocalPreviewFallbackTrack(null);
+    }
+  }, [room, isVideo]);
+
+  useEffect(() => {
+    syncLocalPreviewFallback();
+    if (!room || !isVideo) return;
+
+    const onPublished = () => syncLocalPreviewFallback();
+    const onUnpublished = () => syncLocalPreviewFallback();
+    const onConnState = () => syncLocalPreviewFallback();
+
+    room.on(RoomEvent.LocalTrackPublished, onPublished);
+    room.on(RoomEvent.LocalTrackUnpublished, onUnpublished);
+    room.on(RoomEvent.ConnectionStateChanged, onConnState);
+
+    // Some Android devices restart camera track without a clean event sequence.
+    const periodicSync = setInterval(syncLocalPreviewFallback, 700);
+
+    return () => {
+      room.off(RoomEvent.LocalTrackPublished, onPublished);
+      room.off(RoomEvent.LocalTrackUnpublished, onUnpublished);
+      room.off(RoomEvent.ConnectionStateChanged, onConnState);
+      clearInterval(periodicSync);
+    };
+  }, [room, isVideo, callAccepted, syncLocalPreviewFallback]);
+
+  const localTrackForPiP =
+    localVideoTrack && localVideoTrack.kind === Track.Kind.Video
+      ? localVideoTrack
+      : localPreviewFallbackTrack;
+
+  // Audio routing: voice → earpiece unless user toggles speaker; video → loudspeaker by default.
+  useEffect(() => {
+    if (!callAccepted) return;
+    try {
+      InCallManager.start({ media: isVideo ? 'video' : 'audio', auto: false, ringback: '' });
+      InCallManager.setSpeakerphoneOn(!!isSpeaker);
+      InCallManager.setForceSpeakerphoneOn(!!isSpeaker);
+    } catch (_) {}
+    return () => {
+      try { InCallManager.stop(); } catch (_) {}
+    };
+  }, [callAccepted, isVideo, isSpeaker]);
 
   // ── duration ticker ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -78,31 +170,40 @@ const CallScreen = () => {
       ringingTimeoutRef.current = setTimeout(() => {
         leaveCall();
         if (navigation.canGoBack()) navigation.goBack();
-      }, 35000);
+      }, 60000);
     }
     return () => { if (ringingTimeoutRef.current) clearTimeout(ringingTimeoutRef.current); };
   }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, leaveCall, navigation]);
 
   // ── controls ──────────────────────────────────────────────────────────────
   const handleMute = useCallback(async () => {
-    if (!room.current) return;
+    if (!room) return;
     const next = !isMuted;
-    await room.current.localParticipant.setMicrophoneEnabled(!next);
+    await room.localParticipant.setMicrophoneEnabled(!next);
     setIsMuted(next);
   }, [room, isMuted]);
 
   const handleCamToggle = useCallback(async () => {
-    if (!room.current) return;
+    if (!room) return;
     const next = !isCamOff;
-    await room.current.localParticipant.setCameraEnabled(!next);
+    await room.localParticipant.setCameraEnabled(!next);
     setIsCamOff(next);
   }, [room, isCamOff]);
 
   const handleFlipCamera = useCallback(async () => {
-    if (!room.current) return;
-    const camPub = room.current.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (!room) return;
+    const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
     await camPub?.track?.switchCamera?.();
   }, [room]);
+
+  const handleSpeakerToggle = useCallback(() => {
+    const next = !isSpeaker;
+    setIsSpeaker(next);
+    try {
+      InCallManager.setSpeakerphoneOn(next);
+      InCallManager.setForceSpeakerphoneOn(next);
+    } catch (_) {}
+  }, [isSpeaker]);
 
   const handleLeave = () => {
     leaveCall();
@@ -110,7 +211,10 @@ const CallScreen = () => {
   };
 
   const handleAnswer = async () => {
+    if (isAnswering) return;
+    setIsAnswering(true);
     try { await answerCall(); } catch (e) { console.warn('Answer error:', e); }
+    finally { setIsAnswering(false); }
   };
 
   const formatDuration = (sec: number) => {
@@ -124,7 +228,34 @@ const CallScreen = () => {
   const myName        = user?.name   || user?.username || 'You';
   const myAvatar      = user?.profilePic;
 
-  // ── Incoming call: show Decline + Answer ─────────────────────────────────
+  /** Already answered on native push / IncomingCallActivity — do not show a second Answer/Decline in RN. */
+  const autoAnswerFromNative = shouldAutoAnswer === true;
+
+  // ── Incoming after native Answer (FCM): single “Connecting…” screen ───────
+  if (call.isReceivingCall && !callAccepted && autoAnswerFromNative) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>Connecting…</Text>
+        {callerAvatar ? (
+          <Image source={{ uri: callerAvatar }} style={styles.outgoingAvatar} />
+        ) : (
+          <View style={[styles.outgoingAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+            <Text style={[styles.avatarInitial, { color: colors.textGray }]}>{callerName.charAt(0).toUpperCase()}</Text>
+          </View>
+        )}
+        <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
+        <Text style={[styles.callStatus, { color: colors.textGray }]}>
+          {isVideo ? 'Starting video call' : 'Starting voice call'}
+        </Text>
+        <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
+        <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error, marginTop: 32 }]} onPress={handleLeave}>
+          <Text style={styles.btnLabel}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // ── Incoming call: Decline + Answer (in-app ring only) ───────────────────
   if (call.isReceivingCall && !callAccepted) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -144,8 +275,12 @@ const CallScreen = () => {
           <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error }]} onPress={handleLeave}>
             <Text style={styles.btnLabel}>Decline</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, { backgroundColor: colors.success }]} onPress={handleAnswer}>
-            <Text style={styles.btnLabel}>Answer</Text>
+          <TouchableOpacity
+            style={[styles.btn, { backgroundColor: colors.success, opacity: isAnswering ? 0.85 : 1 }]}
+            onPress={handleAnswer}
+            disabled={isAnswering}
+          >
+            {isAnswering ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnLabel}>Answer</Text>}
           </TouchableOpacity>
         </View>
       </View>
@@ -182,6 +317,7 @@ const CallScreen = () => {
           videoTrack={remoteVideoTrack}
           style={styles.remoteVideo}
           objectFit="cover"
+          zOrder={0}
         />
       ) : (
         <View style={[styles.remoteVideo, styles.placeholder]}>
@@ -220,13 +356,14 @@ const CallScreen = () => {
       )}
 
       {/* Local video PiP */}
-      {isVideo && localVideoTrack && (
+      {isVideo && localTrackForPiP && (
         <View style={styles.localVideoWrap} pointerEvents="box-none">
           <VideoView
-            videoTrack={localVideoTrack}
+            videoTrack={localTrackForPiP}
             style={styles.localVideo}
             objectFit="cover"
             mirror
+            zOrder={2}
           />
         </View>
       )}
@@ -248,6 +385,15 @@ const CallScreen = () => {
         >
           <Text style={[styles.controlLabel, { color: isMuted ? '#fff' : colors.text }]}>
             {isMuted ? 'Unmute' : 'Mute'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.controlBtn, { backgroundColor: isSpeaker ? colors.primary : colors.backgroundLight }]}
+          onPress={handleSpeakerToggle}
+        >
+          <Text style={[styles.controlLabel, { color: isSpeaker ? '#fff' : colors.text }]}>
+            {isSpeaker ? 'Speaker' : 'Earpiece'}
           </Text>
         </TouchableOpacity>
 

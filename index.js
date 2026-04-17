@@ -5,6 +5,17 @@
 import 'react-native-gesture-handler';
 import '@react-native-firebase/app'; // Import Firebase app first to ensure initialization
 import { registerGlobals } from '@livekit/react-native';
+
+// Hermes (RN) may not expose DOMException, but some RTC deps expect it.
+if (typeof global.DOMException === 'undefined') {
+  global.DOMException = class DOMException extends Error {
+    constructor(message = 'DOMException', name = 'DOMException') {
+      super(message);
+      this.name = name;
+    }
+  };
+}
+
 registerGlobals();
 import { AppRegistry, I18nManager } from 'react-native';
 import messaging from '@react-native-firebase/messaging';

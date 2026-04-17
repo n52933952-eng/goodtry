@@ -46,6 +46,29 @@ async function queueDeliveryAckFromFcm(data: Record<string, string> | undefined)
   }
 }
 
+/** Same payload shape as native IncomingCallActivity → NavigateToCallScreen (LiveKit). */
+function emitNavigateToCallFromPushData(data: Record<string, string> | undefined) {
+  if (!data) return;
+  const callerId = (data.callerId || data.from || data.sender || '').toString().trim();
+  if (!callerId) return;
+  const callerName = (data.callerName || data.caller_name || 'Unknown').toString();
+  const rawType = (data.callType || data.call_type || 'video').toString().toLowerCase();
+  const callType = rawType === 'audio' || rawType === 'voice' ? 'audio' : 'video';
+  const shouldAutoAnswer =
+    data.action === 'answer' ||
+    data.click_action === 'ANSWER_CALL' ||
+    data.open === 'answer' ||
+    data.shouldAutoAnswer === 'true' ||
+    data.autoAnswer === 'true';
+  DeviceEventEmitter.emit('NavigateToCallScreen', {
+    callerId,
+    callerName,
+    callType,
+    shouldAutoAnswer,
+    isFromNotification: true,
+  });
+}
+
 class FCMService {
   private fcmToken: string | null = null;
   private isInitialized = false;
@@ -175,7 +198,11 @@ class FCMService {
     messaging().onNotificationOpenedApp((remoteMessage) => {
       const data = remoteMessage?.data as Record<string, string> | undefined;
       if (!data?.type) return;
-      if (data.type === 'incoming_call' || data.type === 'call_ended') return;
+      if (data.type === 'incoming_call') {
+        emitNavigateToCallFromPushData(data);
+        return;
+      }
+      if (data.type === 'call_ended') return;
       if (this.navigationRef?.current) {
         navigateFromPushData(this.navigationRef, data);
       }
@@ -189,8 +216,12 @@ class FCMService {
     try {
       const remoteMessage = await messaging().getInitialNotification();
       const data = remoteMessage?.data as Record<string, string> | undefined;
-      if (!data?.type || !this.navigationRef?.current) return;
-      if (data.type === 'incoming_call') return;
+      if (!data?.type) return;
+      if (data.type === 'incoming_call') {
+        emitNavigateToCallFromPushData(data);
+        return;
+      }
+      if (!this.navigationRef?.current) return;
       navigateFromPushData(this.navigationRef, data);
     } catch (e) {
       console.warn('[FCM] flushInitialNotification', e);

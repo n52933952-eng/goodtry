@@ -2,6 +2,7 @@ package com.playsocial
 
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
@@ -67,6 +68,22 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         }
     }
     
+    /** Stale decline flags block NavigateToCallScreen / incoming navigation — clear when a new ring starts. */
+    @ReactMethod
+    fun clearCallCancelFlags(promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .remove("hasPendingCancel")
+                .remove("shouldCancelCall")
+                .remove("callerIdToCancel")
+                .apply()
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "Failed to clear cancel flags: ${e.message}", e)
+        }
+    }
+
     @ReactMethod
     fun setCurrentUserId(userId: String, promise: Promise) {
         try {
@@ -88,6 +105,49 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERROR", "Failed to dismiss notification: ${e.message}", e)
+        }
+    }
+
+    /**
+     * When LiveKit / JS reports call ended: clear pending-call prefs, stop ringtone, dismiss tray notification,
+     * and close IncomingCallActivity so the next call is not blocked by stale native state.
+     */
+    @ReactMethod
+    fun onCallSessionEnded(promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .remove("hasPendingCall")
+                .remove("shouldCancelCall")
+                .remove("hasPendingCancel")
+                .remove("callerIdToCancel")
+                .remove("callerId")
+                .remove("callerName")
+                .remove("callType")
+                .remove("shouldAutoAnswer")
+                .remove("shouldDecline")
+                .apply()
+
+            try {
+                RingtoneService.stopRingtone(reactApplicationContext)
+            } catch (_: Exception) { }
+
+            try {
+                val nm = reactApplicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.cancel(1001)
+            } catch (_: Exception) { }
+
+            try {
+                reactApplicationContext.sendBroadcast(
+                    Intent("com.playsocial.CLOSE_INCOMING_CALL").apply {
+                        putExtra("action", "call_ended")
+                    }
+                )
+            } catch (_: Exception) { }
+
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "onCallSessionEnded failed: ${e.message}", e)
         }
     }
 

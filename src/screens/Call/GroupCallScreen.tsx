@@ -9,10 +9,10 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, FlatList, Image,
+  View, Text, TouchableOpacity, StyleSheet, FlatList, Image, ActivityIndicator,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
-import { Track } from '@livekit/react-native';
+import { Track } from 'livekit-client';
 import { useNavigation } from '@react-navigation/native';
 import { useGroupCall } from '../../context/GroupCallContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -88,6 +88,7 @@ const GroupCallScreen = () => {
 
   const [isMuted,  setIsMuted]  = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
 
   const handleMute = useCallback(async () => {
     if (!room) return;
@@ -109,9 +110,15 @@ const GroupCallScreen = () => {
   }, [leaveGroupCall, navigation]);
 
   const handleJoin = useCallback(async () => {
-    await joinGroupCall();
+    if (isJoining) return;
+    setIsJoining(true);
+    try {
+      await joinGroupCall();
+    } finally {
+      setIsJoining(false);
+    }
     // GroupCallContext sets groupCallActive; this screen reuses itself for active state
-  }, [joinGroupCall]);
+  }, [joinGroupCall, isJoining]);
 
   // ── Incoming ring UI ──────────────────────────────────────────────────────
   if (incomingGroupCall && !groupCallActive) {
@@ -138,8 +145,12 @@ const GroupCallScreen = () => {
           >
             <Text style={styles.actionBtnText}>Decline</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.success }]} onPress={handleJoin}>
-            <Text style={styles.actionBtnText}>Join</Text>
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: colors.success, opacity: isJoining ? 0.85 : 1 }]}
+            onPress={handleJoin}
+            disabled={isJoining}
+          >
+            {isJoining ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Join</Text>}
           </TouchableOpacity>
         </View>
       </View>

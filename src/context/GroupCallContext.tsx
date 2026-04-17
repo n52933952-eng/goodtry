@@ -18,9 +18,11 @@ import React, {
 } from 'react';
 import { Alert } from 'react-native';
 import {
-  Room, RoomEvent, Track, ConnectionState,
+  Room,
+  RoomEvent,
+  Track,
   type RemoteParticipant,
-} from '@livekit/react-native';
+} from 'livekit-client';
 import { useSocket } from './SocketContext';
 import { useUser } from './UserContext';
 import { API_URL } from '../utils/constants';
@@ -105,8 +107,8 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
 
     await lkRoom.connect(livekitUrl, token);
-    if (type !== 'audio') await lkRoom.localParticipant.setCameraEnabled(true);
     await lkRoom.localParticipant.setMicrophoneEnabled(true);
+    if (type !== 'audio') await lkRoom.localParticipant.setCameraEnabled(true);
     refresh();
   }, [disconnectRoom]);
 
@@ -115,11 +117,8 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (!user || !socket) return;
     try {
       const { token, roomName, livekitUrl } = await fetchToken(conversationId);
-      await connectGroupRoom(token, livekitUrl, type);
-      setGroupCallActive(true);
-      setGroupCallType(type);
-      setActiveConvId(conversationId);
 
+      // Notify participants before heavy local connect so invites are not delayed by camera init.
       socket.emit('livekit:startGroupCall', {
         conversationId,
         roomName,
@@ -127,6 +126,11 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
         callerProfilePic: user.profilePic,
         callType:         type,
       });
+
+      await connectGroupRoom(token, livekitUrl, type);
+      setGroupCallActive(true);
+      setGroupCallType(type);
+      setActiveConvId(conversationId);
     } catch (err: any) {
       Alert.alert('Group Call Error', err.message || 'Could not start group call');
       await disconnectRoom();
@@ -166,16 +170,58 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   }, [socket, activeConvId, disconnectRoom]);
 
   // ── Socket listeners ───────────────────────────────────────────────────────
+  // Re-bind on every new Socket.IO instance (reconnect / replace). Otherwise listeners stay on the
+  // dead socket and mobile↔mobile group invites never arrive after backgrounding or network flap.
   useEffect(() => {
     if (!socket) return;
 
     const onIncoming = (data: IncomingGroupCall) => {
       setIncomingGroupCall(data);
     };
+    const onGroupEnded = (payload: any) => {
+      const endedConvId = String(payload?.conversationId || '');
+      if (!endedConvId) return;
+      const isRelevantIncoming = incomingGroupCall?.conversationId === endedConvId;
+      const isRelevantActive = activeConvId === endedConvId;
+      if (!isRelevantIncoming && !isRelevantActive) return;
 
-    socket.on('livekit:incomingGroupCall', onIncoming);
-    return () => { socket.off('livekit:incomingGroupCall', onIncoming); };
-  }, [socket]);
+      setIncomingGroupCall(null);
+      setGroupCallActive(false);
+      setActiveConvId('');
+      void disconnectRoom();
+
+      if (payload?.reason === 'timeout') {
+        Alert.alert('Group call ended', 'This group call reached the 25-minute limit.');
+      }
+    };
+
+    const bind = () => {
+      try {
+        socket.off('livekit:incomingGroupCall', onIncoming);
+        socket.off('livekit:groupCallEnded', onGroupEnded);
+      } catch (_) {
+        /* ignore */
+      }
+      socket.on('livekit:incomingGroupCall', onIncoming);
+      socket.on('livekit:groupCallEnded', onGroupEnded);
+    };
+
+    bind();
+    const removeReady =
+      typeof (socket as any).addSocketReadyListener === 'function'
+        ? (socket as any).addSocketReadyListener(bind)
+        : null;
+
+    return () => {
+      try {
+        removeReady?.();
+      } catch (_) {
+        /* ignore */
+      }
+      socket.off('livekit:incomingGroupCall', onIncoming);
+      socket.off('livekit:groupCallEnded', onGroupEnded);
+    };
+  }, [socket, incomingGroupCall?.conversationId, activeConvId, disconnectRoom]);
 
   useEffect(() => () => { disconnectRoom(); }, []);
 

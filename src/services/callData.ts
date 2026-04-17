@@ -38,6 +38,28 @@ export const clearCallData = async (): Promise<void> => {
   }
 };
 
+/** Android: prefs + tray notification + ringtone + IncomingCallActivity — call when the call session fully ends. */
+export const onCallSessionEndedNative = async (): Promise<void> => {
+  try {
+    if (CallDataModule?.onCallSessionEnded) {
+      await CallDataModule.onCallSessionEnded();
+    }
+  } catch (error) {
+    console.error('[CallData] onCallSessionEnded:', error);
+  }
+};
+
+/** Android: remove stale decline/cancel prefs so the next incoming call is not blocked. */
+export const clearCallCancelFlagsNative = async (): Promise<void> => {
+  try {
+    if (CallDataModule?.clearCallCancelFlags) {
+      await CallDataModule.clearCallCancelFlags();
+    }
+  } catch (error) {
+    console.error('[CallData] clearCallCancelFlags:', error);
+  }
+};
+
 export const setCurrentUserId = async (userId: string): Promise<void> => {
   try {
     if (CallDataModule && CallDataModule.setCurrentUserId) {
