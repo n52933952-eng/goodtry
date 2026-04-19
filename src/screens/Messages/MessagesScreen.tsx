@@ -11,6 +11,7 @@ import {
   Alert,
   AppState,
   DeviceEventEmitter,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
@@ -27,6 +28,12 @@ import { navigateToMainStack } from '../../utils/navigationHelpers';
 const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
 const LIST_RING_STROKE = 2;
+
+/** Keep list titles/previews left-aligned next to the avatar even for Arabic/RTL scripts. */
+const LTR_TEXT = {
+  textAlign: 'left' as const,
+  writingDirection: 'ltr' as const,
+};
 
 const toIdString = (value: any): string => {
   if (!value) return '';
@@ -590,7 +597,7 @@ const MessagesScreen = ({ navigation }: any) => {
 
     return (
       <TouchableOpacity
-        style={[styles.conversationItem, { borderBottomColor: colors.border }]}
+        style={[styles.conversationItem, styles.rowLtr, { borderBottomColor: colors.border }]}
         onPress={() => navigation.navigate('ChatScreen', { 
           conversationId: toIdString(item._id),
           otherUser: isGroupConv ? null : otherUserData,
@@ -639,17 +646,41 @@ const MessagesScreen = ({ navigation }: any) => {
           )}
           {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
         </View>
-        <View style={styles.conversationInfo}>
+        <View style={[styles.conversationInfo, styles.colLtr]}>
           <View style={styles.conversationHeader}>
-            <View style={styles.userNameRow}>
-              <Text style={[styles.userName, { color: colors.text }]}>{displayName}</Text>
-              {isGroupConv && (
-                <Text style={{ fontSize: 10, color: colors.primary, marginLeft: 4, fontWeight: '600' }}>GROUP</Text>
-              )}
+            <View style={styles.conversationTitleCol}>
+              <View style={styles.userNameRow}>
+                <Text
+                  {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                  style={[styles.userName, LTR_TEXT, { color: colors.text, flex: 1, minWidth: 0 }]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {displayName}
+                </Text>
+                {isGroupConv && (
+                  <Text
+                    {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                    style={{
+                      fontSize: 10,
+                      color: colors.primary,
+                      marginLeft: 4,
+                      fontWeight: '600',
+                      flexShrink: 0,
+                      ...LTR_TEXT,
+                    }}
+                  >
+                    GROUP
+                  </Text>
+                )}
+              </View>
             </View>
             <View style={styles.rightHeader}>
               {item.lastMessage && (
-                <Text style={[styles.time, { color: colors.textGray }]}>
+                <Text
+                  {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                  style={[styles.time, LTR_TEXT, { color: colors.textGray }]}
+                >
                   {formatTime(item.lastMessage.createdAt || item.updatedAt)}
                 </Text>
               )}
@@ -663,17 +694,23 @@ const MessagesScreen = ({ navigation }: any) => {
             </View>
           </View>
           {isGroupConv && (
-            <Text style={[styles.lastMessage, { color: colors.textGray, fontSize: 12, marginBottom: 2 }]} numberOfLines={1}>
+            <Text
+              {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+              style={[styles.lastMessage, LTR_TEXT, { color: colors.textGray, fontSize: 12, marginBottom: 2 }]}
+              numberOfLines={1}
+            >
               {item.participants?.length || 0} members
             </Text>
           )}
           <View style={styles.lastMessageRow}>
-            <Text 
+            <Text
+              {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
               style={[
-                styles.lastMessage, 
+                styles.lastMessage,
+                LTR_TEXT,
                 { color: colors.textGray },
                 unreadCount > 0 && styles.unreadMessage,
-                unreadCount > 0 && { color: colors.text }
+                unreadCount > 0 && { color: colors.text },
               ]}
               numberOfLines={1}
             >
@@ -736,7 +773,7 @@ const MessagesScreen = ({ navigation }: any) => {
                 const isOnline = item._id ? isUserOnline(item._id) : false;
                 return (
                   <TouchableOpacity
-                    style={[styles.searchResultItem, { borderBottomColor: colors.border }]}
+                    style={[styles.searchResultItem, styles.rowLtr, { borderBottomColor: colors.border }]}
                     onPress={() => handleStartConversation(item)}
                   >
                     <View style={styles.avatarContainer}>
@@ -772,11 +809,21 @@ const MessagesScreen = ({ navigation }: any) => {
                       })()}
                       {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
                     </View>
-                    <View style={styles.searchResultInfo}>
+                    <View style={[styles.searchResultInfo, styles.colLtr]}>
                       <View style={styles.userNameRow}>
-                        <Text style={[styles.userName, { color: colors.text }]}>{item.name || t('unknown')}</Text>
+                        <Text
+                          {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                          style={[styles.userName, LTR_TEXT, { color: colors.text }]}
+                        >
+                          {item.name || t('unknown')}
+                        </Text>
                       </View>
-                      <Text style={[styles.userUsername, { color: colors.textGray }]}>@{item.username}</Text>
+                      <Text
+                        {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                        style={[styles.userUsername, LTR_TEXT, { color: colors.textGray }]}
+                      >
+                        @{item.username}
+                      </Text>
                     </View>
                   </TouchableOpacity>
                 );
@@ -871,6 +918,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
+  /** Force row order (avatar | text | actions) regardless of app RTL. */
+  rowLtr: {
+    direction: 'ltr',
+  },
+  colLtr: {
+    direction: 'ltr',
+  },
   avatarContainer: {
     position: 'relative',
     marginRight: 15,
@@ -915,10 +969,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 5,
   },
+  /** Lets long group names ellipsis instead of pushing time + delete off-screen */
+  conversationTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    marginRight: 8,
+  },
   rightHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexShrink: 0,
   },
   deleteBtn: {
     paddingHorizontal: 2,

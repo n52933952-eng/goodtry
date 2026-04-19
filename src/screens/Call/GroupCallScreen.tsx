@@ -9,8 +9,16 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, FlatList, Image, ActivityIndicator,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  FlatList,
+  Image,
+  ActivityIndicator,
+  ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
 import { Track } from 'livekit-client';
 import { useNavigation } from '@react-navigation/native';
@@ -74,6 +82,7 @@ const GroupCallScreen = () => {
   const navigation = useNavigation<any>();
   const { colors } = useTheme();
   const { user }   = useUser();
+  const insets = useSafeAreaInsets();
 
   const {
     incomingGroupCall,
@@ -122,35 +131,96 @@ const GroupCallScreen = () => {
 
   // ── Incoming ring UI ──────────────────────────────────────────────────────
   if (incomingGroupCall && !groupCallActive) {
+    const isAudio = incomingGroupCall.callType === 'audio';
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        {incomingGroupCall.callerProfilePic ? (
-          <Image source={{ uri: incomingGroupCall.callerProfilePic }} style={styles.bigAvatar} />
-        ) : (
-          <View style={[styles.bigAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
-            <Text style={[styles.bigInitial, { color: colors.textGray }]}>
-              {(incomingGroupCall.callerName || '?').charAt(0).toUpperCase()}
+      <View style={[styles.incomingRoot, { backgroundColor: colors.background }]}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.incomingScrollContent,
+            { paddingTop: Math.max(insets.top, 12) + 8, paddingBottom: 8 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+        >
+          <View style={styles.incomingCenter}>
+            {incomingGroupCall.callerProfilePic ? (
+              <Image source={{ uri: incomingGroupCall.callerProfilePic }} style={styles.incomingAvatar} />
+            ) : (
+              <View
+                style={[
+                  styles.incomingAvatar,
+                  styles.avatarPlaceholder,
+                  { backgroundColor: colors.avatarBg },
+                ]}
+              >
+                <Text style={[styles.incomingInitial, { color: '#fff' }]}>
+                  {(incomingGroupCall.callerName || '?').charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+
+            <View style={[styles.incomingBadgeRow, { borderColor: colors.border }]}>
+              <Text style={[styles.incomingBadgeLabel, { color: colors.primary }]}>GROUP CALL</Text>
+              <View
+                style={[
+                  styles.incomingTypePill,
+                  { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.incomingTypeText, { color: colors.text }]}>
+                  {isAudio ? 'Voice' : 'Video'}
+                </Text>
+              </View>
+            </View>
+
+            <Text
+              style={[styles.incomingCallerName, { color: colors.text }]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              {incomingGroupCall.callerName || 'Group call'}
+            </Text>
+            <Text style={[styles.incomingHint, { color: colors.textGray, textAlign: 'center' }]}>
+              {isAudio ? 'Voice call' : 'Video call'}
             </Text>
           </View>
-        )}
-        <Text style={[styles.callTitle, { color: colors.textGray }]}>Group Call</Text>
-        <Text style={[styles.callerName, { color: colors.text }]}>{incomingGroupCall.callerName}</Text>
-        <Text style={[styles.callSub, { color: colors.textGray }]}>
-          {incomingGroupCall.callType === 'audio' ? 'Voice call' : 'Video call'}
-        </Text>
-        <View style={styles.actionRow}>
+        </ScrollView>
+
+        <View
+          style={[
+            styles.incomingActions,
+            {
+              paddingBottom: Math.max(insets.bottom, 12) + 8,
+              paddingHorizontal: 20,
+              borderTopColor: colors.border,
+              backgroundColor: colors.background,
+            },
+          ]}
+        >
           <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: colors.error }]}
-            onPress={() => { declineGroupCall(); if (navigation.canGoBack()) navigation.goBack(); }}
+            style={[styles.incomingActionBtn, { backgroundColor: colors.error }]}
+            onPress={() => {
+              declineGroupCall();
+              if (navigation.canGoBack()) navigation.goBack();
+            }}
+            activeOpacity={0.85}
           >
             <Text style={styles.actionBtnText}>Decline</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: colors.success, opacity: isJoining ? 0.85 : 1 }]}
+            style={[
+              styles.incomingActionBtn,
+              { backgroundColor: colors.success, opacity: isJoining ? 0.85 : 1 },
+            ]}
             onPress={handleJoin}
             disabled={isJoining}
+            activeOpacity={0.85}
           >
-            {isJoining ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Join</Text>}
+            {isJoining ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.actionBtnText}>Join</Text>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -167,7 +237,9 @@ const GroupCallScreen = () => {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Group Call</Text>
-        <Text style={styles.headerSub}>{allTiles.length} participants</Text>
+        <Text style={styles.headerSub}>
+          {allTiles.length === 1 ? '1 participant' : `${allTiles.length} participants`}
+        </Text>
       </View>
 
       {/* Grid */}
@@ -215,6 +287,75 @@ const GroupCallScreen = () => {
 
 const styles = StyleSheet.create({
   container:       { flex: 1 },
+  incomingRoot:    { flex: 1 },
+  incomingScrollContent: { flexGrow: 1, justifyContent: 'center' },
+  incomingCenter: {
+    width: '100%',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  incomingAvatar: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    marginBottom: 20,
+  },
+  incomingInitial: { fontSize: 44, fontWeight: '700' },
+  incomingBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    maxWidth: '100%',
+  },
+  incomingBadgeLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  incomingTypePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  incomingTypeText: { fontSize: 13, fontWeight: '700' },
+  incomingCallerName: {
+    fontSize: 24,
+    fontWeight: '700',
+    lineHeight: 30,
+    maxWidth: '100%',
+    width: '100%',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  incomingHint: {
+    fontSize: 15,
+    fontWeight: '500',
+    opacity: 0.95,
+    maxWidth: '100%',
+  },
+  incomingActions: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  incomingActionBtn: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
   header:          { paddingTop: 52, paddingHorizontal: 16, paddingBottom: 8, backgroundColor: 'rgba(0,0,0,0.4)' },
   headerTitle:     { color: '#fff', fontWeight: 'bold', fontSize: 18 },
   headerSub:       { color: '#aaa', fontSize: 13, marginTop: 2 },
@@ -229,15 +370,7 @@ const styles = StyleSheet.create({
   ctrlBtn:         { alignItems: 'center', padding: 12, borderRadius: 16, minWidth: 72 },
   ctrlText:        { fontSize: 24 },
   ctrlLabel:       { color: '#fff', fontSize: 11, marginTop: 4 },
-  // incoming ring
-  bigAvatar:       { width: 100, height: 100, borderRadius: 50, marginBottom: 16 },
   avatarPlaceholder: { justifyContent: 'center', alignItems: 'center' },
-  bigInitial:      { fontSize: 36, fontWeight: 'bold' },
-  callTitle:       { fontSize: 14, marginBottom: 4 },
-  callerName:      { fontSize: 22, fontWeight: 'bold', marginBottom: 4 },
-  callSub:         { fontSize: 15, marginBottom: 32 },
-  actionRow:       { flexDirection: 'row', gap: 24 },
-  actionBtn:       { paddingVertical: 14, paddingHorizontal: 28, borderRadius: 12 },
   actionBtnText:   { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 });
 

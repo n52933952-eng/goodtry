@@ -45,7 +45,7 @@ interface PostProps {
   storyRingReplayKey?: number;
   /** Post detail: show only this live match card (same id as comment navigation). */
   footballFocusMatchId?: string;
-  /** Post detail / full-bleed: no side margins so the card spans the screen width (feed keeps inset). */
+  /** Full-bleed: no side margins (e.g. Post detail). Feed uses default card width like other posts. */
   fullWidthCard?: boolean;
 }
 
@@ -345,6 +345,13 @@ const Post: React.FC<PostProps> = ({
 
   const showStackedFootballMatchActions =
     isFootballPost && !footballLoading && footballLiveMatches.length > 0 && !disableNavigation;
+
+  /** Post detail: match rows already include like/comment — hide duplicate post-level footer (web-style). */
+  const hidePostFooterForFootballDetail =
+    isFootballPost &&
+    disableNavigation &&
+    !footballLoading &&
+    footballLiveMatches.length > 0;
 
   /** Top-level comment count per footballMatchId, including all nested replies in those threads. */
   const footballMatchReplyCounts = useMemo(() => {
@@ -706,8 +713,9 @@ const Post: React.FC<PostProps> = ({
 
   const isMyChannelFeedCard =
     !!post?.channelAddedBy && String(post.channelAddedBy) === String(user?._id);
+  /** Football: no ✕ on feed — unfollow / hide source from Football tab. Weather & user-added channels keep dismiss. */
   const showDismissFromFeed =
-    (isFootballPost || isWeatherPost || isMyChannelFeedCard) && !isChessPost && !isCardPost;
+    (isWeatherPost || isMyChannelFeedCard) && !isChessPost && !isCardPost;
 
   const handleDismissFromFeed = () => {
     Alert.alert(
@@ -840,6 +848,9 @@ const Post: React.FC<PostProps> = ({
     !isChessPost &&
     !isCardPost;
 
+  /** Feed-only: hide avatar / name / @Football row so cards match Football tab; Post detail keeps header. */
+  const hideFootballFeedHeader = isFootballPost && !disableNavigation;
+
   const onAvatarPress = (e: any) => {
     e.stopPropagation();
     if (disableNavigation) return;
@@ -875,10 +886,18 @@ const Post: React.FC<PostProps> = ({
       style={[
         styles.container,
         fullWidthCard && styles.containerFullWidth,
-        { backgroundColor: colors.backgroundLight },
+        /* Football channel on feed: same as Football Live — card on `background`, not a second grey plate. */
+        {
+          backgroundColor:
+            hideFootballFeedHeader && !disableNavigation ? colors.background : colors.backgroundLight,
+        },
         showStackedFootballMatchActions && { paddingBottom: 0 },
+        /* Align match cards with Football tab list (`padding: 15` there = 15px inset here). */
+        hideFootballFeedHeader && !disableNavigation && styles.containerFootballFeedCompact,
+        hideFootballFeedHeader && styles.containerFootballFeedFlatShell,
       ]}
     >
+      {!hideFootballFeedHeader && (
       <View style={styles.header}>
         <StoryAvatarRing
           visible={showStoryRing}
@@ -1019,6 +1038,7 @@ const Post: React.FC<PostProps> = ({
           )}
         </View>
       </View>
+      )}
 
       {post.isCollaborative &&
         Array.isArray(post.contributors) &&
@@ -1423,7 +1443,12 @@ const Post: React.FC<PostProps> = ({
       )}
 
       {isFootballPost && (
-        <View style={{ marginBottom: showStackedFootballMatchActions ? 0 : 10 }}>
+        <View
+          style={[
+            { marginBottom: showStackedFootballMatchActions ? 0 : 6 },
+            /* No horizontal bleed — negative margin was clipping rounded cards on Android. */
+          ]}
+        >
           {/* Check if we have matches from API fetch or post data */}
           {footballLoading ? (
             <View style={[styles.footballCard, { backgroundColor: colors.cardBg }]}>
@@ -1434,12 +1459,7 @@ const Post: React.FC<PostProps> = ({
             </View>
           ) : footballMatchesSource.length > 0 ? (
             footballLiveMatches.length > 0 ? (
-              <View
-                style={[
-                  styles.footballFeedMatchListStrip,
-                  { backgroundColor: colors.background },
-                ]}
-              >
+              <View style={styles.footballFeedMatchListStrip}>
                 {footballLiveMatchesDisplayed.map((match: any, index: number) => {
                   const fid =
                     match._id != null
@@ -1448,49 +1468,43 @@ const Post: React.FC<PostProps> = ({
                         ? String(match.fixture.id)
                         : `idx-${index}`;
                   const matchLike = getMatchLikeDisplay(fid);
+                  const stripLen = footballLiveMatchesDisplayed.length;
                   return (
-                    <View
+                    <FootballMatchCard
                       key={fid}
-                      style={[
-                        styles.footballFeedUnit,
-                        {
-                          borderColor: colors.border,
-                          backgroundColor: colors.backgroundLight,
-                        },
-                      ]}
-                    >
-                      <FootballMatchCard match={match} showStatus embedded />
-                      <View
-                        style={[styles.footballFeedUnitFooter, { borderTopColor: colors.border }]}
-                        pointerEvents="box-none"
-                      >
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            handleFootballMatchLike(fid);
-                          }}
-                          disabled={footballMatchLikingId === fid}
-                        >
-                          <Text style={styles.actionIcon}>{matchLike.liked ? '❤️' : '🤍'}</Text>
-                          <Text style={[styles.actionText, { color: colors.textGray }]}>{matchLike.count}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            if (!disableNavigation) {
-                              navigateToPostDetail(post._id, { footballMatchId: fid });
-                            }
-                          }}
-                        >
-                          <Text style={styles.actionIcon}>💬</Text>
-                          <Text style={[styles.actionText, { color: colors.textGray }]}>
-                            {footballMatchReplyCounts.get(fid) ?? 0}
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
+                      match={match}
+                      showStatus
+                      lastInStrip={stripLen > 0 && index === stripLen - 1}
+                      feedFooter={
+                        <View style={styles.footballFeedUnitFooter} pointerEvents="box-none">
+                          <TouchableOpacity
+                            style={styles.actionButton}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              handleFootballMatchLike(fid);
+                            }}
+                            disabled={footballMatchLikingId === fid}
+                          >
+                            <Text style={styles.actionIcon}>{matchLike.liked ? '❤️' : '🤍'}</Text>
+                            <Text style={[styles.actionText, { color: colors.textGray }]}>{matchLike.count}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.actionButton}
+                            onPress={(e) => {
+                              e.stopPropagation();
+                              if (!disableNavigation) {
+                                navigateToPostDetail(post._id, { footballMatchId: fid });
+                              }
+                            }}
+                          >
+                            <Text style={styles.actionIcon}>💬</Text>
+                            <Text style={[styles.actionText, { color: colors.textGray }]}>
+                              {footballMatchReplyCounts.get(fid) ?? 0}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      }
+                    />
                   );
                 })}
               </View>
@@ -1605,7 +1619,7 @@ const Post: React.FC<PostProps> = ({
         </TouchableOpacity>
       )}
 
-      {!showStackedFootballMatchActions && (
+      {!showStackedFootballMatchActions && !hidePostFooterForFootballDetail && (
         <View style={styles.footer} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.actionButton}
@@ -1688,6 +1702,20 @@ const styles = StyleSheet.create({
   },
   containerFullWidth: {
     marginHorizontal: 0,
+    borderRadius: 0,
+  },
+  /**
+   * Football feed: same horizontal inset as FootballScreen `listContainer` (padding 15) —
+   * no extra inner padding so the match card width/position matches the second screen.
+   */
+  containerFootballFeedCompact: {
+    marginHorizontal: 15,
+    padding: 0,
+    paddingTop: 6,
+    paddingBottom: 4,
+  },
+  /** Square post container on football feed — match cards keep their own radius. */
+  containerFootballFeedFlatShell: {
     borderRadius: 0,
   },
   header: {
@@ -1988,25 +2016,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textGray,
   },
+  /** Column only — spacing between cards is `marginBottom` on `FootballMatchCard` (same as Football tab). */
   footballFeedMatchListStrip: {
-    marginTop: 6,
-    marginBottom: 0,
-    paddingTop: 8,
-    paddingBottom: 0,
-    gap: 8,
-  },
-  footballFeedUnit: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'column',
   },
   footballFeedUnitFooter: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingTop: 12,
+    paddingBottom: 10,
     paddingHorizontal: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
   },
   footer: {
     flexDirection: 'row',

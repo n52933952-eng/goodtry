@@ -160,14 +160,15 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   }, []);
 
   // ── PUBLIC: leave ──────────────────────────────────────────────────────────
+  // Only disconnect locally from LiveKit. Do NOT emit `livekit:endGroupCall` — that event tells
+  // the server to broadcast `groupCallEnded` to everyone, which kicked all participants when one left.
   const leaveGroupCall = useCallback(() => {
-    if (socket && activeConvId) {
-      socket.emit('livekit:endGroupCall', { conversationId: activeConvId, roomName: `group_${activeConvId}` });
-    }
-    disconnectRoom();
-    setGroupCallActive(false);
-    setActiveConvId('');
-  }, [socket, activeConvId, disconnectRoom]);
+    void (async () => {
+      await disconnectRoom();
+      setGroupCallActive(false);
+      setActiveConvId('');
+    })();
+  }, [disconnectRoom]);
 
   // ── Socket listeners ───────────────────────────────────────────────────────
   // Re-bind on every new Socket.IO instance (reconnect / replace). Otherwise listeners stay on the

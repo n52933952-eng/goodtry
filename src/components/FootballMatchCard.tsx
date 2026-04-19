@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, type ReactNode } from 'react';
 import { View, Text, Image, StyleSheet } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -33,9 +33,19 @@ type Props = {
   showStatus?: boolean;
   /** Feed: card sits above a per-match action row — no bottom margin/radius/border. */
   embedded?: boolean;
+  /** Feed only: like/comment row inside the same rounded shell as Football tab (same `matchCard` styles). */
+  feedFooter?: ReactNode;
+  /** Feed list: last card in the strip — no bottom margin (avoids double gap before the next post). */
+  lastInStrip?: boolean;
 };
 
-const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded = false }) => {
+const FootballMatchCard: React.FC<Props> = ({
+  match,
+  showStatus = true,
+  embedded = false,
+  feedFooter,
+  lastInStrip = false,
+}) => {
   const { colors } = useTheme();
   const { t } = useLanguage();
 
@@ -44,21 +54,33 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
       StyleSheet.create({
         matchCard: {
           backgroundColor: colors.backgroundLight,
-          borderRadius: 12,
+          borderRadius: 8,
           padding: 15,
-          marginBottom: 12,
-          borderWidth: 1,
-          borderColor: colors.border,
+          marginBottom: 8,
         },
         matchCardEmbedded: {
           marginBottom: 0,
           borderWidth: 0,
           borderRadius: 0,
+          backgroundColor: 'transparent',
+          overflow: 'hidden',
+        },
+        /** Feed + footer: same chrome as `matchCard`, padding only on body; footer is full-width below the body. */
+        matchCardFeedShell: {
+          padding: 0,
+          overflow: 'hidden',
+        },
+        matchCardFeedStripLast: {
+          marginBottom: 0,
+        },
+        matchCardFeedBody: {
+          padding: 15,
         },
         leagueRow: {
           flexDirection: 'row',
           alignItems: 'center',
           marginBottom: 12,
+          direction: 'ltr',
         },
         leagueLogo: {
           width: 20,
@@ -97,6 +119,7 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
           flexDirection: 'row',
           alignItems: 'center',
           marginBottom: 0,
+          direction: 'ltr',
         },
         teamContainer: {
           flex: 1,
@@ -108,6 +131,7 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
           color: colors.text,
           textAlign: 'center',
           marginBottom: 8,
+          writingDirection: 'ltr',
         },
         teamLogo: {
           width: 36,
@@ -139,7 +163,7 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
         eventsContainer: {
           marginTop: 12,
           paddingTop: 12,
-          borderTopWidth: 1,
+          borderTopWidth: StyleSheet.hairlineWidth,
           borderTopColor: colors.border,
         },
         eventsTitle: {
@@ -176,7 +200,6 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
 
   const short = String(match.fixture?.status?.short || match.status || '').trim();
   const events = (match as any).events;
-  const elapsed = match.fixture?.status?.elapsed ?? match.minute;
   const isLiveBadge =
     short === '1H' ||
     short === '2H' ||
@@ -184,8 +207,11 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
     short === 'IN_PLAY' ||
     short === 'PAUSED';
 
-  return (
-    <View style={[styles.matchCard, embedded && styles.matchCardEmbedded]}>
+  /** Same chrome as Football tab (`matchCard`); decoupled from `embedded`. */
+  const useFeedFooterShell = feedFooter != null;
+
+  const body = (
+    <>
       <View style={styles.leagueRow}>
         {match.league?.logo ? (
           <Image source={{ uri: match.league.logo }} style={styles.leagueLogo} />
@@ -193,9 +219,7 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
         <Text style={styles.leagueName}>{match.league?.name || t('unknownLeague')}</Text>
         {showStatus && isLiveBadge && (
           <View style={styles.liveBadge}>
-            <Text style={styles.liveBadgeText}>
-              🔴 LIVE {Number(elapsed) >= 0 ? Number(elapsed) : 0}'
-            </Text>
+            <Text style={styles.liveBadgeText}>🔴 LIVE</Text>
           </View>
         )}
         {showStatus && short === 'HT' && (
@@ -228,12 +252,12 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
         </View>
 
         <View style={styles.teamContainer}>
-          {match.teams?.away?.logo ? (
-            <Image source={{ uri: match.teams.away.logo }} style={styles.teamLogo} />
-          ) : null}
           <Text style={styles.teamName} numberOfLines={2}>
             {match.teams?.away?.name || match.awayTeam?.name || t('tbd')}
           </Text>
+          {match.teams?.away?.logo ? (
+            <Image source={{ uri: match.teams.away.logo }} style={styles.teamLogo} />
+          ) : null}
         </View>
       </View>
 
@@ -269,6 +293,24 @@ const FootballMatchCard: React.FC<Props> = ({ match, showStatus = true, embedded
             ))}
         </View>
       )}
+    </>
+  );
+
+  if (useFeedFooterShell) {
+    return (
+      <View
+        collapsable={false}
+        style={[styles.matchCard, styles.matchCardFeedShell, lastInStrip && styles.matchCardFeedStripLast]}
+      >
+        <View style={styles.matchCardFeedBody}>{body}</View>
+        {feedFooter}
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.matchCard, embedded && styles.matchCardEmbedded]}>
+      {body}
     </View>
   );
 };

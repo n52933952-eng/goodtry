@@ -30,7 +30,7 @@ const idStr = (v: any): string => {
 const GroupInfoScreen = ({ route, navigation }: any) => {
   const { conversation: initialConversation } = route.params || {};
   const { user } = useUser();
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const { t, tn } = useLanguage();
   const { socket } = useSocket();
 
@@ -102,15 +102,19 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
   const fetchFollowingUsers = useCallback(async () => {
     setLoadingFollowing(true);
     try {
-      const data = await apiService.get(`${ENDPOINTS.GET_FOLLOWING_USERS}/${myId}`);
-      const list = Array.isArray(data) ? data : data?.following || [];
+      // Backend: GET /api/user/following — session user (optional ?userId= for other profiles).
+      // Do NOT use /following/:id path (that route does not exist → load fails).
+      const data = await apiService.get(ENDPOINTS.GET_FOLLOWING_USERS);
+      const list = Array.isArray(data)
+        ? data
+        : data?.following || data?.users || [];
       setFollowingUsers(list);
     } catch (_) {
       Alert.alert(t('error'), t('couldNotLoadFollowingList'));
     } finally {
       setLoadingFollowing(false);
     }
-  }, [myId, t]);
+  }, [t]);
 
   const handleOpenAddMembers = useCallback(() => {
     setAddMembersVisible(true);
@@ -281,13 +285,22 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
           <TouchableOpacity
             onPress={() => handleRemoveMember(pid, item.name || item.username || t('unknown'))}
             disabled={removingId === pid}
-            style={styles.removeBtn}
+            accessibilityRole="button"
+            accessibilityLabel={t('removeMember') || 'Remove member'}
+            style={[
+              styles.removeBtn,
+              {
+                borderColor: colors.error,
+                backgroundColor:
+                  theme === 'dark' ? 'rgba(244, 33, 46, 0.16)' : 'rgba(225, 29, 72, 0.1)',
+              },
+            ]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             {removingId === pid ? (
               <ActivityIndicator size="small" color={colors.error} />
             ) : (
-              <Text style={{ fontSize: 18 }}>✕</Text>
+              <Text style={[styles.removeBtnIcon, { color: colors.error }]}>✕</Text>
             )}
           </TouchableOpacity>
         )}
@@ -313,19 +326,25 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
         <View style={[styles.groupIcon, { backgroundColor: '#1a4a8a' }]}>
           <Text style={styles.groupIconText}>👥</Text>
         </View>
-        <View style={styles.groupNameRow}>
-          <Text style={[styles.groupName, { color: colors.text }]}>
-            {conversation.groupName || 'Group'}
-          </Text>
-          {iAmAdmin && (
-            <TouchableOpacity
-              onPress={() => { setEditNameValue(conversation.groupName || ''); setEditNameVisible(true); }}
-              style={[styles.editNameBtn, { backgroundColor: colors.border }]}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        <View style={styles.groupNameBlock}>
+          <View style={styles.groupNameRow}>
+            <Text
+              style={[styles.groupName, { color: colors.text }]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
             >
-              <Text style={{ fontSize: 13, color: colors.primary }}>{`✏️ ${t('edit')}`}</Text>
-            </TouchableOpacity>
-          )}
+              {conversation.groupName || 'Group'}
+            </Text>
+            {iAmAdmin && (
+              <TouchableOpacity
+                onPress={() => { setEditNameValue(conversation.groupName || ''); setEditNameVisible(true); }}
+                style={[styles.editNameBtn, { backgroundColor: colors.border, flexShrink: 0 }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={{ fontSize: 13, color: colors.primary }}>{`✏️ ${t('edit')}`}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
         <Text style={[styles.memberCount, { color: colors.textGray }]}>
           {participants.length} {t('members')}
@@ -489,6 +508,7 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     paddingHorizontal: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    width: '100%',
   },
   groupIcon: {
     width: 72,
@@ -499,7 +519,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   groupIconText: { fontSize: 36 },
-  groupName: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  groupName: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 20,
+    fontWeight: '700',
+  },
   memberCount: { fontSize: 14 },
   sectionHeader: {
     paddingHorizontal: 16,
@@ -528,7 +553,20 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   badgeText: { fontSize: 11, fontWeight: '600', color: '#fff' },
-  removeBtn: { padding: 4 },
+  removeBtn: {
+    minWidth: 40,
+    minHeight: 40,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeBtnIcon: {
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
   footerSection: {
     paddingHorizontal: 16,
     paddingVertical: 24,
@@ -548,7 +586,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#dc2626',
   },
   deleteGroupBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  groupNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  groupNameBlock: {
+    width: '100%',
+    alignSelf: 'stretch',
+    marginBottom: 4,
+    paddingHorizontal: 0,
+  },
+  groupNameRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    width: '100%',
+  },
   editNameBtn: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
   addMembersBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   addMembersBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
