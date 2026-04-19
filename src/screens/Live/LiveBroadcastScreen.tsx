@@ -48,6 +48,14 @@ const LiveBroadcastScreen = () => {
   const { user }   = useUser();
   const socketCtx  = useSocket();
   const socket     = socketCtx?.socket;
+  const socketRef = useRef(socket);
+  const userRef = useRef(user);
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
   const { colors } = useTheme();
   const { width: winW, height: winH } = useWindowDimensions();
 
@@ -212,6 +220,16 @@ const LiveBroadcastScreen = () => {
   useEffect(() => () => {
     removeTimersRef.current.forEach(clearTimeout);
     removeTimersRef.current = [];
+    const s = socketRef.current;
+    const u = userRef.current;
+    const rn = roomNameRef.current;
+    if (s?.emit && u?._id && rn) {
+      try {
+        s.emit('livekit:endLive', { streamerId: String(u._id), roomName: rn });
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
     disconnect();
   }, [disconnect]);
 

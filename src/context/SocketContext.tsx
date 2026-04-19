@@ -38,6 +38,8 @@ const SocketContext = createContext<SocketContextType | undefined>(undefined);
 export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
   const { addPost, updatePost, deletePost } = usePost();
+  const deletePostRef = useRef(deletePost);
+  deletePostRef.current = deletePost;
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [busyUsers, setBusyUsers] = useState<Set<string>>(new Set());
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
@@ -894,14 +896,27 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     if (!user?._id) return;
+    const normalizeStreamerId = (raw: unknown) => {
+      if (raw == null) return '';
+      const s =
+        typeof raw === 'object' && raw !== null && typeof (raw as { toString?: () => string }).toString === 'function'
+          ? String((raw as { toString: () => string }).toString()).trim()
+          : String(raw).trim();
+      return s;
+    };
     const onStreamStarted = (data: any) => {
+      const sid = normalizeStreamerId(data?.streamerId);
+      if (!sid) return;
       setLiveStreams(prev => {
-        if (prev.some(s => s.streamerId === data.streamerId)) return prev;
-        return [...prev, data];
+        if (prev.some(s => String(s.streamerId) === sid)) return prev;
+        return [...prev, { ...data, streamerId: sid }];
       });
     };
-    const onStreamEnded = ({ streamerId }: any) => {
-      setLiveStreams(prev => prev.filter(s => s.streamerId !== streamerId));
+    const onStreamEnded = (payload: any) => {
+      const sid = normalizeStreamerId(payload?.streamerId);
+      if (!sid) return;
+      setLiveStreams(prev => prev.filter(s => String(s.streamerId) !== sid));
+      deletePostRef.current(`live_${sid}`);
     };
     socketService.on('livekit:streamStarted', onStreamStarted);
     socketService.on('livekit:streamEnded',   onStreamEnded);

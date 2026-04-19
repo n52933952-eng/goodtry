@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -10,12 +9,10 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
-  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
-import { API_URL, ENDPOINTS } from '../../utils/constants';
+import { API_URL } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
-import { apiService } from '../../services/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 
@@ -56,7 +53,6 @@ const WeatherScreen = () => {
         },
         headerTop: {
           flexDirection: 'row',
-          justifyContent: 'space-between',
           alignItems: 'center',
         },
         headerTextContainer: {
@@ -71,28 +67,6 @@ const WeatherScreen = () => {
         headerSubtitle: {
           fontSize: 14,
           color: colors.textGray,
-        },
-        followButton: {
-          backgroundColor: colors.primary,
-          paddingHorizontal: 16,
-          paddingVertical: 8,
-          borderRadius: 8,
-          minWidth: 100,
-          alignItems: 'center',
-          justifyContent: 'center',
-        },
-        followingButton: {
-          backgroundColor: colors.backgroundLight,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        followButtonText: {
-          color: '#FFFFFF',
-          fontSize: 14,
-          fontWeight: '600',
-        },
-        followingButtonText: {
-          color: colors.text,
         },
         searchContainer: {
           padding: 15,
@@ -285,24 +259,10 @@ const WeatherScreen = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [weatherAccountId, setWeatherAccountId] = useState<string | null>(null);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [followLoading, setFollowLoading] = useState(false);
-
   useEffect(() => {
     fetchWeatherData();
     fetchUserPreferences();
-    checkFollowStatus();
   }, [user]);
-
-  // Re-check follow status when screen comes into focus (e.g., after refresh)
-  useFocusEffect(
-    React.useCallback(() => {
-      if (user) {
-        checkFollowStatus();
-      }
-    }, [user])
-  );
 
   const fetchWeatherData = async () => {
     try {
@@ -361,56 +321,6 @@ const WeatherScreen = () => {
       }
     } catch (error) {
       console.error('Error fetching preferences:', error);
-    }
-  };
-
-  const checkFollowStatus = async () => {
-    if (!user) return;
-    
-    try {
-      const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/Weather`);
-      if (data && data._id) {
-        setWeatherAccountId(data._id);
-        // Always use isFollowedByMe from API (queries Follow collection, more reliable)
-        if (typeof data?.isFollowedByMe === 'boolean') {
-          setIsFollowing(data.isFollowedByMe);
-          console.log(`🌤️ [WeatherScreen] Follow status: ${data.isFollowedByMe ? 'Following' : 'Not following'}`);
-        } else {
-          // Fallback: check user.following array (less reliable, but better than nothing)
-          const fallbackStatus = user.following?.includes(data._id) || false;
-          setIsFollowing(fallbackStatus);
-          console.warn(`⚠️ [WeatherScreen] isFollowedByMe not in response, using fallback: ${fallbackStatus}`);
-        }
-      }
-    } catch (error) {
-      console.error('❌ [WeatherScreen] Error checking follow status:', error);
-    }
-  };
-
-  const handleFollow = async () => {
-    if (!weatherAccountId || !user) return;
-    
-    const wasFollowing = isFollowing; // Store current state before API call
-    setFollowLoading(true);
-    try {
-      // Backend expects POST, not PUT (same as web)
-      await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${weatherAccountId}`);
-      
-      // Re-check follow status from API to ensure accuracy (don't just toggle)
-      await checkFollowStatus();
-
-      // If user just followed Weather, tell FeedScreen to unhide + boost Weather on next refresh.
-      if (!wasFollowing) {
-        DeviceEventEmitter.emit('WeatherFollowedBoost', { ts: Date.now() });
-      }
-      
-      // Use the opposite of what it was before (since we just toggled)
-      showToast('Success', wasFollowing ? 'Unfollowed Weather' : 'Following Weather! You\'ll now see updates in your feed', 'success');
-    } catch (error: any) {
-      console.error('❌ [WeatherScreen] Error following/unfollowing:', error);
-      showToast('Error', error.message || 'Failed to follow/unfollow', 'error');
-    } finally {
-      setFollowLoading(false);
     }
   };
 
@@ -490,19 +400,6 @@ const WeatherScreen = () => {
 
       if (response.ok) {
         showToast(t('success'), t('weatherPreferencesSaved'), 'success');
-        
-        // Trigger weather post update so feed shows your selected cities
-        try {
-          await fetch(`${baseUrl}/api/weather/post/manual`, {
-            method: 'POST',
-            credentials: 'include',
-          });
-          console.log('✅ [WeatherScreen] Triggered weather post update');
-        } catch (error) {
-          console.warn('⚠️ [WeatherScreen] Could not trigger weather post update (non-critical):', error);
-        }
-        
-        // Refresh weather data to show updated cities
         fetchWeatherData();
       } else {
         showToast(t('error'), t('failedToSavePreferences'), 'error');
@@ -621,21 +518,6 @@ const WeatherScreen = () => {
               {t('selected')}: {selectedCities.length}/10 {t('cities')}
             </Text>
           </View>
-          {user && weatherAccountId && (
-            <TouchableOpacity
-              style={[styles.followButton, isFollowing && styles.followingButton]}
-              onPress={handleFollow}
-              disabled={followLoading}
-            >
-              {followLoading ? (
-                <ActivityIndicator size="small" color={isFollowing ? colors.text : '#FFFFFF'} />
-              ) : (
-                <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
-                  {isFollowing ? t('following') : t('followWeather')}
-                </Text>
-              )}
-            </TouchableOpacity>
-          )}
         </View>
       </View>
 
@@ -755,7 +637,7 @@ const WeatherScreen = () => {
           {saving ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.saveButtonText}>{t('saveAndUpdateFeed')}</Text>
+            <Text style={styles.saveButtonText}>{t('save')}</Text>
           )}
         </TouchableOpacity>
       </View>

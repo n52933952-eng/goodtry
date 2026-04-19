@@ -353,6 +353,13 @@ const Post: React.FC<PostProps> = ({
     !footballLoading &&
     footballLiveMatches.length > 0;
 
+  /** No live rows: hide post-level ❤️/💬 when the empty copy is shown (not legacy `post.footballData`). */
+  const hideFootballFooterWhenNoMatchEmpty =
+    isFootballPost &&
+    !footballLoading &&
+    footballLiveMatches.length === 0 &&
+    (footballMatchesSource.length > 0 || (footballMatchesSource.length === 0 && !post.footballData));
+
   /** Top-level comment count per footballMatchId, including all nested replies in those threads. */
   const footballMatchReplyCounts = useMemo(() => {
     if (!isFootballPost) return new Map<string, number>();
@@ -1619,7 +1626,9 @@ const Post: React.FC<PostProps> = ({
         </TouchableOpacity>
       )}
 
-      {!showStackedFootballMatchActions && !hidePostFooterForFootballDetail && (
+      {!showStackedFootballMatchActions &&
+        !hidePostFooterForFootballDetail &&
+        !hideFootballFooterWhenNoMatchEmpty && (
         <View style={styles.footer} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.actionButton}

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -9,7 +8,6 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
-  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
@@ -68,9 +66,6 @@ const FootballScreen = () => {
   const [finishedMatches, setFinishedMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [followLoading, setFollowLoading] = useState(false);
-  const [footballAccountId, setFootballAccountId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'live' | 'upcoming' | 'finished'>('live');
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -107,27 +102,6 @@ const FootballScreen = () => {
           fontSize: 14,
           color: colors.textGray,
           marginTop: 2,
-        },
-        followButton: {
-          backgroundColor: colors.primary,
-          paddingVertical: 8,
-          paddingHorizontal: 16,
-          borderRadius: 20,
-          minWidth: 80,
-          alignItems: 'center',
-        },
-        unfollowButton: {
-          backgroundColor: colors.backgroundLight,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        followButtonText: {
-          color: '#FFFFFF',
-          fontSize: 14,
-          fontWeight: 'bold',
-        },
-        followButtonTextMuted: {
-          color: colors.text,
         },
         infoBox: {
           backgroundColor: colors.backgroundLight,
@@ -253,45 +227,6 @@ const FootballScreen = () => {
     [colors],
   );
 
-  // Check if user follows Football account
-  const checkFollowStatus = async () => {
-    if (!user) return;
-    
-    try {
-      const data = await apiService.get(`${ENDPOINTS.GET_USER_PROFILE}/Football`);
-      if (data?._id) {
-        setFootballAccountId(data._id);
-        // Always use isFollowedByMe from API (queries Follow collection, more reliable)
-        if (typeof data?.isFollowedByMe === 'boolean') {
-          setIsFollowing(data.isFollowedByMe);
-          console.log(`⚽ [FootballScreen] Follow status: ${data.isFollowedByMe ? 'Following' : 'Not following'}`);
-        } else {
-          // Fallback: check user.following array (less reliable, but better than nothing)
-          const fallbackStatus = user.following?.includes(data._id) || false;
-          setIsFollowing(fallbackStatus);
-          console.warn(`⚠️ [FootballScreen] isFollowedByMe not in response, using fallback: ${fallbackStatus}`);
-        }
-      }
-    } catch (error) {
-      console.error('❌ [FootballScreen] Error checking follow status:', error);
-    }
-  };
-
-  useEffect(() => {
-    if (user) {
-      checkFollowStatus();
-    }
-  }, [user]);
-
-  // Re-check follow status when screen comes into focus (e.g., after refresh)
-  useFocusEffect(
-    React.useCallback(() => {
-      if (user) {
-        checkFollowStatus();
-      }
-    }, [user])
-  );
-
   // Fetch matches function (can be called manually or via socket)
   const fetchMatches = async (silent = false) => {
     try {
@@ -379,47 +314,6 @@ const FootballScreen = () => {
     };
   }, [socket]);
 
-  // Follow/Unfollow Football account
-  const handleFollowToggle = async () => {
-    if (!footballAccountId) {
-      showToast(t('error'), t('footballAccountNotFound'), 'error');
-      return;
-    }
-
-    const wasFollowing = isFollowing; // Store current state before API call
-    
-    try {
-      setFollowLoading(true);
-
-      // Backend uses POST /api/user/follow/:id (same endpoint for follow/unfollow)
-      const response = await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${footballAccountId}`);
-
-      if (response) {
-        // Re-check follow status from API to ensure accuracy (don't just toggle)
-        await checkFollowStatus();
-
-        // If user just followed Football, tell FeedScreen to boost Football post to top on next refresh.
-        if (!wasFollowing) {
-          DeviceEventEmitter.emit('FootballFollowedBoost', { ts: Date.now() });
-        }
-        
-        // Use the opposite of what it was before (since we just toggled)
-        showToast(
-          t('success'),
-          wasFollowing
-            ? t('unfollowedFootballChannel')
-            : t('followingFootballChannel'),
-          'success'
-        );
-      }
-    } catch (error: any) {
-      console.error('⚽ [FootballScreen] Error toggling follow:', error);
-      showToast(t('error'), t('failedToUpdateFollowStatus'), 'error');
-    } finally {
-      setFollowLoading(false);
-    }
-  };
-
   const handleRefresh = () => {
     setRefreshing(true);
     fetchMatches();
@@ -492,28 +386,11 @@ const FootballScreen = () => {
           <Text style={styles.headerTitle}>⚽ Football Live</Text>
           <Text style={styles.headerSubtitle}>Live scores & updates</Text>
         </View>
-        {user && (
-          <TouchableOpacity
-            style={[styles.followButton, isFollowing && styles.unfollowButton]}
-            onPress={handleFollowToggle}
-            disabled={followLoading}
-          >
-            {followLoading ? (
-              <ActivityIndicator color={isFollowing ? colors.text : '#FFFFFF'} size="small" />
-            ) : (
-              <Text style={[styles.followButtonText, isFollowing && styles.followButtonTextMuted]}>
-                {isFollowing ? t('following') : t('follow')}
-              </Text>
-            )}
-          </TouchableOpacity>
-        )}
       </View>
 
       {!user && (
         <View style={styles.infoBox}>
-          <Text style={styles.infoText}>
-            💡 Follow the Football channel to get live match updates in your feed!
-          </Text>
+          <Text style={styles.infoText}>💡 {t('login')} to personalize your experience.</Text>
         </View>
       )}
 

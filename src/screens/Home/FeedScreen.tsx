@@ -64,8 +64,6 @@ const FeedScreen = ({ navigation }: any) => {
   /** Each feed focus: replay gray→red fill on all story rings */
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   const isFetchingRef = useRef(false);
-  const footballFollowBoostTsRef = useRef<number>(0);
-  const weatherFollowBoostTsRef = useRef<number>(0);
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const activeVideoPostIdRef = useRef<string | null>(null);
@@ -116,7 +114,7 @@ const FeedScreen = ({ navigation }: any) => {
   useFocusEffect(
     useCallback(() => {
       setStoryRingReplayKey((k) => k + 1);
-      // Always refresh to get latest live matches and weather
+      // Refresh feed (e.g. live cards) when returning to the tab
       if (!loading && !isFetchingRef.current) {
         console.log('🔄 [FeedScreen] useFocusEffect: Refreshing feed for live updates');
         fetchFeed();
@@ -162,22 +160,6 @@ const FeedScreen = ({ navigation }: any) => {
     });
     return () => sub.remove();
   }, [fetchStoryStrip]);
-
-  useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('FootballFollowedBoost', (payload: any) => {
-      const ts = Number(payload?.ts || 0);
-      footballFollowBoostTsRef.current = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
-    });
-    return () => sub.remove();
-  }, []);
-
-  useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('WeatherFollowedBoost', (payload: any) => {
-      const ts = Number(payload?.ts || 0);
-      weatherFollowBoostTsRef.current = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
-    });
-    return () => sub.remove();
-  }, []);
 
   // Socket listeners specific to FeedScreen UI
   // NOTE: post create/update/delete events are handled globally in SocketContext/PostContext
@@ -235,38 +217,30 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
-    // Football real-time updates
-    const handleFootballUpdate = (data: any) => {
-      console.log('⚽ [FeedScreen] Football update received, refreshing feed silently...', data);
-      // Silent refresh to get updated football posts (no clearing, just refresh)
-      fetchFeed(false);
-    };
-
-    // Weather real-time updates
-    const handleWeatherUpdate = (data: any) => {
-      console.log('🌤️ [FeedScreen] Weather update received, refreshing feed silently...');
-      // Silent refresh to get updated weather posts
-      fetchFeed(false);
-    };
-
-    // Live stream: inject card at top when a followed user goes live
+    // Live stream: inject card at top when a followed user goes live (removal is global via SocketContext + deletePost)
     const handleStreamStarted = (data: any) => {
+      const sid =
+        data?.streamerId != null
+          ? String(
+              typeof data.streamerId === 'object' && data.streamerId !== null && 'toString' in data.streamerId
+                ? (data.streamerId as { toString: () => string }).toString()
+                : data.streamerId
+            ).trim()
+          : '';
+      if (!sid) return;
       const pseudo = {
-        _id:          `live_${data.streamerId}`,
+        _id:          `live_${sid}`,
         isLive:       true,
-        liveStreamId: data.streamerId,
+        liveStreamId: sid,
         roomName:     data.roomName,
-        postedBy:     { _id: data.streamerId, name: data.streamerName, profilePic: data.streamerProfilePic },
+        postedBy:     { _id: sid, name: data.streamerName, profilePic: data.streamerProfilePic },
         createdAt:    new Date().toISOString(),
         updatedAt:    new Date().toISOString(),
       };
       setPosts((prev: any[]) => {
-        if (prev.some((p: any) => p._id === pseudo._id)) return prev;
+        if (prev.some((p: any) => String(p._id) === pseudo._id)) return prev;
         return [pseudo, ...prev];
       });
-    };
-    const handleStreamEnded = ({ streamerId }: any) => {
-      setPosts((prev: any[]) => prev.filter((p: any) => p._id !== `live_${streamerId}`));
     };
 
     socket.on('chessChallenge', handleChessChallenge);
@@ -274,11 +248,7 @@ const FeedScreen = ({ navigation }: any) => {
     socket.on('cardChallenge', handleCardChallenge);
     socket.on('cardDeclined', handleCardDeclined);
     socket.on('userAvailableCard', handleUserAvailableCard);
-    socket.on('footballPageUpdate', handleFootballUpdate);
-    socket.on('footballMatchUpdate', handleFootballUpdate);
-    socket.on('weatherUpdate', handleWeatherUpdate);
     socket.on('livekit:streamStarted', handleStreamStarted);
-    socket.on('livekit:streamEnded',   handleStreamEnded);
 
     return () => {
       socket.off('chessChallenge', handleChessChallenge);
@@ -286,11 +256,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('cardChallenge', handleCardChallenge);
       socket.off('cardDeclined', handleCardDeclined);
       socket.off('userAvailableCard', handleUserAvailableCard);
-      socket.off('footballPageUpdate', handleFootballUpdate);
-      socket.off('footballMatchUpdate', handleFootballUpdate);
-      socket.off('weatherUpdate', handleWeatherUpdate);
       socket.off('livekit:streamStarted', handleStreamStarted);
-      socket.off('livekit:streamEnded',   handleStreamEnded);
     };
   }, [socket, user, navigation]);
 
@@ -333,27 +299,8 @@ const FeedScreen = ({ navigation }: any) => {
         }) === index;
       });
 
-      for (const p of uniquePosts as any[]) {
-        const username = p?.postedBy?.username;
-        if (username === 'Football' && footballFollowBoostTsRef.current) {
-          const pid = p?._id?.toString?.() ?? String(p?._id);
-          // User explicitly followed Football, so ensure the Football source isn't hidden anymore.
-          unhideFeedSourceFromFeed('Football');
-          if (pid) unhideFeedPostFromFeed(pid);
-          if (pid) setViewerSortBoost(pid, footballFollowBoostTsRef.current);
-          footballFollowBoostTsRef.current = 0;
-        }
-        if (username === 'Weather' && weatherFollowBoostTsRef.current) {
-          const pid = p?._id?.toString?.() ?? String(p?._id);
-          unhideFeedSourceFromFeed('Weather');
-          if (pid) unhideFeedPostFromFeed(pid);
-          if (pid) setViewerSortBoost(pid, weatherFollowBoostTsRef.current);
-          weatherFollowBoostTsRef.current = 0;
-        }
-      }
-      
       if (loadMore) {
-        // Append new posts without re-sorting so Football/Weather stay in their page-1 position
+        // Append without re-sorting existing rows (pagination)
         appendPosts(uniquePosts);
         setLoadingMore(false);
       } else {

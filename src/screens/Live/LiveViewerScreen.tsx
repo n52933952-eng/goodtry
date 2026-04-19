@@ -109,6 +109,16 @@ const LiveViewerScreen = () => {
     let mounted = true;
     const join = async () => {
       try {
+        const statusRes = await fetch(`${API_URL}/api/call/livestream/${encodeURIComponent(String(streamerId))}/status`, {
+          credentials: 'include',
+        });
+        if (statusRes.ok && mounted) {
+          const st = await statusRes.json().catch(() => ({}));
+          if (st && st.active === false) {
+            if (mounted) navigation.goBack();
+            return;
+          }
+        }
         const res = await fetch(`${API_URL}/api/call/token`, {
           method:      'POST',
           headers:     { 'Content-Type': 'application/json' },
@@ -155,13 +165,14 @@ const LiveViewerScreen = () => {
       try { InCallManager.stop(); } catch (_) {}
       roomRef.current?.disconnect().catch(() => {});
     };
-  }, []);
+  }, [streamerId, navigation]);
 
   // ── stream ended (socket) ─────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
-    const onEnded = ({ streamerId: sid }: any) => {
-      if (sid === streamerId) {
+    const onEnded = (payload: any) => {
+      const sid = payload?.streamerId != null ? String(payload.streamerId) : '';
+      if (sid && sid === String(streamerId)) {
         roomRef.current?.disconnect().catch(() => {});
         navigation.goBack();
       }

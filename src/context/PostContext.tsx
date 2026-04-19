@@ -30,8 +30,12 @@ export interface Post {
   footballData?: any;
   chessGameData?: string; // JSON string containing chess game data
   cardGameData?: string; // JSON string containing card game data
+  /** Set when this post is a channel the viewer added; keeps card in pinned block vs normal feed sort. */
+  channelAddedBy?: string;
   /** Ephemeral client-only sort boost (ms since epoch). Used to bubble items like re-added channels. */
   __viewerSortBoostMs?: number;
+  /** Live stream pseudo-post; kept above the feed block so it does not reorder Football/Weather/normals. */
+  isLive?: boolean;
 }
 
 interface PostContextType {
@@ -81,10 +85,26 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     return Math.max(base || 0, boost || 0);
   };
 
-  const sortPostsNewestFirst = useCallback((list: Post[]) => {
-    const safe = Array.isArray(list) ? list : [];
-    return [...safe].sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
-  }, []);
+  const sortPostsNewestFirst = useCallback(
+    (list: Post[]) => {
+      const safe = Array.isArray(list) ? list : [];
+      const uid = user?._id != null ? String(user._id) : '';
+      // Home feed no longer injects Football/Weather — only user-added channel cards get a pinned strip.
+      const isPinnedFeedCard = (p: any) =>
+        !!p && p.channelAddedBy != null && String(p.channelAddedBy) === uid;
+      const live: Post[] = [];
+      const pinned: Post[] = [];
+      const normal: Post[] = [];
+      for (const p of safe) {
+        if (p && (p as any).isLive) live.push(p);
+        else if (isPinnedFeedCard(p)) pinned.push(p);
+        else normal.push(p);
+      }
+      normal.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+      return [...live, ...pinned, ...normal];
+    },
+    [user?._id],
+  );
 
   useEffect(() => {
     hiddenFeedPostIdsRef.current = hiddenFeedPostIds;
