@@ -1245,7 +1245,7 @@ const Post: React.FC<PostProps> = ({
                     <video
                       src="${optimizedVideoUrl}"
                       controls
-                      autoplay
+                      ${autoPlayMedia ? 'autoplay' : ''}
                       ${autoPlayMedia ? '' : 'muted'}
                       playsinline
                       preload="metadata"

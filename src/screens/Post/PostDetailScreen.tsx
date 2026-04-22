@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useRoute } from '@react-navigation/native';
+import { useIsFocused, useRoute } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import { usePost } from '../../context/PostContext';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
   const navRoute = useRoute<any>();
+  const isFocused = useIsFocused();
   const { postId, fromScreen, userProfileParams, footballMatchId } =
     navRoute.params || route.params || {};
   const { user } = useUser();
@@ -43,12 +44,13 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         headerLeft: () => (
           <TouchableOpacity
             onPress={() => {
-              // Navigate back to UserProfile with the same params
-              if (userProfileParams) {
-                navigation.navigate('UserProfile', userProfileParams);
-              } else {
+              // Use goBack first so this detail screen unmounts and media stops cleanly.
+              if (navigation.canGoBack?.()) {
                 navigation.goBack();
+                return;
               }
+              // Fallback only when opened directly without back stack.
+              if (userProfileParams) navigation.navigate('UserProfile', userProfileParams);
             }}
             style={{ marginLeft: 10 }}
           >
@@ -423,7 +425,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         <Post
           post={post}
           disableNavigation={true}
-          autoPlayMedia={true}
+          autoPlayMedia={isFocused}
           onPostUpdated={setPost}
           footballFocusMatchId={footballMatchId}
           fullWidthCard
