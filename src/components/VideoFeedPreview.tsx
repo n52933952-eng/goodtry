@@ -15,32 +15,50 @@ function toFileUri(path: string): string {
   return path.startsWith('file://') ? path : `file://${path}`;
 }
 
-function loadLocalThumbnail(videoUrl: string): Promise<string | null> {
-  const hit = uriCache.get(videoUrl);
+function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<string | null> {
+  const base = Math.max(0, Math.floor(preferredTimeMs || 0));
+  const cacheKey = `${videoUrl}#t=${base}`;
+  const hit = uriCache.get(cacheKey);
   if (hit) {
     return Promise.resolve(hit);
   }
-  let p = inflight.get(videoUrl);
+  let p = inflight.get(cacheKey);
   if (!p) {
-    p = createThumbnail({
-      url: videoUrl,
-      timeStamp: 1000,
-      format: 'jpeg',
-      maxWidth: 960,
-      maxHeight: 540,
-    })
-      .then((res) => {
-        const uri = toFileUri(res.path);
-        uriCache.set(videoUrl, uri);
-        inflight.delete(videoUrl);
-        return uri;
-      })
-      .catch((e) => {
-        inflight.delete(videoUrl);
-        console.warn('[VideoFeedPreview] createThumbnail failed', e?.message || e);
-        return null;
-      });
-    inflight.set(videoUrl, p);
+    const timeStamps = [
+      base,
+      Math.max(0, base - 500),
+      base + 500,
+      base + 1200,
+      1200,
+      2500,
+      4500,
+      7000,
+    ];
+    p = (async () => {
+      for (const ms of timeStamps) {
+        try {
+          const res = await createThumbnail({
+            url: videoUrl,
+            timeStamp: ms,
+            format: 'jpeg',
+            maxWidth: 960,
+            maxHeight: 540,
+          });
+          const uri = toFileUri(res.path);
+          uriCache.set(cacheKey, uri);
+          inflight.delete(cacheKey);
+          return uri;
+        } catch (e: any) {
+          // Try next timestamp — early frames are often black.
+          if (ms === timeStamps[timeStamps.length - 1]) {
+            console.warn('[VideoFeedPreview] createThumbnail failed', e?.message || e);
+          }
+        }
+      }
+      inflight.delete(cacheKey);
+      return null;
+    })();
+    inflight.set(cacheKey, p);
   }
   return p;
 }
@@ -48,6 +66,7 @@ function loadLocalThumbnail(videoUrl: string): Promise<string | null> {
 type Props = {
   videoUrl: string;
   serverThumbnail?: string | null;
+  preferredTimeMs?: number;
   placeholderColor: string;
   spinnerColor: string;
 };
@@ -58,6 +77,7 @@ type Props = {
 const VideoFeedPreview: React.FC<Props> = ({
   videoUrl,
   serverThumbnail,
+  preferredTimeMs = 1000,
   placeholderColor,
   spinnerColor,
 }) => {
@@ -75,7 +95,7 @@ const VideoFeedPreview: React.FC<Props> = ({
 
     let cancelled = false;
     setGenerating(true);
-    loadLocalThumbnail(videoUrl).then((local) => {
+    loadLocalThumbnail(videoUrl, preferredTimeMs).then((local) => {
       if (cancelled) return;
       if (local) {
         setUri(local);
@@ -86,7 +106,7 @@ const VideoFeedPreview: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [videoUrl, serverThumbnail]);
+  }, [videoUrl, serverThumbnail, preferredTimeMs]);
 
   return (
     <>

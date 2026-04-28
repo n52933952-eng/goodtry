@@ -211,20 +211,22 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     // Navigate based on notification type (matching web behavior)
     if (notification.type === 'follow') {
       // Navigate to user profile
-      navigation.navigate('UserProfile', { 
-        username: notification.from?.username || notification.from?.name || 'user' 
+      navigation.navigate('Profile', {
+        screen: 'UserProfile',
+        params: {
+          username: notification.from?.username || notification.from?.name || 'user',
+        },
       });
     } else if (
       notification.type === 'comment' || 
       notification.type === 'mention' || 
       notification.type === 'like' || 
       notification.type === 'collaboration' || 
-      notification.type === 'post_edit'
+      notification.type === 'post_edit' ||
+      notification.type === 'capsule_opened'
     ) {
       // Navigate to post detail page (matching web: /${postOwner}/post/${postId})
       if (notification.post && notification.post._id) {
-        // Get post owner from populated post
-        const postOwner = notification.post.postedBy?.username || notification.post.postedBy?.name || user?.username;
         // Navigate to Feed tab, then to PostDetail (nested navigation to show tab bar)
         navigation.navigate('Feed', {
           screen: 'PostDetail',
@@ -233,7 +235,6 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       } else if (notification.metadata?.postId || notification.post?._id) {
         // Fallback: try to get postId from metadata or post object
         const postId = notification.metadata?.postId || notification.post?._id;
-        const postOwner = notification.post?.postedBy?.username || user?.username;
         navigation.navigate('Feed', {
           screen: 'PostDetail',
           params: { postId }
@@ -261,6 +262,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       case 'message': return '✉️';
       case 'collaboration': return '🤝';
       case 'post_edit': return '✏️';
+      case 'capsule_opened': return '⏰';
       default: return '🔔';
     }
   };
@@ -292,6 +294,8 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       case 'post_edit':
         const editedPostText = notification.metadata?.postText || 'your collaborative post';
         return `${fromName} ${t('edited')} "${editedPostText}"`;
+      case 'capsule_opened':
+        return t('capsuleOpenedText') || 'Your reminder is ready. Tap to open the post.';
       default:
         return notification.message || t('newNotification');
     }
@@ -345,6 +349,14 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
             <Text style={[styles.notificationText, { color: !item.read ? colors.cardText : colors.text }]}>
               {getNotificationText(item)}
             </Text>
+            {item.type === 'capsule_opened' && item.post?.text ? (
+              <Text
+                style={[styles.commentText, { color: !item.read ? colors.cardText : colors.textGray }]}
+                numberOfLines={2}
+              >
+                "{item.post.text}"
+              </Text>
+            ) : null}
             {item.comment && (
               <Text style={[styles.commentText, { color: !item.read ? colors.cardText : colors.textGray }]} numberOfLines={2}>
                 "{item.comment}"

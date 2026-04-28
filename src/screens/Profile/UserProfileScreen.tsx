@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -65,6 +65,48 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [hasMore, setHasMore] = useState(true);
   const [skip, setSkip] = useState(0);
   const POSTS_PER_PAGE = 9;
+  const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
+  const activeVideoPostIdRef = useRef<string | null>(null);
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 65,
+    minimumViewTime: 180,
+  }).current;
+
+  useEffect(() => {
+    activeVideoPostIdRef.current = activeVideoPostId;
+  }, [activeVideoPostId]);
+
+  // Pause profile videos when leaving profile screen.
+  useFocusEffect(
+    React.useCallback(() => {
+      return () => {
+        setActiveVideoPostId(null);
+        activeVideoPostIdRef.current = null;
+      };
+    }, [])
+  );
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean }> }) => {
+      const visibleVideos = viewableItems.filter((entry) => {
+        if (!entry?.isViewable) return false;
+        const p = entry?.item;
+        const img = String(p?.img || '');
+        const isVideo =
+          !!img &&
+          (/\.(mp4|webm|ogg|mov)$/i.test(img) || img.includes('/video/upload/'));
+        const isYouTube = /youtube\.com|youtu\.be|ytimg\.com|img\.youtube\.com/i.test(img);
+        return isVideo && !isYouTube;
+      });
+
+      // Prefer the lower/next visible video while scrolling down.
+      const preferred = visibleVideos.length > 0 ? visibleVideos[visibleVideos.length - 1] : null;
+      const nextId = preferred?.item?._id?.toString?.() ?? null;
+      if (activeVideoPostIdRef.current === nextId) return;
+      setActiveVideoPostId(nextId);
+      activeVideoPostIdRef.current = nextId;
+    }
+  ).current;
 
   useEffect(() => {
     if (!username && usernameParam !== 'self') {
@@ -540,6 +582,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         ListHeaderComponent={
           <View>
             <View
@@ -714,6 +758,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               post={item}
               fromScreen="UserProfile"
               userProfileParams={{ username }}
+              autoPlayMedia={String(item?._id || '') === activeVideoPostId}
               onPostUpdated={(updated) => {
                 if (!updated?._id) return;
                 setPosts((prev) =>

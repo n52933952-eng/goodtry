@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   Linking,
   ScrollView,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
@@ -19,7 +21,7 @@ import { usePost } from '../context/PostContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSocket } from '../context/SocketContext';
 import { apiService } from '../services/api';
-import { ENDPOINTS, COLORS } from '../utils/constants';
+import { ENDPOINTS, COLORS, WEB_APP_URL } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useLanguage } from '../context/LanguageContext';
 import VideoFeedPreview from './VideoFeedPreview';
@@ -65,6 +67,24 @@ const Post: React.FC<PostProps> = ({
   
   // Helper function to navigate to PostDetail (ensures tab bar is visible)
   const navigateToPostDetail = (postId: string, extra?: Record<string, unknown>) => {
+    // Stop feed video immediately before navigating to PostDetail so audio/video
+    // doesn't continue underneath the detail screen.
+    try {
+      if (!disableNavigation && isVideoPost) {
+        setIsFeedVideoPausedByUser(true);
+        setIsFeedVideoPlaying(false);
+        setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
+        feedVideoWebViewRef.current?.injectJavaScript(`
+          (function () {
+            var v = document.getElementById('v');
+            if (!v) return;
+            try { v.pause(); } catch (_) {}
+          })();
+          true;
+        `);
+      }
+    } catch (_) {}
+
     const params = {
       postId,
       fromScreen,
@@ -201,12 +221,42 @@ const Post: React.FC<PostProps> = ({
   const [isFeedVideoMuted, setIsFeedVideoMuted] = useState(true);
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
+  const [isFeedVideoPlaying, setIsFeedVideoPlaying] = useState(false);
   const feedVideoWebViewRef = useRef<WebView>(null);
+  const detailVideoWebViewRef = useRef<WebView>(null);
+  const lastFeedVideoTimeRef = useRef(0);
+  const lastFeedVideoTimeUpdateRef = useRef(0);
+  const [feedVideoPreviewTimeMs, setFeedVideoPreviewTimeMs] = useState(1000);
+  const resumeFeedVideo = () => {
+    setIsFeedVideoPausedByUser(false);
+    setIsFeedVideoPlaying(true);
+    feedVideoWebViewRef.current?.injectJavaScript(`
+      (function () {
+        var v = document.getElementById('v');
+        if (!v) return;
+        if (${lastFeedVideoTimeRef.current.toFixed(3)} > 0 && Math.abs(v.currentTime - ${lastFeedVideoTimeRef.current.toFixed(3)}) > 0.35) {
+          try { v.currentTime = ${lastFeedVideoTimeRef.current.toFixed(3)}; } catch (_) {}
+        }
+        var p = v.play();
+        if (p && p.catch) p.catch(function(){});
+      })();
+      true;
+    `);
+  };
 
   useEffect(() => {
     setMatchLikeOverride({});
   }, [post?._id]);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [sendingShareToId, setSendingShareToId] = useState<string | null>(null);
+  const [capsuleModalVisible, setCapsuleModalVisible] = useState(false);
+  const [capsuleLoadingDuration, setCapsuleLoadingDuration] = useState<string | null>(null);
+  const [capsuleLoading, setCapsuleLoading] = useState(false);
+  const [capsuleSealed, setCapsuleSealed] = useState(false);
+  const [capsuleSelectedLabel, setCapsuleSelectedLabel] = useState('');
   const [youtubePlaying, setYoutubePlaying] = useState(true);
   // Local state for optimistic like updates (like web)
   const [localLiked, setLocalLiked] = useState(post.likes?.includes(user?._id));
@@ -359,6 +409,7 @@ const Post: React.FC<PostProps> = ({
     !footballLoading &&
     footballLiveMatches.length === 0 &&
     (footballMatchesSource.length > 0 || (footballMatchesSource.length === 0 && !post.footballData));
+  const showFeedExtras = !disableNavigation && fromScreen !== 'UserProfile' && fromScreen !== 'PostDetail';
 
   /** Top-level comment count per footballMatchId, including all nested replies in those threads. */
   const footballMatchReplyCounts = useMemo(() => {
@@ -437,12 +488,28 @@ const Post: React.FC<PostProps> = ({
 
   useEffect(() => {
     setFeedVideoReady(false);
-  }, [post?._id, autoPlayMedia]);
+    setIsFeedVideoPlaying(false);
+    lastFeedVideoTimeRef.current = 0;
+    setFeedVideoPreviewTimeMs(1000);
+  }, [post?._id]);
 
   useEffect(() => {
     // New post or leaving viewport should reset manual pause so auto-play feels consistent.
     if (!autoPlayMedia) {
+      // Off-screen feed cell: hard pause WebView media and keep preview at last frame time.
+      try {
+        feedVideoWebViewRef.current?.injectJavaScript(`
+          (function () {
+            var v = document.getElementById('v');
+            if (!v) return;
+            try { v.pause(); } catch (_) {}
+          })();
+          true;
+        `);
+      } catch (_) {}
       setIsFeedVideoPausedByUser(false);
+      setIsFeedVideoPlaying(false);
+      setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
     }
   }, [autoPlayMedia, post?._id]);
 
@@ -551,6 +618,129 @@ const Post: React.FC<PostProps> = ({
     !!post.isCollaborative &&
     Array.isArray(post.contributors) &&
     post.contributors.length > 0;
+
+  const isCapsuleEligiblePost = useMemo(() => {
+    const postId = String(post?._id || '');
+    return !(
+      post?.footballData ||
+      post?.weatherData ||
+      post?.chessGameData ||
+      post?.cardGameData ||
+      post?.raceGameData ||
+      post?.isMatchReaction ||
+      postId.startsWith('live_')
+    );
+  }, [post]);
+
+  const permalink = useMemo(() => {
+    const username = post?.postedBy?.username || post?.postedBy?.name || 'post';
+    return `${WEB_APP_URL}/${username}/post/${post?._id}`;
+  }, [post?._id, post?.postedBy?.username, post?.postedBy?.name]);
+
+  const getConversationLabel = (conv: any) => {
+    if (conv?.isGroup) return conv?.groupName || 'Group';
+    const other = (conv?.participants || []).find((p: any) => String(p?._id || '') !== currentUserId);
+    return other?.name || other?.username || 'Direct chat';
+  };
+
+  const getRecipientIdForDirect = (conv: any) => {
+    if (conv?.isGroup) return null;
+    const other = (conv?.participants || []).find((p: any) => String(p?._id || '') !== currentUserId);
+    return other?._id || null;
+  };
+
+  const fetchConversations = async () => {
+    if (!user) return;
+    setLoadingConversations(true);
+    try {
+      const data: any = await apiService.get(`${ENDPOINTS.GET_CONVERSATIONS}?limit=30`);
+      const list = Array.isArray(data?.conversations) ? data.conversations : (Array.isArray(data) ? data : []);
+      setConversations(list);
+    } catch (e) {
+      showToast('Error', 'Could not load chats', 'error');
+    } finally {
+      setLoadingConversations(false);
+    }
+  };
+
+  const openShareModal = async () => {
+    if (!showFeedExtras || !user) return;
+    setShareModalVisible(true);
+    await fetchConversations();
+  };
+
+  const handleShareToConversation = async (conv: any) => {
+    const convId = String(conv?._id || '');
+    if (!convId || sendingShareToId) return;
+    setSendingShareToId(convId);
+    try {
+      const isGroup = !!conv?.isGroup;
+      const recipientId = getRecipientIdForDirect(conv);
+      if (!isGroup && !recipientId) throw new Error('Missing recipient');
+      await apiService.post(ENDPOINTS.SEND_MESSAGE, {
+        message: `🔗 ${permalink}`,
+        ...(isGroup ? { conversationId: convId } : { recipientId }),
+      });
+      showToast('Shared', `Sent to ${getConversationLabel(conv)}`, 'success');
+      setShareModalVisible(false);
+    } catch (_) {
+      showToast('Error', 'Could not share post', 'error');
+    } finally {
+      setSendingShareToId(null);
+    }
+  };
+
+  const fetchCapsuleStatus = async () => {
+    if (!user || !post?._id || !isCapsuleEligiblePost) return;
+    try {
+      const data: any = await apiService.get(`/api/capsule/status/${post._id}`);
+      if (data?.openAt) {
+        setCapsuleSealed(true);
+        setCapsuleSelectedLabel(data?.selectedLabel || '');
+      } else {
+        setCapsuleSealed(false);
+        setCapsuleSelectedLabel('');
+      }
+    } catch (_) {}
+  };
+
+  const openCapsuleModal = async () => {
+    if (!showFeedExtras || !user || !isCapsuleEligiblePost) return;
+    setCapsuleModalVisible(true);
+    await fetchCapsuleStatus();
+  };
+
+  const handleSealCapsule = async (duration: string) => {
+    if (!user || !post?._id) return;
+    setCapsuleLoadingDuration(duration);
+    try {
+      const data: any = await apiService.post('/api/capsule/seal', { postId: post._id, duration });
+      setCapsuleSealed(true);
+      setCapsuleSelectedLabel(data?.selectedLabel || '');
+      showToast('Reminder set', 'We will notify you on time', 'success');
+      setCapsuleModalVisible(false);
+    } catch (e: any) {
+      showToast('Error', e?.message || 'Could not set reminder', 'error');
+    } finally {
+      setCapsuleLoadingDuration(null);
+    }
+  };
+
+  const handleUnsealCapsule = async () => {
+    if (!user || !post?._id) return;
+    setCapsuleLoading(true);
+    try {
+      await apiService.delete(`/api/capsule/unseal/${post._id}`);
+      setCapsuleSealed(false);
+      setCapsuleSelectedLabel('');
+      showToast('Reminder removed', '', 'info');
+      setCapsuleModalVisible(false);
+    } catch (e: any) {
+      showToast('Error', e?.message || 'Could not remove reminder', 'error');
+    } finally {
+      setCapsuleLoading(false);
+    }
+  };
 
   const onCollaborativePostUpdated = (updated: any) => {
     if (updated?._id) {
@@ -786,6 +976,12 @@ const Post: React.FC<PostProps> = ({
     // Keep this as delivery-time transform so existing videos benefit immediately.
     return raw.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
   })();
+  // Use original video URL for native thumbnail extraction (react-native-create-thumbnail).
+  // Optimized Cloudinary delivery URLs can resolve to formats that some native extractors
+  // fail on, resulting in black placeholders.
+  const thumbnailVideoUrl = String(post.img || '');
+  const serverVideoThumbnail =
+    post.thumbnail || post.videoThumbnail || post.thumb || post.thumbnailUrl || null;
   const feedAutoPlaySource = useMemo(
     () => ({
       html: `
@@ -832,6 +1028,7 @@ const Post: React.FC<PostProps> = ({
                 v.addEventListener('canplay', function(){ send('canplay'); });
                 v.addEventListener('loadeddata', function(){ send('loadeddata'); });
                 v.addEventListener('error', function(){ send('error'); });
+                v.addEventListener('timeupdate', function(){ send('time:' + String(v.currentTime || 0)); });
                 var p = v.play();
                 if (p && p.catch) p.catch(function(){ send('play-blocked'); });
               })();
@@ -1198,6 +1395,7 @@ const Post: React.FC<PostProps> = ({
         disableNavigation ? (
           <View style={styles.videoContainer}>
             <WebView
+            ref={detailVideoWebViewRef}
             source={{
               html: `
                 <!DOCTYPE html>
@@ -1211,33 +1409,25 @@ const Post: React.FC<PostProps> = ({
                         box-sizing: border-box;
                         -webkit-tap-highlight-color: transparent;
                       }
-                      body {
-                        margin: 0;
-                        padding: 0;
+                      html, body {
+                        width: 100%;
+                        height: 100%;
                         background: #000;
+                        overflow: hidden;
+                      }
+                      body {
                         display: flex;
                         justify-content: center;
                         align-items: center;
-                        height: 100vh;
-                        overflow: hidden;
+                        width: 100%;
+                        height: 100%;
                         touch-action: manipulation;
                       }
                       video {
                         width: 100%;
                         height: 100%;
-                        max-height: 400px;
-                        object-fit: contain;
-                      }
-                      /* Make video controls more accessible */
-                      video::-webkit-media-controls {
-                        transform: scale(1.3);
-                      }
-                      video::-webkit-media-controls-panel {
-                        background-color: rgba(0, 0, 0, 0.8);
-                      }
-                      video::-webkit-media-controls-play-button {
-                        width: 50px;
-                        height: 50px;
+                        object-fit: cover;
+                        background: #000;
                       }
                     </style>
                   </head>
@@ -1248,9 +1438,26 @@ const Post: React.FC<PostProps> = ({
                       ${autoPlayMedia ? 'autoplay' : ''}
                       ${autoPlayMedia ? '' : 'muted'}
                       playsinline
-                      preload="metadata"
+                      preload="auto"
                       controlsList="nodownload"
                     ></video>
+                    <script>
+                      (function () {
+                        var v = document.querySelector('video');
+                        if (!v) return;
+                        function tryPlay() {
+                          var p = v.play();
+                          if (p && p.catch) p.catch(function(){});
+                        }
+                        ${autoPlayMedia ? 'tryPlay();' : ''}
+                        v.addEventListener('loadeddata', function () {
+                          ${autoPlayMedia ? 'tryPlay();' : ''}
+                        });
+                        v.addEventListener('canplay', function () {
+                          ${autoPlayMedia ? 'tryPlay();' : ''}
+                        });
+                      })();
+                    </script>
                   </body>
                 </html>
               `
@@ -1264,6 +1471,19 @@ const Post: React.FC<PostProps> = ({
             mixedContentMode="always"
             startInLoadingState={true}
             originWhitelist={['*']}
+            onLoadEnd={() => {
+              if (!autoPlayMedia) return;
+              // Force immediate play after WebView is ready.
+              detailVideoWebViewRef.current?.injectJavaScript(`
+                (function () {
+                  var v = document.querySelector('video');
+                  if (!v) return;
+                  var p = v.play();
+                  if (p && p.catch) p.catch(function(){});
+                })();
+                true;
+              `);
+            }}
             renderLoading={() => (
               <View style={styles.videoLoading}>
                 <ActivityIndicator size="large" color={COLORS.primary} />
@@ -1282,14 +1502,26 @@ const Post: React.FC<PostProps> = ({
         ) : (
           autoPlayMedia ? (
             <View style={styles.videoContainer}>
-              {!feedVideoReady && (
+              {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
                 <View style={styles.feedVideoPreviewOverlay}>
                   <VideoFeedPreview
-                    videoUrl={post.img}
-                    serverThumbnail={post.thumbnail}
+                    videoUrl={thumbnailVideoUrl}
+                    serverThumbnail={serverVideoThumbnail}
+                    preferredTimeMs={feedVideoPreviewTimeMs}
                     placeholderColor={colors.background}
                     spinnerColor={colors.primary}
                   />
+                  {!isFeedVideoPlaying && (
+                    <View style={styles.feedPreviewOverlay}>
+                      <TouchableOpacity
+                        style={styles.feedPreviewPlayButton}
+                        onPress={resumeFeedVideo}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={styles.feedPreviewPlayIcon}>▶</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
               <WebView
@@ -1309,6 +1541,9 @@ const Post: React.FC<PostProps> = ({
                     (function () {
                       var v = document.getElementById('v');
                       if (!v) return;
+                      if (${lastFeedVideoTimeRef.current.toFixed(3)} > 0 && Math.abs(v.currentTime - ${lastFeedVideoTimeRef.current.toFixed(3)}) > 0.35) {
+                        try { v.currentTime = ${lastFeedVideoTimeRef.current.toFixed(3)}; } catch (_) {}
+                      }
                       v.muted = ${isFeedVideoMuted ? 'true' : 'false'};
                       ${isFeedVideoPausedByUser ? 'v.pause();' : 'var p = v.play(); if (p && p.catch) p.catch(function(){});'}
                     })();
@@ -1317,23 +1552,45 @@ const Post: React.FC<PostProps> = ({
                 }}
                 onMessage={(event) => {
                   const msg = String(event?.nativeEvent?.data || '');
+                  if (msg.startsWith('time:')) {
+                    const sec = Number(msg.slice(5));
+                    if (Number.isFinite(sec) && sec >= 0) {
+                      lastFeedVideoTimeRef.current = sec;
+                      const now = Date.now();
+                      if (now - lastFeedVideoTimeUpdateRef.current > 700) {
+                        lastFeedVideoTimeUpdateRef.current = now;
+                        setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(sec * 1000)));
+                      }
+                    }
+                    return;
+                  }
                   if (msg === 'playing' || msg === 'canplay' || msg === 'loadeddata') {
                     setFeedVideoReady(true);
+                    if (msg === 'playing') setIsFeedVideoPlaying(true);
                     return;
                   }
                   if (msg === 'paused') {
                     setFeedVideoReady(true);
+                    setIsFeedVideoPlaying(false);
                     return;
                   }
-                  if (msg === 'error') setFeedVideoReady(false);
+                  if (msg === 'error') {
+                    setFeedVideoReady(false);
+                    setIsFeedVideoPlaying(false);
+                  }
                 }}
-                onError={() => setFeedVideoReady(false)}
+                onError={() => {
+                  setFeedVideoReady(false);
+                  setIsFeedVideoPlaying(false);
+                }}
               />
               <TouchableOpacity
                 style={styles.feedPlayPauseButton}
                 onPress={() => {
                   const nextPaused = !isFeedVideoPausedByUser;
                   setIsFeedVideoPausedByUser(nextPaused);
+                  setIsFeedVideoPlaying(!nextPaused);
+                  setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
                   feedVideoWebViewRef.current?.injectJavaScript(`
                     (function () {
                       var v = document.getElementById('v');
@@ -1350,7 +1607,7 @@ const Post: React.FC<PostProps> = ({
                 }}
                 activeOpacity={0.85}
               >
-                <Text style={styles.feedPlayPauseButtonText}>{isFeedVideoPausedByUser ? '▶' : '⏸'}</Text>
+                <Text style={styles.feedPlayPauseButtonText}>{!isFeedVideoPlaying ? '▶' : '⏸'}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.feedMuteButton}
@@ -1375,8 +1632,9 @@ const Post: React.FC<PostProps> = ({
             <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
               <View style={styles.videoContainer}>
                 <VideoFeedPreview
-                  videoUrl={optimizedVideoUrl}
-                  serverThumbnail={post.thumbnail}
+                  videoUrl={thumbnailVideoUrl}
+                  serverThumbnail={serverVideoThumbnail}
+                  preferredTimeMs={feedVideoPreviewTimeMs}
                   placeholderColor={colors.background}
                   spinnerColor={colors.primary}
                 />
@@ -1656,8 +1914,139 @@ const Post: React.FC<PostProps> = ({
               {post.replies?.length || 0}
             </Text>
           </TouchableOpacity>
+
+          {showFeedExtras && (
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                openShareModal();
+              }}
+            >
+              <Text style={styles.actionIcon}>📤</Text>
+              <Text style={[styles.actionText, { color: colors.textGray }]}>Share</Text>
+            </TouchableOpacity>
+          )}
+
+          {showFeedExtras && isCapsuleEligiblePost && (
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                openCapsuleModal();
+              }}
+            >
+              <Text style={styles.actionIcon}>{capsuleSealed ? '🔔' : '🕰️'}</Text>
+              <Text style={[styles.actionText, { color: colors.textGray }]}>
+                {capsuleSealed ? (capsuleSelectedLabel || 'Set') : 'Remind'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
+
+      <Modal
+        visible={showFeedExtras && shareModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShareModalVisible(false)}
+      >
+        <View style={styles.overlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Share to chat</Text>
+            <Text style={[styles.modalSub, { color: colors.textGray }]} numberOfLines={1}>
+              {permalink}
+            </Text>
+            {loadingConversations ? (
+              <View style={styles.modalLoading}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : (
+              <FlatList
+                data={conversations}
+                keyExtractor={(item, idx) => String(item?._id || `conv-${idx}`)}
+                style={{ maxHeight: 280 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={[styles.modalRow, { borderColor: colors.border }]}
+                    onPress={() => handleShareToConversation(item)}
+                    disabled={!!sendingShareToId}
+                  >
+                    <Text style={{ color: colors.text }}>
+                      {item?.isGroup ? '👥 ' : '💬 '}
+                      {getConversationLabel(item)}
+                    </Text>
+                    {sendingShareToId === String(item?._id || '') ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : null}
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  <Text style={[styles.modalSub, { color: colors.textGray }]}>No chats found</Text>
+                }
+              />
+            )}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { borderColor: colors.border }]}
+              onPress={() => setShareModalVisible(false)}
+            >
+              <Text style={{ color: colors.text }}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showFeedExtras && capsuleModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCapsuleModalVisible(false)}
+      >
+        <View style={styles.overlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {capsuleSealed ? 'Reminder set' : 'Remind me later'}
+            </Text>
+            <Text style={[styles.modalSub, { color: colors.textGray }]}>
+              Choose when to be notified about this post.
+            </Text>
+            {[
+              { label: '1 minute', value: '1m' },
+              { label: '5 minutes', value: '5m' },
+              { label: '1 hour', value: '1h' },
+              { label: '3 days', value: '3d' },
+            ].map(({ label, value }) => (
+              <TouchableOpacity
+                key={value}
+                style={[styles.modalRow, { borderColor: colors.border }]}
+                disabled={!!capsuleLoadingDuration || capsuleLoading}
+                onPress={() => handleSealCapsule(value)}
+              >
+                <Text style={{ color: colors.text }}>⏳ {label}</Text>
+                {capsuleLoadingDuration === value ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : null}
+              </TouchableOpacity>
+            ))}
+            {capsuleSealed && (
+              <TouchableOpacity
+                style={[styles.modalDangerBtn, { borderColor: colors.error }]}
+                disabled={capsuleLoading}
+                onPress={handleUnsealCapsule}
+              >
+                <Text style={{ color: colors.error }}>Cancel reminder</Text>
+                {capsuleLoading ? <ActivityIndicator size="small" color={colors.error} /> : null}
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { borderColor: colors.border }]}
+              onPress={() => setCapsuleModalVisible(false)}
+            >
+              <Text style={{ color: colors.text }}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <AddContributorModal
         visible={addContribOpen}
@@ -1888,7 +2277,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000',
+    backgroundColor: 'rgba(0,0,0,0.45)',
   },
   feedMuteButton: {
     position: 'absolute',
@@ -2039,8 +2428,10 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
     paddingTop: 10,
+    gap: 10,
   },
   actionButton: {
     flexDirection: 'row',
@@ -2053,6 +2444,59 @@ const styles = StyleSheet.create({
   actionText: {
     fontSize: 14,
     color: COLORS.textGray,
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  modalCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 14,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  modalSub: {
+    fontSize: 13,
+    marginBottom: 10,
+  },
+  modalLoading: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalRow: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalCloseBtn: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  modalDangerBtn: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 6,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
   },
   chessCard: {
     backgroundColor: COLORS.backgroundLight,

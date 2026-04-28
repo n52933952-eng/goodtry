@@ -28,6 +28,15 @@ import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 
+const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
+const sharedPostCache = new Map<string, any>();
+
+const extractSharedPostId = (text?: string) => {
+  const value = String(text || '');
+  const match = value.match(SHARED_POST_LINK_REGEX);
+  return match?.[1] || null;
+};
+
 /** `delivered` only after recipient app acks (WhatsApp-style). Missing field should stay conservative (sent). */
 function isOutgoingDeliveredForTicks(item: any) {
   if (item.seen === true) return true;
@@ -123,6 +132,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const partnerTypingClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
+  const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
 
   const toIdString = useCallback((value: any): string => {
     if (!value) return '';
@@ -1080,6 +1090,39 @@ const ChatScreen = ({ route, navigation }: any) => {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata" src="${safe}"></video></body></html>`;
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    const ids = Array.from(
+      new Set(
+        (messages || [])
+          .map((m) => extractSharedPostId(m?.text))
+          .filter(Boolean)
+      )
+    ) as string[];
+    if (!ids.length) return;
+
+    const missing = ids.filter((id) => !sharedPostCache.has(id) && !sharedPostMap[id]);
+    if (!missing.length) return;
+
+    (async () => {
+      for (const postId of missing) {
+        try {
+          const data = await apiService.get(`${ENDPOINTS.GET_POST}/${postId}`);
+          if (cancelled) return;
+          sharedPostCache.set(postId, data);
+          setSharedPostMap((prev) => ({ ...prev, [postId]: data }));
+        } catch (_) {
+          if (cancelled) return;
+          setSharedPostMap((prev) => ({ ...prev, [postId]: null }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, sharedPostMap]);
+
   const renderMessage = ({ item }: { item: any }) => {
     const senderId = getSenderId(item.sender);
     const isOwn = senderId === currentUserIdStr;
@@ -1095,6 +1138,13 @@ const ChatScreen = ({ route, navigation }: any) => {
       : (item.sender?.name || item.sender?.username || otherUser?.name || otherUser?.username);
 
     const outgoingDelivered = isOutgoingDeliveredForTicks(item);
+    const sharedPostId = extractSharedPostId(item?.text);
+    const sharedPost = sharedPostId ? (sharedPostMap[sharedPostId] ?? sharedPostCache.get(sharedPostId) ?? undefined) : undefined;
+    const textWithoutSharedLink = sharedPostId
+      ? String(item?.text || '').replace(SHARED_POST_LINK_REGEX, '').trim()
+      : String(item?.text || '');
+    const sharedPostImage = String(sharedPost?.img || '');
+    const sharedPostHasVideo = !!sharedPostImage && isVideoUrl(sharedPostImage);
 
     return (
       <View style={[styles.messageRow, isSenderLeft ? styles.leftRow : styles.rightRow]}>
@@ -1165,7 +1215,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             </View>
           )}
 
-          {!!item.text && (
+          {!!textWithoutSharedLink && (
             <Text
               style={[
                 styles.messageText,
@@ -1173,9 +1223,70 @@ const ChatScreen = ({ route, navigation }: any) => {
                 { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor },
               ]}
             >
-              {item.text}
+              {textWithoutSharedLink}
             </Text>
           )}
+
+          {sharedPostId ? (
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() =>
+                navigation.navigate('MainTabs', {
+                  screen: 'Feed',
+                  params: {
+                    screen: 'PostDetail',
+                    params: { postId: sharedPostId },
+                  },
+                })
+              }
+              style={[styles.sharedPostCard, { borderColor: colors.border, backgroundColor: isSenderLeft ? 'rgba(0,0,0,0.08)' : colors.backgroundLight }]}
+            >
+              {sharedPost === undefined ? (
+                <View style={styles.sharedPostLoading}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Loading shared post...</Text>
+                </View>
+              ) : sharedPost ? (
+                <>
+                  {!!sharedPostHasVideo && (
+                    <View style={styles.sharedPostMediaWrap}>
+                      <WebView
+                        source={{ html: buildChatVideoHtml(sharedPostImage) }}
+                        style={styles.sharedPostMedia}
+                        allowsFullscreenVideo
+                        mediaPlaybackRequiresUserAction
+                        scrollEnabled={false}
+                        showsVerticalScrollIndicator={false}
+                        showsHorizontalScrollIndicator={false}
+                        androidLayerType="hardware"
+                      />
+                    </View>
+                  )}
+                  {!!sharedPostImage && !sharedPostHasVideo && (
+                    <Image
+                      source={{ uri: optimizeCloudinaryMediaUrl(sharedPostImage, 'image') }}
+                      style={styles.sharedPostImage}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <Text style={[styles.sharedPostAuthor, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}>
+                    {sharedPost?.postedBy?.name || sharedPost?.postedBy?.username || 'Shared post'}
+                  </Text>
+                  {!!sharedPost?.text && (
+                    <Text
+                      numberOfLines={2}
+                      style={[styles.sharedPostText, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}
+                    >
+                      {sharedPost.text}
+                    </Text>
+                  )}
+                  <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Tap to open post</Text>
+                </>
+              ) : (
+                <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Shared post (tap to open)</Text>
+              )}
+            </TouchableOpacity>
+          ) : null}
 
           {!!item.img && !isVideoUrl(item.img) && (
             <Image
@@ -1790,6 +1901,48 @@ const styles = StyleSheet.create({
   },
   chatVideo: {
     backgroundColor: '#000',
+  },
+  sharedPostCard: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 8,
+  },
+  sharedPostLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sharedPostMediaWrap: {
+    width: 210,
+    height: 140,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    marginBottom: 6,
+  },
+  sharedPostMedia: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+  },
+  sharedPostImage: {
+    width: 210,
+    height: 140,
+    borderRadius: 8,
+    marginBottom: 6,
+  },
+  sharedPostAuthor: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  sharedPostText: {
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  sharedPostMeta: {
+    fontSize: 11,
   },
   reactionsRow: {
     flexDirection: 'row',
