@@ -455,7 +455,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       handleCallEnded();
     };
 
-    // Busy tracking
+    // Busy tracking (calls)
     const onCallBusy = ({ userToCall, from }: any) => {
       setBusyUsers(prev => {
         const n = new Set(prev);
@@ -472,6 +472,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return n;
       });
     };
+    // Busy tracking (games – chess / card / race)
+    const onGameBusy = ({ userId }: any) => {
+      if (!userId) return;
+      setBusyUsers(prev => { const n = new Set(prev); n.add(idStr(userId)); return n; });
+    };
+    const onGameAvailable = ({ userId }: any) => {
+      if (!userId) return;
+      setBusyUsers(prev => { const n = new Set(prev); n.delete(idStr(userId)); return n; });
+    };
 
     const bind = () => {
       try {
@@ -480,6 +489,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         socket.off('livekit:callDeclined', onCallDeclined);
         socket.off('callBusy', onCallBusy);
         socket.off('cancleCall', onCancleCall);
+        socket.off('userBusyChess',      onGameBusy);
+        socket.off('userBusyCard',       onGameBusy);
+        socket.off('userBusyRace',       onGameBusy);
+        socket.off('userAvailableChess', onGameAvailable);
+        socket.off('userAvailableCard',  onGameAvailable);
+        socket.off('userAvailableRace',  onGameAvailable);
       } catch (_) {
         /* ignore */
       }
@@ -488,6 +503,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       socket.on('livekit:callDeclined', onCallDeclined);
       socket.on('callBusy', onCallBusy);
       socket.on('cancleCall', onCancleCall);
+      socket.on('userBusyChess',      onGameBusy);
+      socket.on('userBusyCard',       onGameBusy);
+      socket.on('userBusyRace',       onGameBusy);
+      socket.on('userAvailableChess', onGameAvailable);
+      socket.on('userAvailableCard',  onGameAvailable);
+      socket.on('userAvailableRace',  onGameAvailable);
     };
 
     bind();
@@ -507,6 +528,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       socket.off('livekit:callDeclined', onCallDeclined);
       socket.off('callBusy', onCallBusy);
       socket.off('cancleCall', onCancleCall);
+      socket.off('userBusyChess',      onGameBusy);
+      socket.off('userBusyCard',       onGameBusy);
+      socket.off('userBusyRace',       onGameBusy);
+      socket.off('userAvailableChess', onGameAvailable);
+      socket.off('userAvailableCard',  onGameAvailable);
+      socket.off('userAvailableRace',  onGameAvailable);
     };
   }, [socket, disconnectRoom, handleCallEnded, startIncomingTokenPrefetch, user]);
 

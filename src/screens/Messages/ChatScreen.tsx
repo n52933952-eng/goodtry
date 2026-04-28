@@ -995,7 +995,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const handleCallPress = async (type: 'voice' | 'video') => {
     // Block if partner is already in a call
     if (isPartnerBusy) {
-      Alert.alert(t('userBusyTitle') || 'User Busy', t('userBusyMessage') || 'This user is currently in a call.');
+      Alert.alert(t('userBusyTitle') || 'User Busy', t('userBusyMessage') || 'This user is busy right now (in a call or game). Please try again later.');
       return;
     }
 
@@ -1335,7 +1335,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             {(isGroup || groupConversation?.isGroup)
               ? `${groupConversation?.participants?.length || '...'} members · tap for info`
               : isPartnerBusy
-                ? (t('inACall') || 'In a call')
+                ? (t('busy') || 'Busy')
                 : (isPartnerOnline ? t('online') : t('offline'))}
           </Text>
         </TouchableOpacity>
@@ -1358,10 +1358,24 @@ const ChatScreen = ({ route, navigation }: any) => {
             disabled={groupCallActive}
             onPress={() => {
               const convId = String(conversationId || groupConversation?._id || '');
-              if (convId) {
-                startGroupCall(convId, 'video');
-                navigation.navigate('GroupCallScreen');
+              if (!convId) return;
+              // Pre-flight busy check before navigating to call screen
+              const participants: any[] = groupConversation?.participants || [];
+              const myIdStr = String(user?._id || '');
+              const others = participants.filter((p: any) => String(p?._id || '') !== myIdStr);
+              const busyCount = others.filter((p: any) => isUserBusy(String(p?._id || ''))).length;
+              if (busyCount > 0 && busyCount === others.length) {
+                Alert.alert('All members are busy', 'Everyone in this group is currently in a call or playing a game.');
+                return;
               }
+              if (busyCount > 0) {
+                Alert.alert(
+                  `${busyCount} member${busyCount > 1 ? 's are' : ' is'} busy`,
+                  `${busyCount} member${busyCount > 1 ? 's are' : ' is'} busy and won't receive the call. Calling the others.`,
+                );
+              }
+              startGroupCall(convId, 'video');
+              navigation.navigate('GroupCallScreen');
             }}
           >
             <Text style={styles.callIcon}>📹</Text>

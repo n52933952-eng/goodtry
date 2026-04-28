@@ -505,6 +505,22 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       });
     });
 
+    // Game-busy: mark/unmark users playing chess, card, or race
+    const onGameBusy = ({ userId }: { userId?: string }) => {
+      if (!userId) return;
+      setBusyUsers((prev) => { const n = new Set(prev); n.add(String(userId)); return n; });
+    };
+    const onGameAvailable = ({ userId }: { userId?: string }) => {
+      if (!userId) return;
+      setBusyUsers((prev) => { const n = new Set(prev); n.delete(String(userId)); return n; });
+    };
+    socketService.on('userBusyChess',      onGameBusy);
+    socketService.on('userBusyCard',       onGameBusy);
+    socketService.on('userBusyRace',       onGameBusy);
+    socketService.on('userAvailableChess', onGameAvailable);
+    socketService.on('userAvailableCard',  onGameAvailable);
+    socketService.on('userAvailableRace',  onGameAvailable);
+
     // Listen for new posts
     socketService.on(SOCKET_EVENTS.NEW_POST, (payload) => {
       console.log('📩 New post received:', payload);

@@ -196,15 +196,28 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       }
     };
 
+    const onMembersBusy = ({ busyCount, totalOther }: { busyCount: number; totalOther: number }) => {
+      if (!busyCount) return;
+      const all = busyCount >= totalOther;
+      Alert.alert(
+        all ? 'All members are busy' : `${busyCount} member${busyCount > 1 ? 's' : ''} couldn't be reached`,
+        all
+          ? 'Everyone in this group is currently in a call or playing a game.'
+          : `${busyCount} member${busyCount > 1 ? 's are' : ' is'} busy (in a call or game) and won't receive the call.`,
+      );
+    };
+
     const bind = () => {
       try {
-        socket.off('livekit:incomingGroupCall', onIncoming);
-        socket.off('livekit:groupCallEnded', onGroupEnded);
+        socket.off('livekit:incomingGroupCall',  onIncoming);
+        socket.off('livekit:groupCallEnded',     onGroupEnded);
+        socket.off('livekit:groupMembersBusy',   onMembersBusy);
       } catch (_) {
         /* ignore */
       }
-      socket.on('livekit:incomingGroupCall', onIncoming);
-      socket.on('livekit:groupCallEnded', onGroupEnded);
+      socket.on('livekit:incomingGroupCall',  onIncoming);
+      socket.on('livekit:groupCallEnded',     onGroupEnded);
+      socket.on('livekit:groupMembersBusy',   onMembersBusy);
     };
 
     bind();
@@ -219,8 +232,9 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       } catch (_) {
         /* ignore */
       }
-      socket.off('livekit:incomingGroupCall', onIncoming);
-      socket.off('livekit:groupCallEnded', onGroupEnded);
+      socket.off('livekit:incomingGroupCall',  onIncoming);
+      socket.off('livekit:groupCallEnded',     onGroupEnded);
+      socket.off('livekit:groupMembersBusy',   onMembersBusy);
     };
   }, [socket, incomingGroupCall?.conversationId, activeConvId, disconnectRoom]);
 
