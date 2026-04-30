@@ -118,6 +118,10 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // Enable animated GIF/WebP rendering in React Native Image on Android (Fresco decoders).
+    implementation("com.facebook.fresco:animated-gif:3.6.0")
+    implementation("com.facebook.fresco:animated-webp:3.6.0")
+    implementation("com.facebook.fresco:webpsupport:3.6.0")
 
     // RN Firebase messaging uses `implementation` for FCM, so app Kotlin (MyFirebaseMessagingService) needs this on compile classpath
     implementation platform("com.google.firebase:firebase-bom:33.1.2")

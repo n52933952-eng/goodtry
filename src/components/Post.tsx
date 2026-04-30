@@ -63,6 +63,13 @@ const Post: React.FC<PostProps> = ({
   footballFocusMatchId,
   fullWidthCard = false,
 }) => {
+  const isAnimatedImageUrl = (url: string) => {
+    const raw = String(url || '');
+    // Keep original source for animated formats to avoid losing animation
+    // via delivery transforms.
+    return /\.(gif|webp)(?:$|[?#])/i.test(raw);
+  };
+
   const navigation = useNavigation<any>();
   
   // Helper function to navigate to PostDetail (ensures tab bar is visible)
@@ -964,8 +971,11 @@ const Post: React.FC<PostProps> = ({
     post.img.match(/\.(mp4|webm|ogg|mov)$/i) || 
     post.img.includes('/video/upload/')
   );
+  const isAnimatedImagePost = isAnimatedImageUrl(String(post.img || ''));
   const optimizedImageUrl = (() => {
     const raw = String(post.img || '');
+    // Keep original URL for animated images so playback works on mobile.
+    if (isAnimatedImagePost) return raw;
     if (!raw.includes('res.cloudinary.com') || !raw.includes('/image/upload/')) return raw;
     return raw.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
   })();
@@ -1652,7 +1662,7 @@ const Post: React.FC<PostProps> = ({
           <Image 
             source={{ uri: optimizedImageUrl }} 
             style={styles.postImage}
-            resizeMode="cover"
+            resizeMode="contain"
           />
         ) : (
           <TouchableOpacity 
@@ -1665,7 +1675,7 @@ const Post: React.FC<PostProps> = ({
             <Image 
               source={{ uri: optimizedImageUrl }} 
               style={styles.postImage}
-              resizeMode="cover"
+              resizeMode="contain"
             />
           </TouchableOpacity>
         )
@@ -2218,6 +2228,7 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 12,
     marginBottom: 10,
+    backgroundColor: '#000',
   },
   videoContainer: {
     width: '100%',
