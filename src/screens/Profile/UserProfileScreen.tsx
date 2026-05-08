@@ -767,6 +767,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   )
                 );
               }}
+              onPostDeleted={(deletedId) => {
+                if (!deletedId) return;
+                setPosts((prev) => prev.filter((p) => String(p._id) !== String(deletedId)));
+              }}
             />
           </View>
         )}

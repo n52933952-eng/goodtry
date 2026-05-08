@@ -1,14 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import {
   View,
-  Image,
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
 import { createThumbnail } from 'react-native-create-thumbnail';
+import SafeImage from './SafeImage';
 
 const uriCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
+/**
+ * Negative cache: video URLs that failed every timestamp. Stops a broken video
+ * (e.g. asset on a deleted Cloudinary account) from triggering 8 native
+ * createThumbnail calls on every FlatList row recycle.
+ */
+const failedVideoCache = new Set<string>();
 
 function toFileUri(path: string): string {
   if (!path) return path;
@@ -21,6 +27,10 @@ function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<
   const hit = uriCache.get(cacheKey);
   if (hit) {
     return Promise.resolve(hit);
+  }
+  // Don't keep slamming the native bridge for a video whose source URL is dead.
+  if (failedVideoCache.has(videoUrl)) {
+    return Promise.resolve(null);
   }
   let p = inflight.get(cacheKey);
   if (!p) {
@@ -52,6 +62,7 @@ function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<
           // Try next timestamp — early frames are often black.
           if (ms === timeStamps[timeStamps.length - 1]) {
             console.warn('[VideoFeedPreview] createThumbnail failed', e?.message || e);
+            failedVideoCache.add(videoUrl);
           }
         }
       }
@@ -111,10 +122,15 @@ const VideoFeedPreview: React.FC<Props> = ({
   return (
     <>
       {uri ? (
-        <Image
+        <SafeImage
           source={{ uri }}
           style={StyleSheet.absoluteFillObject}
           resizeMode="cover"
+          fallback={
+            <View
+              style={[StyleSheet.absoluteFillObject, { backgroundColor: placeholderColor }]}
+            />
+          }
         />
       ) : (
         <View

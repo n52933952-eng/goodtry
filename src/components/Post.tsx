@@ -31,6 +31,7 @@ import EditPostModal from './EditPostModal';
 import StoryAvatarRing from './StoryAvatarRing';
 import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
+import SafeImage from './SafeImage';
 import { navigateToMainStack } from '../utils/navigationHelpers';
 
 interface PostProps {
@@ -49,6 +50,8 @@ interface PostProps {
   footballFocusMatchId?: string;
   /** Full-bleed: no side margins (e.g. Post detail). Feed uses default card width like other posts. */
   fullWidthCard?: boolean;
+  /** Fired after a successful delete (own post or own channel card) so parent lists with their own state can drop it immediately. */
+  onPostDeleted?: (postId: string) => void;
 }
 
 const Post: React.FC<PostProps> = ({
@@ -62,6 +65,7 @@ const Post: React.FC<PostProps> = ({
   storyRingReplayKey = 0,
   footballFocusMatchId,
   fullWidthCard = false,
+  onPostDeleted,
 }) => {
   const isAnimatedImageUrl = (url: string) => {
     const raw = String(url || '');
@@ -229,6 +233,8 @@ const Post: React.FC<PostProps> = ({
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
   const [isFeedVideoPlaying, setIsFeedVideoPlaying] = useState(false);
+  /** Once the in-feed video errors (e.g. URL points at a dead Cloudinary asset), keep the WebView un-mounted so it doesn't keep retrying and pressuring memory across long feeds. */
+  const [feedVideoErrored, setFeedVideoErrored] = useState(false);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
   const lastFeedVideoTimeRef = useRef(0);
@@ -496,6 +502,7 @@ const Post: React.FC<PostProps> = ({
   useEffect(() => {
     setFeedVideoReady(false);
     setIsFeedVideoPlaying(false);
+    setFeedVideoErrored(false);
     lastFeedVideoTimeRef.current = 0;
     setFeedVideoPreviewTimeMs(1000);
   }, [post?._id]);
@@ -856,6 +863,7 @@ const Post: React.FC<PostProps> = ({
             try {
               await apiService.delete(`${ENDPOINTS.DELETE_POST}/${post._id}`);
               deletePostContext(post._id);
+              onPostDeleted?.(String(post._id));
               showToast('Success', 'Post deleted', 'success');
             } catch (error: any) {
               console.error('Error deleting post:', error);
@@ -937,6 +945,7 @@ const Post: React.FC<PostProps> = ({
               if (isMyChannelFeedCard && post?._id) {
                 await apiService.delete(`${ENDPOINTS.DELETE_POST}/${String(post._id)}`);
                 deletePostContext(String(post._id));
+                onPostDeleted?.(String(post._id));
               } else {
                 // Football/Weather cards are global/system posts; hide only.
                 const uname = post?.postedBy?.username;
@@ -1133,7 +1142,7 @@ const Post: React.FC<PostProps> = ({
               : (post.postedBy?.profilePic && !isChannelPost ? post.postedBy.profilePic : null);
             
             return avatarPic ? (
-              <Image 
+              <SafeImage 
                 source={{ uri: avatarPic }} 
                 style={styles.avatar}
               />
@@ -1281,7 +1290,7 @@ const Post: React.FC<PostProps> = ({
                   return (
                     <View key={cid || String(idx)} style={{ marginRight: 8 }}>
                       {cObj?.profilePic ? (
-                        <Image source={{ uri: cObj.profilePic }} style={styles.contribAvatar} />
+                        <SafeImage source={{ uri: cObj.profilePic }} style={styles.contribAvatar} />
                       ) : (
                         <View
                           style={[
@@ -1387,7 +1396,7 @@ const Post: React.FC<PostProps> = ({
             activeOpacity={0.9}
           >
             <View style={styles.videoContainer}>
-              <Image
+              <SafeImage
                 source={{ uri: `https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg` }}
                 style={styles.youtubeThumbnail}
                 resizeMode="cover"
@@ -1510,7 +1519,7 @@ const Post: React.FC<PostProps> = ({
           />
           </View>
         ) : (
-          autoPlayMedia ? (
+          autoPlayMedia && !feedVideoErrored ? (
             <View style={styles.videoContainer}>
               {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
                 <View style={styles.feedVideoPreviewOverlay}>
@@ -1587,11 +1596,18 @@ const Post: React.FC<PostProps> = ({
                   if (msg === 'error') {
                     setFeedVideoReady(false);
                     setIsFeedVideoPlaying(false);
+                    setFeedVideoErrored(true);
                   }
                 }}
                 onError={() => {
                   setFeedVideoReady(false);
                   setIsFeedVideoPlaying(false);
+                  setFeedVideoErrored(true);
+                }}
+                onHttpError={() => {
+                  setFeedVideoReady(false);
+                  setIsFeedVideoPlaying(false);
+                  setFeedVideoErrored(true);
                 }}
               />
               <TouchableOpacity
@@ -1659,7 +1675,7 @@ const Post: React.FC<PostProps> = ({
         )
       ) : post.img ? (
         disableNavigation ? (
-          <Image 
+          <SafeImage 
             source={{ uri: optimizedImageUrl }} 
             style={styles.postImage}
             resizeMode="contain"
@@ -1672,7 +1688,7 @@ const Post: React.FC<PostProps> = ({
             }}
             activeOpacity={0.9}
           >
-            <Image 
+            <SafeImage 
               source={{ uri: optimizedImageUrl }} 
               style={styles.postImage}
               resizeMode="contain"
@@ -1848,7 +1864,7 @@ const Post: React.FC<PostProps> = ({
             {/* Player 1 */}
             <View style={styles.chessPlayer}>
               {chessGameData.player1?.profilePic ? (
-                <Image
+                <SafeImage
                   source={{ uri: chessGameData.player1.profilePic }}
                   style={styles.chessPlayerAvatar}
                 />
@@ -1872,7 +1888,7 @@ const Post: React.FC<PostProps> = ({
             {/* Player 2 */}
             <View style={styles.chessPlayer}>
               {chessGameData.player2?.profilePic ? (
-                <Image
+                <SafeImage
                   source={{ uri: chessGameData.player2.profilePic }}
                   style={styles.chessPlayerAvatar}
                 />

@@ -265,7 +265,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     [user?._id],
   );
 
-  const addPost = (post: Post) => {
+  const addPost = useCallback((post: Post) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
@@ -318,9 +318,9 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
       return updated;
     });
-  };
+  }, []);
 
-  const updatePost = (postId: string, updates: Partial<Post>) => {
+  const updatePost = useCallback((postId: string, updates: Partial<Post>) => {
     setPosts((prevPosts) => {
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       const target = String(postId);
@@ -330,7 +330,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       // Re-sort so edited / contributor-updated posts rise like the server feed (updatedAt)
       return sortPostsNewestFirst(next);
     });
-  };
+  }, [sortPostsNewestFirst]);
 
   const setViewerSortBoost = useCallback(
     (postId: string, boostMs?: number) => {
@@ -343,7 +343,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     [sortPostsNewestFirst],
   );
 
-  const deletePost = (postId: string) => {
+  const deletePost = useCallback((postId: string) => {
     if (!postId) {
       console.warn('⚠️ [PostContext] deletePost called with empty postId');
       return;
@@ -435,9 +435,9 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       
       return filtered;
     });
-  };
+  }, []);
 
-  const likePost = (postId: string, userId: string) => {
+  const likePost = useCallback((postId: string, userId: string) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
@@ -447,9 +447,9 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           : post
       );
     });
-  };
+  }, []);
 
-  const unlikePost = (postId: string, userId: string) => {
+  const unlikePost = useCallback((postId: string, userId: string) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
@@ -459,7 +459,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           : post
       );
     });
-  };
+  }, []);
 
   const appendPosts = useCallback((newPosts: Post[]) => {
     setPosts((prev) => {
@@ -473,7 +473,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     });
   }, [filterPostsForFeed]);
 
-  const addComment = (postId: string, comment: any) => {
+  const addComment = useCallback((postId: string, comment: any) => {
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
@@ -483,7 +483,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           : post
       );
     });
-  };
+  }, []);
 
   return (
     <PostContext.Provider
