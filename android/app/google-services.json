@@ -30,6 +30,14 @@
           }
         },
         {
+          "client_id": "931688184474-qe6m5ifr54p5pnh03hc5tk37bsickp5l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.playsocial",
+            "certificate_hash": "85923d2b43dee4253f898274a4b4401c30ec5b16"
+          }
+        },
+        {
           "client_id": "931688184474-3cc8ifh10tt1ritl08iu8majbiudtncp.apps.googleusercontent.com",
           "client_type": 3
         }
