@@ -23,6 +23,10 @@ interface ChessBoardProps {
   legalMoves: string[];
   /** When key changes, animates piece sliding from → to (both local and opponent moves). */
   moveAnimation?: ChessMoveAnimation | null;
+  /** Light square color (defaults to the original wood palette). */
+  lightColor?: string;
+  /** Dark square color (defaults to the original wood palette). */
+  darkColor?: string;
 }
 
 const PIECE_SYMBOLS: { [key: string]: string } = {
@@ -37,6 +41,8 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   selectedSquare,
   legalMoves,
   moveAnimation,
+  lightColor = '#F0D9B5',
+  darkColor = '#B58863',
 }) => {
   const overlayPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const overlayOpacity = useRef(new Animated.Value(1)).current;
@@ -157,7 +163,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
 
   const getSquareColor = (row: number, col: number) => {
-    return (row + col) % 2 === 0 ? '#F0D9B5' : '#B58863';
+    return (row + col) % 2 === 0 ? lightColor : darkColor;
   };
 
   const getSquareName = (row: number, col: number) => {

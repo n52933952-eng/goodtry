@@ -225,27 +225,40 @@ const SearchScreen = ({ navigation }: any) => {
       : false;
 
     return (
-      <View style={[styles.userItem, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+      <View
+        style={[
+          styles.row,
+          styles.rowLtr,
+          {
+            backgroundColor: colors.backgroundLight,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: colors.border,
+          },
+        ]}
+      >
         <TouchableOpacity
-          style={styles.userTapArea}
-          onPress={() => navigation.navigate('Profile', { 
-            screen: 'UserProfile', 
-            params: { username: item.username } 
-          })}
-          activeOpacity={0.8}
+          style={[styles.rowMain, styles.rowLtr]}
+          onPress={() =>
+            navigation.navigate('UserProfile', {
+              username: item.username,
+            })
+          }
+          activeOpacity={0.7}
         >
           {item.profilePic ? (
             <Image source={{ uri: item.profilePic }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-              <Text style={styles.avatarText}>{item.name?.[0]?.toUpperCase() || '?'}</Text>
+            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+              <Text style={[styles.avatarLetter, { color: colors.text }]}>
+                {(item.name || item.username || '?').charAt(0).toUpperCase()}
+              </Text>
             </View>
           )}
-          <View style={styles.userInfo}>
-            <Text style={[styles.userName, { color: colors.text }]} numberOfLines={1}>
-              {item.name}
+          <View style={styles.rowText}>
+            <Text style={[styles.name, styles.nameLtr, { color: colors.text }]} numberOfLines={1}>
+              {item.name || 'Unknown'}
             </Text>
-            <Text style={[styles.userUsername, { color: colors.textGray }]} numberOfLines={1}>
+            <Text style={[styles.username, styles.nameLtr, { color: colors.textGray }]} numberOfLines={1}>
               @{item.username}
             </Text>
           </View>
@@ -253,20 +266,25 @@ const SearchScreen = ({ navigation }: any) => {
 
         <TouchableOpacity
           style={[
-            styles.followButton,
-            { backgroundColor: colors.primary },
-            isFollowing && styles.followButtonFollowing,
-            isFollowing && { backgroundColor: colors.border },
-            isUpdating && styles.followButtonDisabled
+            styles.actionBtn,
+            isFollowing
+              ? { borderColor: colors.border }
+              : { borderColor: colors.primary },
+            isUpdating && styles.actionBtnDisabled,
           ]}
           onPress={() => handleFollowToggle(item)}
           disabled={isUpdating}
           activeOpacity={0.85}
         >
           {isUpdating ? (
-            <ActivityIndicator size="small" color={colors.buttonText} />
+            <ActivityIndicator size="small" color={isFollowing ? colors.text : colors.primary} />
           ) : (
-            <Text style={[styles.followButtonText, { color: colors.buttonText }, isFollowing && styles.followButtonTextFollowing]}>
+            <Text
+              style={[
+                styles.actionBtnText,
+                isFollowing ? { color: colors.text } : { color: colors.primary },
+              ]}
+            >
               {isFollowing ? 'Unfollow' : 'Follow'}
             </Text>
           )}
@@ -301,6 +319,11 @@ const SearchScreen = ({ navigation }: any) => {
           data={searchResults}
           renderItem={renderUser}
           keyExtractor={(item) => item._id}
+          contentContainerStyle={
+            searchResults.length === 0
+              ? styles.listEmptyGrow
+              : [styles.listContent, { paddingTop: 14, backgroundColor: colors.background }]
+          }
           ListEmptyComponent={
             !searchLoading ? (
               <Text style={[styles.emptyText, { color: colors.textGray }]}>No users found</Text>
@@ -308,7 +331,7 @@ const SearchScreen = ({ navigation }: any) => {
           }
         />
       ) : (
-        <View style={styles.suggestedSection}>
+        <View style={[styles.suggestedSection, { backgroundColor: colors.background }]}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Suggested Users</Text>
           {loading ? (
             <ActivityIndicator size="large" color={colors.primary} />
@@ -317,6 +340,11 @@ const SearchScreen = ({ navigation }: any) => {
               data={suggestedUsers}
               renderItem={renderUser}
               keyExtractor={(item) => item._id}
+              contentContainerStyle={
+                suggestedUsers.length === 0
+                  ? styles.listEmptyGrow
+                  : [styles.listContent, { paddingTop: 8, paddingBottom: 20, backgroundColor: colors.background }]
+              }
               refreshControl={
                 <RefreshControl
                   refreshing={refreshing}
@@ -353,7 +381,8 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     borderRadius: 8,
     padding: 15,
-    margin: 15,
+    marginHorizontal: 16,
+    marginVertical: 12,
     color: COLORS.text,
     fontSize: 16,
   },
@@ -363,98 +392,65 @@ const styles = StyleSheet.create({
   },
   suggestedSection: {
     flex: 1,
-    padding: 15,
+    paddingTop: 4,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: COLORS.text,
-    marginBottom: 15,
+    marginBottom: 12,
+    paddingHorizontal: 16,
   },
-  userItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    /** Keep avatar + text column + button in fixed LTR order even when app locale is RTL. */
-    direction: 'ltr',
+  /** Match FollowListScreen row/card layout */
+  rowLtr: { direction: 'ltr' },
+  listContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
   },
-  userTapArea: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    minWidth: 0,
-    direction: 'ltr',
-  },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    marginRight: 15,
-  },
-  avatarPlaceholder: {
-    backgroundColor: COLORS.primary,
+  listEmptyGrow: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingTop: 48,
+  },
+  row: {
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    borderRadius: 12,
   },
-  avatarText: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  userInfo: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'flex-start',
-  },
-  userName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 3,
-    width: '100%',
+  rowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', minWidth: 0 },
+  avatar: { width: 48, height: 48, borderRadius: 24, marginRight: 12 },
+  avatarPlaceholder: { justifyContent: 'center', alignItems: 'center' },
+  avatarLetter: { fontSize: 18, fontWeight: '700' },
+  rowText: { flex: 1, minWidth: 0, alignItems: 'flex-start' },
+  name: { fontSize: 16, fontWeight: '600' },
+  nameLtr: {
+    alignSelf: 'stretch',
     textAlign: 'left',
+    width: '100%',
     writingDirection: 'ltr',
   },
-  userUsername: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    width: '100%',
-    textAlign: 'left',
-    writingDirection: 'ltr',
-  },
-  followButton: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 10,
+  username: { fontSize: 14, marginTop: 2 },
+  actionBtn: {
+    marginLeft: 8,
     paddingVertical: 8,
-    paddingHorizontal: 12,
-    minWidth: 92,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    minWidth: 88,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 10,
   },
-  followButtonFollowing: {
-    backgroundColor: COLORS.backgroundLight,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  followButtonDisabled: {
-    opacity: 0.7,
-  },
-  followButtonText: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-    fontSize: 13,
-  },
-  followButtonTextFollowing: {
-    color: COLORS.text,
-  },
+  actionBtnDisabled: { opacity: 0.7 },
+  actionBtnText: { fontSize: 14, fontWeight: '600' },
   emptyText: {
     textAlign: 'center',
     color: COLORS.textGray,
     marginTop: 50,
     fontSize: 16,
+    paddingHorizontal: 24,
   },
 });
 

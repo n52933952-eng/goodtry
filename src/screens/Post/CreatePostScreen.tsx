@@ -8,7 +8,8 @@ import {
   ActivityIndicator,
   Image,
   ScrollView,
-  Alert,
+  Modal,
+  Pressable,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
@@ -38,25 +39,25 @@ const CreatePostScreen = ({ navigation }: any) => {
     pickVideoFromCamera,
     clearImage,
   } = useImagePicker();
-  const { t } = useLanguage();
+  const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
 
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [isCollaborative, setIsCollaborative] = useState(false);
   const [selectedCollaborators, setSelectedCollaborators] = useState<CollaboratorUser[]>([]);
+  const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
 
-  const handleMediaPick = () => {
-    Alert.alert(
-      t('selectMedia'),
-      t('chooseOption'),
-      [
-        { text: t('camera'), onPress: () => pickImage(true) },
-        { text: t('gallery'), onPress: () => pickMixedFromGallery() },
-        { text: t('recordVideo'), onPress: () => pickVideoFromCamera() },
-        { text: t('cancel'), style: 'cancel' },
-      ]
-    );
+  const handleMediaPick = () => setMediaPickerOpen(true);
+
+  const closeMediaPicker = () => setMediaPickerOpen(false);
+
+  /** Run picker after modal closes so the system picker is not obscured (Android). */
+  const runAfterPickerClose = (fn: () => void | Promise<unknown>) => {
+    closeMediaPicker();
+    setTimeout(() => {
+      void fn();
+    }, 280);
   };
 
   const handlePost = async () => {
@@ -329,6 +330,83 @@ const CreatePostScreen = ({ navigation }: any) => {
           <Text style={styles.toolbarIcon}>🖼️</Text>
         </TouchableOpacity>
       </View>
+
+      <Modal
+        visible={mediaPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeMediaPicker}
+      >
+        <Pressable style={styles.mediaModalBackdrop} onPress={closeMediaPicker}>
+          <Pressable
+            style={[styles.mediaModalCard, { backgroundColor: colors.backgroundLight }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[styles.mediaModalTitle, { color: colors.text }, isRTL && styles.rtlText]}>
+              {t('selectMedia')}
+            </Text>
+            <Text style={[styles.mediaModalSubtitle, { color: colors.textGray }, isRTL && styles.rtlText]}>
+              {t('chooseOption')}
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
+              onPress={() => runAfterPickerClose(() => pickVideoFromCamera())}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.mediaModalOptionText,
+                  { color: colors.primary },
+                  isRTL && styles.rtlText,
+                ]}
+              >
+                {isRTL ? t('recordVideo') : t('recordVideo').toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
+              onPress={() => runAfterPickerClose(() => pickMixedFromGallery())}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.mediaModalOptionText,
+                  { color: colors.primary },
+                  isRTL && styles.rtlText,
+                ]}
+              >
+                {isRTL ? t('gallery') : t('gallery').toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
+              onPress={() => runAfterPickerClose(() => pickImage(true))}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.mediaModalOptionText,
+                  { color: colors.primary },
+                  isRTL && styles.rtlText,
+                ]}
+              >
+                {isRTL ? t('camera') : t('camera').toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={[styles.mediaModalDivider, { backgroundColor: colors.border }]} />
+
+            <TouchableOpacity
+              style={styles.mediaModalCancel}
+              onPress={closeMediaPicker}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.mediaModalCancelText, { color: colors.text }]}>{t('cancel')}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 };
@@ -501,6 +579,55 @@ const styles = StyleSheet.create({
   },
   toolbarIcon: {
     fontSize: 24,
+  },
+  mediaModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  mediaModalCard: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 14,
+    paddingTop: 20,
+    paddingBottom: 12,
+    paddingHorizontal: 20,
+  },
+  mediaModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  mediaModalSubtitle: {
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  rtlText: {
+    writingDirection: 'rtl',
+    textAlign: 'right',
+    alignSelf: 'stretch',
+  },
+  mediaModalOption: {
+    paddingVertical: 14,
+  },
+  mediaModalOptionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  mediaModalDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: 4,
+  },
+  mediaModalCancel: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  mediaModalCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

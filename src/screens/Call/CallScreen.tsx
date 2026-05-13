@@ -8,7 +8,7 @@ import {
   Image,
 } from 'react-native';
 import { VideoView, useLocalParticipant, useRemoteParticipants, useTracks } from '@livekit/react-native';
-import { Track, ConnectionState, RoomEvent } from 'livekit-client';
+import { Track, ConnectionState, RoomEvent, LocalVideoTrack, facingModeFromLocalTrack, ParticipantEvent } from 'livekit-client';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
@@ -35,6 +35,7 @@ const CallScreen = () => {
     connectionState,
     localVideoTrack,
     remoteVideoTrack,
+    getLiveKitRoom,
   } = useWebRTC();
 
   const params = route.params || {};
@@ -81,13 +82,19 @@ const CallScreen = () => {
   const isConnected = connectionState === ConnectionState.Connected && callAccepted;
   const [localPreviewFallbackTrack, setLocalPreviewFallbackTrack] = useState<any>(null);
 
+  const resolveCallRoom = useCallback(
+    () => getLiveKitRoom() ?? room,
+    [getLiveKitRoom, room],
+  );
+
   const syncLocalPreviewFallback = useCallback(() => {
-    if (!room || !isVideo) {
+    const live = resolveCallRoom();
+    if (!live || !isVideo) {
       setLocalPreviewFallbackTrack(null);
       return;
     }
     try {
-      const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      const pub = live.localParticipant.getTrackPublication(Track.Source.Camera);
       const t = pub?.track;
       if (t && t.kind === Track.Kind.Video) {
         setLocalPreviewFallbackTrack(t);
@@ -97,30 +104,58 @@ const CallScreen = () => {
     } catch (_) {
       setLocalPreviewFallbackTrack(null);
     }
-  }, [room, isVideo]);
+  }, [resolveCallRoom, isVideo]);
 
   useEffect(() => {
     syncLocalPreviewFallback();
-    if (!room || !isVideo) return;
+    const live = resolveCallRoom();
+    if (!live || !isVideo) return;
 
     const onPublished = () => syncLocalPreviewFallback();
     const onUnpublished = () => syncLocalPreviewFallback();
     const onConnState = () => syncLocalPreviewFallback();
 
-    room.on(RoomEvent.LocalTrackPublished, onPublished);
-    room.on(RoomEvent.LocalTrackUnpublished, onUnpublished);
-    room.on(RoomEvent.ConnectionStateChanged, onConnState);
+    live.on(RoomEvent.LocalTrackPublished, onPublished);
+    live.on(RoomEvent.LocalTrackUnpublished, onUnpublished);
+    live.on(RoomEvent.ConnectionStateChanged, onConnState);
 
     // Some Android devices restart camera track without a clean event sequence.
     const periodicSync = setInterval(syncLocalPreviewFallback, 700);
 
     return () => {
-      room.off(RoomEvent.LocalTrackPublished, onPublished);
-      room.off(RoomEvent.LocalTrackUnpublished, onUnpublished);
-      room.off(RoomEvent.ConnectionStateChanged, onConnState);
+      live.off(RoomEvent.LocalTrackPublished, onPublished);
+      live.off(RoomEvent.LocalTrackUnpublished, onUnpublished);
+      live.off(RoomEvent.ConnectionStateChanged, onConnState);
       clearInterval(periodicSync);
     };
-  }, [room, isVideo, callAccepted, syncLocalPreviewFallback]);
+  }, [resolveCallRoom, isVideo, callAccepted, syncLocalPreviewFallback]);
+
+  // Keep Mute / Unmute label in sync with the real mic track (voice + video).
+  useEffect(() => {
+    const live = resolveCallRoom();
+    if (!live) return;
+    const lp = live.localParticipant;
+    const syncMicUi = () => {
+      try {
+        const pub = lp.getTrackPublication(Track.Source.Microphone);
+        const t = pub?.track;
+        if (t && typeof t.isMuted === 'boolean') {
+          setIsMuted(t.isMuted);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    syncMicUi();
+    lp.on(ParticipantEvent.TrackMuted, syncMicUi);
+    lp.on(ParticipantEvent.TrackUnmuted, syncMicUi);
+    lp.on(ParticipantEvent.LocalTrackPublished, syncMicUi);
+    return () => {
+      lp.off(ParticipantEvent.TrackMuted, syncMicUi);
+      lp.off(ParticipantEvent.TrackUnmuted, syncMicUi);
+      lp.off(ParticipantEvent.LocalTrackPublished, syncMicUi);
+    };
+  }, [resolveCallRoom, callAccepted]);
 
   const localTrackForPiP =
     localVideoTrack && localVideoTrack.kind === Track.Kind.Video
@@ -177,24 +212,58 @@ const CallScreen = () => {
 
   // ── controls ──────────────────────────────────────────────────────────────
   const handleMute = useCallback(async () => {
-    if (!room) return;
-    const next = !isMuted;
-    await room.localParticipant.setMicrophoneEnabled(!next);
-    setIsMuted(next);
-  }, [room, isMuted]);
+    const liveRoom = resolveCallRoom();
+    if (!liveRoom) return;
+    const wantMuted = !isMuted;
+    try {
+      await liveRoom.localParticipant.setMicrophoneEnabled(!wantMuted);
+      let pub = liveRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      if (wantMuted && pub && !pub.track) {
+        await new Promise<void>((r) => setTimeout(r, 160));
+        await liveRoom.localParticipant.setMicrophoneEnabled(false);
+        pub = liveRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      }
+      const t = pub?.track;
+      if (t && typeof t.isMuted === 'boolean') {
+        setIsMuted(t.isMuted);
+      } else {
+        setIsMuted(wantMuted);
+      }
+    } catch (e) {
+      console.warn('[CallScreen] mute toggle failed:', e);
+    }
+  }, [resolveCallRoom, isMuted]);
 
   const handleCamToggle = useCallback(async () => {
-    if (!room) return;
+    const liveRoom = resolveCallRoom();
+    if (!liveRoom) return;
     const next = !isCamOff;
-    await room.localParticipant.setCameraEnabled(!next);
-    setIsCamOff(next);
-  }, [room, isCamOff]);
+    try {
+      await liveRoom.localParticipant.setCameraEnabled(!next);
+      setIsCamOff(next);
+    } catch (e) {
+      console.warn('[CallScreen] camera toggle failed:', e);
+    }
+  }, [resolveCallRoom, isCamOff]);
 
   const handleFlipCamera = useCallback(async () => {
-    if (!room) return;
-    const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    await camPub?.track?.switchCamera?.();
-  }, [room]);
+    const liveRoom = resolveCallRoom();
+    if (!liveRoom) return;
+    const camPub = liveRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+    const track = camPub?.track;
+    if (!track || track.kind !== Track.Kind.Video) return;
+    const video = track as LocalVideoTrack;
+    if (typeof video.restartTrack !== 'function') return;
+    try {
+      const { facingMode: current } = facingModeFromLocalTrack(video);
+      const next: 'user' | 'environment' =
+        current === 'environment' ? 'user' : 'environment';
+      await video.restartTrack({ facingMode: next });
+      syncLocalPreviewFallback();
+    } catch (e) {
+      console.warn('[CallScreen] flip camera failed:', e);
+    }
+  }, [resolveCallRoom, syncLocalPreviewFallback]);
 
   const handleSpeakerToggle = useCallback(() => {
     const next = !isSpeaker;

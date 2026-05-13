@@ -50,8 +50,6 @@ const FeedScreen = ({ navigation }: any) => {
   const [showCardModal, setShowCardModal] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
-  const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
-  const [incomingCardChallenge, setIncomingCardChallenge] = useState<any>(null);
   const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
   const [busyCardUserIds, setBusyCardUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
@@ -166,19 +164,6 @@ const FeedScreen = ({ navigation }: any) => {
   useEffect(() => {
     if (!socket) return;
 
-    const handleChessChallenge = (data: any) => {
-      const me = user?._id?.toString?.();
-      const target = data?.to?.toString?.();
-      // Backend now sends `to`; older servers omit it — if we received the event, it was routed to us.
-      if (target && me && target !== me) return;
-      if (data?.from?.toString?.() === me) return;
-      setIncomingChallenge(data);
-      showToast('Chess Challenge!', `${data.fromName} challenged you to chess!`, 'info');
-    };
-
-    // acceptChessChallenge navigation is handled globally in AppNavigator so the
-    // challenger opens the game even when not on the Feed tab (Messages, Search, etc.).
-
     const handleChessDeclined = (data: any) => {
       // Backend sends: { from } where 'from' is the user who declined (the opponent)
       console.log('♟️ [FeedScreen] Challenge declined by:', data.from);
@@ -188,17 +173,6 @@ const FeedScreen = ({ navigation }: any) => {
         setBusyChessUserIds(prev => prev.filter(id => id?.toString() !== data.from?.toString()));
       }
     };
-
-    const handleCardChallenge = (data: any) => {
-      const me = user?._id?.toString?.();
-      const target = data?.to?.toString?.();
-      if (target && me && target !== me) return;
-      if (data?.from?.toString?.() === me) return;
-      setIncomingCardChallenge(data);
-      showToast('Card Challenge!', `${data.fromName} challenged you to Go Fish!`, 'info');
-    };
-
-    // acceptCardChallenge navigation is handled globally in AppNavigator (same as chess).
 
     const handleCardDeclined = (data: any) => {
       console.log('🃏 [FeedScreen] Card challenge declined by:', data.from);
@@ -243,17 +217,16 @@ const FeedScreen = ({ navigation }: any) => {
       });
     };
 
-    socket.on('chessChallenge', handleChessChallenge);
+    // Incoming chess/card challenges: SocketContext + AppNavigator overlays (ChessChallengeNotification / CardChallengeNotification).
+    // Do not duplicate listeners here — caused a second full-screen modal on Feed.
+
     socket.on('chessDeclined', handleChessDeclined);
-    socket.on('cardChallenge', handleCardChallenge);
     socket.on('cardDeclined', handleCardDeclined);
     socket.on('userAvailableCard', handleUserAvailableCard);
     socket.on('livekit:streamStarted', handleStreamStarted);
 
     return () => {
-      socket.off('chessChallenge', handleChessChallenge);
       socket.off('chessDeclined', handleChessDeclined);
-      socket.off('cardChallenge', handleCardChallenge);
       socket.off('cardDeclined', handleCardDeclined);
       socket.off('userAvailableCard', handleUserAvailableCard);
       socket.off('livekit:streamStarted', handleStreamStarted);
@@ -453,34 +426,6 @@ const FeedScreen = ({ navigation }: any) => {
     setShowChessModal(false);
   };
 
-  const handleAcceptChallenge = () => {
-    if (!socket || !incomingChallenge) return;
-
-    const roomId = `chess_${incomingChallenge.from}_${user?._id}_${Date.now()}`;
-    
-    socket.emit('acceptChessChallenge', {
-      from: user?._id,
-      to: incomingChallenge.from,
-      roomId: roomId,
-    });
-
-    // Navigation happens via acceptChessChallenge socket (AppNavigator) so params match server (colors, etc.).
-    setIncomingChallenge(null);
-    showToast('Success', 'Challenge accepted!', 'success');
-  };
-
-  const handleDeclineChallenge = () => {
-    if (!socket || !incomingChallenge) return;
-
-    socket.emit('declineChessChallenge', {
-      from: user?._id,
-      to: incomingChallenge.from,
-    });
-
-    setIncomingChallenge(null);
-    showToast('Info', 'Challenge declined', 'info');
-  };
-
   const handleSendCardChallenge = (opponent: AvailableUser) => {
     if (!socket?.isSocketConnected?.()) {
       showToast('Error', 'Not connected — wait a moment and try again', 'error');
@@ -497,33 +442,6 @@ const FeedScreen = ({ navigation }: any) => {
 
     showToast('Success', `Challenge sent to ${opponent.name}!`, 'success');
     setShowCardModal(false);
-  };
-
-  const handleAcceptCardChallenge = () => {
-    if (!socket || !incomingCardChallenge) return;
-
-    const roomId = `card_${incomingCardChallenge.from}_${user?._id}_${Date.now()}`;
-    
-    socket.emit('acceptCardChallenge', {
-      from: user?._id,
-      to: incomingCardChallenge.from,
-      roomId: roomId,
-    });
-
-    setIncomingCardChallenge(null);
-    showToast('Success', 'Challenge accepted!', 'success');
-  };
-
-  const handleDeclineCardChallenge = () => {
-    if (!socket || !incomingCardChallenge) return;
-
-    socket.emit('declineCardChallenge', {
-      from: user?._id,
-      to: incomingCardChallenge.from,
-    });
-
-    setIncomingCardChallenge(null);
-    showToast('Info', 'Challenge declined', 'info');
   };
 
   const handleLogout = async () => {
@@ -840,37 +758,6 @@ const FeedScreen = ({ navigation }: any) => {
         </View>
       </Modal>
 
-      {/* Incoming Card Challenge Modal */}
-      <Modal
-        visible={!!incomingCardChallenge}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIncomingCardChallenge(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.challengeModalContent}>
-            <Text style={styles.challengeModalTitle}>🃏 Go Fish Challenge!</Text>
-            <Text style={styles.challengeModalText}>
-              {incomingCardChallenge?.fromName} challenged you to a Go Fish match!
-            </Text>
-            <View style={styles.challengeModalButtons}>
-              <TouchableOpacity
-                style={[styles.challengeModalButton, styles.declineButton]}
-                onPress={handleDeclineCardChallenge}
-              >
-                <Text style={styles.challengeModalButtonText}>Decline</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.challengeModalButton, styles.acceptButton]}
-                onPress={handleAcceptCardChallenge}
-              >
-                <Text style={styles.challengeModalButtonText}>Accept</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* Chess Challenge Modal */}
       <Modal
         visible={showChessModal}
@@ -935,37 +822,6 @@ const FeedScreen = ({ navigation }: any) => {
                 </Text>
               </View>
             )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Incoming Challenge Modal */}
-      <Modal
-        visible={!!incomingChallenge}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setIncomingChallenge(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.challengeModalContent}>
-            <Text style={styles.challengeModalTitle}>♟️ Chess Challenge!</Text>
-            <Text style={styles.challengeModalText}>
-              {incomingChallenge?.fromName} challenged you to a chess match!
-            </Text>
-            <View style={styles.challengeModalButtons}>
-              <TouchableOpacity
-                style={[styles.challengeModalButton, styles.declineButton]}
-                onPress={handleDeclineChallenge}
-              >
-                <Text style={styles.challengeModalButtonText}>Decline</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.challengeModalButton, styles.acceptButton]}
-                onPress={handleAcceptChallenge}
-              >
-                <Text style={styles.challengeModalButtonText}>Accept</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
       </Modal>
@@ -1240,52 +1096,6 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: COLORS.success,
-  },
-  challengeModalContent: {
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 16,
-    padding: 24,
-    width: '90%',
-    maxWidth: 350,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-  },
-  challengeModalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  challengeModalText: {
-    fontSize: 16,
-    color: COLORS.text,
-    marginBottom: 24,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  challengeModalButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    width: '100%',
-  },
-  challengeModalButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  declineButton: {
-    backgroundColor: COLORS.error,
-  },
-  acceptButton: {
-    backgroundColor: COLORS.success,
-  },
-  challengeModalButtonText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
   },
 });
 

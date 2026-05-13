@@ -64,6 +64,8 @@ interface LiveKitContextType {
   remoteVideoTrack: RemoteTrack | null;
   remoteAudioTrack: RemoteTrack | null;
   room: Room | null;
+  /** Prefer this for mic/camera actions — always the connected `Room` instance (state `room` can lag one frame). */
+  getLiveKitRoom: () => Room | null;
   connectionState: ConnectionState;
   // ── busy users (same as mobile SocketContext busyUsers) ──
   busyUsers: Set<string>;
@@ -112,6 +114,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const callAcceptedRef = useRef(false);
   /** When the callee’s phone rings, start fetching the join token immediately so Answer is not blocked on HTTP. */
   const incomingTokenPrefetchRef = useRef<{ key: string; promise: Promise<{ token: string; roomName: string; livekitUrl: string }> } | null>(null);
+
+  const getLiveKitRoom = useCallback(() => roomRef.current, []);
 
   // ── fetch token from backend ─────────────────────────────────────────────
   const fetchToken = useCallback(async (targetId: string, type: 'audio' | 'video') => {
@@ -550,7 +554,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setIncomingCallFromNotification,
       getIncomingCallFromNotificationCallerId,
       localVideoTrack, remoteVideoTrack, remoteAudioTrack,
-      room, connectionState,
+      room, getLiveKitRoom, connectionState,
       busyUsers, isUserBusy,
     }}>
       {children}

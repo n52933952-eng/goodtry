@@ -42,6 +42,8 @@ interface GroupCallContextType {
   groupCallType:     'audio' | 'video';
   participants:      RemoteParticipant[];
   room:              Room | null;
+  /** Same as `room` but from ref — reliable for mute/camera while state catches up. */
+  getGroupCallRoom:  () => Room | null;
   activeConvId:      string;
   startGroupCall:    (conversationId: string, type?: 'audio' | 'video') => Promise<void>;
   joinGroupCall:     () => Promise<void>;
@@ -63,6 +65,8 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [activeConvId,      setActiveConvId]       = useState('');
   const [room,              setRoom]              = useState<Room | null>(null);
   const roomRef = useRef<Room | null>(null);
+
+  const getGroupCallRoom = useCallback(() => roomRef.current, []);
 
   // ── fetch token ────────────────────────────────────────────────────────────
   const fetchToken = useCallback(async (conversationId: string) => {
@@ -243,7 +247,7 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   return (
     <GroupCallContext.Provider value={{
       incomingGroupCall, groupCallActive, groupCallType,
-      participants, room, activeConvId,
+      participants, room, getGroupCallRoom, activeConvId,
       startGroupCall, joinGroupCall, declineGroupCall, leaveGroupCall,
     }}>
       {children}

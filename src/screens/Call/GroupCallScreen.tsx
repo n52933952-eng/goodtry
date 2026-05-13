@@ -7,7 +7,7 @@
  *  3. Mute, Camera, End controls
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
-import { Track } from 'livekit-client';
+import { Track, ParticipantEvent } from 'livekit-client';
 import { useNavigation } from '@react-navigation/native';
 import { useGroupCall } from '../../context/GroupCallContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -90,28 +90,81 @@ const GroupCallScreen = () => {
     groupCallType,
     participants,
     room,
+    getGroupCallRoom,
     joinGroupCall,
     declineGroupCall,
     leaveGroupCall,
   } = useGroupCall();
 
+  const resolveGroupRoom = useCallback(
+    () => getGroupCallRoom() ?? room,
+    [getGroupCallRoom, room],
+  );
+
   const [isMuted,  setIsMuted]  = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
 
+  useEffect(() => {
+    const live = resolveGroupRoom();
+    if (!live) return;
+    const lp = live.localParticipant;
+    const syncMicUi = () => {
+      try {
+        const pub = lp.getTrackPublication(Track.Source.Microphone);
+        const t = pub?.track;
+        if (t && typeof t.isMuted === 'boolean') {
+          setIsMuted(t.isMuted);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    syncMicUi();
+    lp.on(ParticipantEvent.TrackMuted, syncMicUi);
+    lp.on(ParticipantEvent.TrackUnmuted, syncMicUi);
+    lp.on(ParticipantEvent.LocalTrackPublished, syncMicUi);
+    return () => {
+      lp.off(ParticipantEvent.TrackMuted, syncMicUi);
+      lp.off(ParticipantEvent.TrackUnmuted, syncMicUi);
+      lp.off(ParticipantEvent.LocalTrackPublished, syncMicUi);
+    };
+  }, [resolveGroupRoom, groupCallActive]);
+
   const handleMute = useCallback(async () => {
-    if (!room) return;
-    const next = !isMuted;
-    await room.localParticipant.setMicrophoneEnabled(!next);
-    setIsMuted(next);
-  }, [room, isMuted]);
+    const liveRoom = resolveGroupRoom();
+    if (!liveRoom) return;
+    const wantMuted = !isMuted;
+    try {
+      await liveRoom.localParticipant.setMicrophoneEnabled(!wantMuted);
+      let pub = liveRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      if (wantMuted && pub && !pub.track) {
+        await new Promise<void>((r) => setTimeout(r, 160));
+        await liveRoom.localParticipant.setMicrophoneEnabled(false);
+        pub = liveRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      }
+      const t = pub?.track;
+      if (t && typeof t.isMuted === 'boolean') {
+        setIsMuted(t.isMuted);
+      } else {
+        setIsMuted(wantMuted);
+      }
+    } catch (e) {
+      console.warn('[GroupCallScreen] mute toggle failed:', e);
+    }
+  }, [resolveGroupRoom, isMuted]);
 
   const handleCam = useCallback(async () => {
-    if (!room) return;
+    const liveRoom = resolveGroupRoom();
+    if (!liveRoom) return;
     const next = !isCamOff;
-    await room.localParticipant.setCameraEnabled(!next);
-    setIsCamOff(next);
-  }, [room, isCamOff]);
+    try {
+      await liveRoom.localParticipant.setCameraEnabled(!next);
+      setIsCamOff(next);
+    } catch (e) {
+      console.warn('[GroupCallScreen] camera toggle failed:', e);
+    }
+  }, [resolveGroupRoom, isCamOff]);
 
   const handleLeave = useCallback(() => {
     leaveGroupCall();

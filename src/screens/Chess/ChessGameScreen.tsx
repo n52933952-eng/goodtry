@@ -7,17 +7,66 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Modal,
+  Pressable,
+  ScrollView,
+  Image,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Chess } from 'chess.js';
 import Sound from 'react-native-sound';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import ChessBoard, { ChessMoveAnimation } from '../../components/ChessBoard';
+import {
+  CHESS_BOARD_THEMES,
+  DEFAULT_CHESS_BOARD_THEME_ID,
+  BOARD_THEME_STORAGE_KEY,
+  getBoardThemeById,
+} from '../../utils/chessThemes';
 
-const { width } = Dimensions.get('window');
+const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+/** Delay before showing the Game Over overlay (review / lobby) so the final position is visible. */
+const GAME_OVER_OVERLAY_DELAY_MS = 4000;
+
+/** Metro-bundled MP3 ids — `res/raw` on Android is still preferred; these back dev / missing raw. */
+const CHESS_ASSET_P = require('../../assets/sounds/p.mp3');
+const CHESS_ASSET_K = require('../../assets/sounds/k.mp3');
+const CHESS_ASSET_KING = require('../../assets/sounds/king.mp3');
+const CHESS_ASSET_C = require('../../assets/sounds/c.mp3');
+const CHESS_ASSET_START = require('../../assets/sounds/start.mp3');
+
+/**
+ * `react-native-sound` expects a string path/URI. Passing `require()` directly hits `filename.startsWith` with a non-string.
+ * After a failed `MAIN_BUNDLE` load, resolve a playable URI (works in dev with Metro and in release).
+ */
+function loadChessSoundFromBundledAsset(
+  asset: number,
+  label: string,
+  assign: (s: Sound) => void,
+): void {
+  try {
+    const resolved = Image.resolveAssetSource(asset);
+    if (!resolved?.uri) {
+      console.error(`❌ [ChessGameScreen] Could not resolve ${label} asset URI`);
+      return;
+    }
+    assign(
+      new Sound(resolved.uri, (error) => {
+        if (error) {
+          console.error(`❌ [ChessGameScreen] Failed to load ${label} (bundle URI):`, error);
+        }
+      }),
+    );
+  } catch (e) {
+    console.error(`❌ [ChessGameScreen] Could not load ${label}:`, e);
+  }
+}
 
 /** Piece char for board glyphs (P/N/B/R/Q/K) — uses promotion when present. */
 function getPieceCharForAnimation(
@@ -51,6 +100,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const { socket } = useSocket();
   const { deletePost, posts } = usePost();
   const showToast = useShowToast();
+  const { isRTL } = useLanguage();
 
   console.log('♟️ [ChessGameScreen] Initializing with:', { roomId, opponentId, color, isSpectator });
 
@@ -63,13 +113,76 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [player2, setPlayer2] = useState<any>(null); // BLACK player (accepter)
   const [gameLive, setGameLive] = useState(true);
   const [gameOver, setGameOver] = useState(false);
+  /** Shown after {@link GAME_OVER_OVERLAY_DELAY_MS} when the game ends (not used for immediate resign). */
+  const [gameOverOverlayVisible, setGameOverOverlayVisible] = useState(false);
+  const gameOverOverlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [gameResult, setGameResult] = useState('');
+
+  const clearGameOverOverlayDelay = () => {
+    if (gameOverOverlayTimeoutRef.current != null) {
+      clearTimeout(gameOverOverlayTimeoutRef.current);
+      gameOverOverlayTimeoutRef.current = null;
+    }
+  };
+
+  /** After checkmate/draw/etc., keep the board clear briefly before showing Review / Lobby. */
+  const scheduleGameOverOverlayDelay = () => {
+    clearGameOverOverlayDelay();
+    setGameOverOverlayVisible(false);
+    gameOverOverlayTimeoutRef.current = setTimeout(() => {
+      gameOverOverlayTimeoutRef.current = null;
+      setGameOverOverlayVisible(true);
+    }, GAME_OVER_OVERLAY_DELAY_MS);
+  };
   const [capturedWhite, setCapturedWhite] = useState<string[]>([]);
   const [capturedBlack, setCapturedBlack] = useState<string[]>([]);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [legalMoves, setLegalMoves] = useState<string[]>([]);
   const [moveAnimation, setMoveAnimation] = useState<ChessMoveAnimation | null>(null);
   const moveAnimKeyRef = useRef(0);
+  /** Played moves (from / to / promotion) — used so both players can step through the finished game. */
+  const [moveHistory, setMoveHistory] = useState<Array<{ from: string; to: string; promotion?: string }>>([]);
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [reviewFen, setReviewFen] = useState<string>(chess.fen());
+  const [reviewCapturedWhite, setReviewCapturedWhite] = useState<string[]>([]);
+  const [reviewCapturedBlack, setReviewCapturedBlack] = useState<string[]>([]);
+  /** User-selectable board palette (light/dark square colors), persisted in AsyncStorage. */
+  const [boardThemeId, setBoardThemeId] = useState<string>(DEFAULT_CHESS_BOARD_THEME_ID);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const boardTheme = getBoardThemeById(boardThemeId);
+  /** If the user picks a theme before the async hydrate finishes, do not let hydrate overwrite their choice. */
+  const userPickedBoardThemeRef = useRef(false);
+
+  // Load saved board theme on mount (async — can finish after first paint).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(BOARD_THEME_STORAGE_KEY);
+        if (cancelled || userPickedBoardThemeRef.current) return;
+        if (saved && CHESS_BOARD_THEMES.some((t) => t.id === saved)) {
+          setBoardThemeId(saved);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectBoardTheme = useCallback(async (id: string) => {
+    userPickedBoardThemeRef.current = true;
+    setBoardThemeId(id);
+    setThemePickerOpen(false);
+    try {
+      await AsyncStorage.setItem(BOARD_THEME_STORAGE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+  }, []);
   // Track current roomId to prevent processing events from old rooms
   const currentRoomIdRef = useRef<string | null>(null);
   // Track previous roomId to detect game switches
@@ -79,7 +192,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const sounds = useRef<{
     move?: Sound;
     capture?: Sound;
-    check?: Sound;
+    /** King in check (not mate) — `king.mp3` */
+    inCheck?: Sound;
+    /** Checkmate — `c.mp3` (unchanged) */
+    checkmate?: Sound;
     gameStart?: Sound;
   }>({});
 
@@ -95,60 +211,45 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       if (error) {
         console.error('❌ [ChessGameScreen] Failed to load move sound:', error);
         // Fallback: try require() for iOS/bundled assets
-        try {
-          sounds.current.move = new Sound(require('../../assets/sounds/p.mp3'), (error2) => {
-            if (error2) {
-              console.error('❌ [ChessGameScreen] Failed to load move sound (fallback):', error2);
-            }
-          });
-        } catch (e) {
-          console.error('❌ [ChessGameScreen] Could not load move sound:', e);
-        }
+        loadChessSoundFromBundledAsset(CHESS_ASSET_P, 'move sound', (s) => {
+          sounds.current.move = s;
+        });
       }
     });
     
     sounds.current.capture = new Sound('k.mp3', Sound.MAIN_BUNDLE, (error) => {
       if (error) {
         console.error('❌ [ChessGameScreen] Failed to load capture sound:', error);
-        try {
-          sounds.current.capture = new Sound(require('../../assets/sounds/k.mp3'), (error2) => {
-            if (error2) {
-              console.error('❌ [ChessGameScreen] Failed to load capture sound (fallback):', error2);
-            }
-          });
-        } catch (e) {
-          console.error('❌ [ChessGameScreen] Could not load capture sound:', e);
-        }
+        loadChessSoundFromBundledAsset(CHESS_ASSET_K, 'capture sound', (s) => {
+          sounds.current.capture = s;
+        });
       }
     });
     
-    sounds.current.check = new Sound('c.mp3', Sound.MAIN_BUNDLE, (error) => {
+    sounds.current.inCheck = new Sound('king.mp3', Sound.MAIN_BUNDLE, (error) => {
       if (error) {
-        console.error('❌ [ChessGameScreen] Failed to load check sound:', error);
-        try {
-          sounds.current.check = new Sound(require('../../assets/sounds/c.mp3'), (error2) => {
-            if (error2) {
-              console.error('❌ [ChessGameScreen] Failed to load check sound (fallback):', error2);
-            }
-          });
-        } catch (e) {
-          console.error('❌ [ChessGameScreen] Could not load check sound:', e);
-        }
+        console.error('❌ [ChessGameScreen] Failed to load in-check sound:', error);
+        loadChessSoundFromBundledAsset(CHESS_ASSET_KING, 'in-check sound', (s) => {
+          sounds.current.inCheck = s;
+        });
+      }
+    });
+
+    sounds.current.checkmate = new Sound('c.mp3', Sound.MAIN_BUNDLE, (error) => {
+      if (error) {
+        console.error('❌ [ChessGameScreen] Failed to load checkmate sound:', error);
+        loadChessSoundFromBundledAsset(CHESS_ASSET_C, 'checkmate sound', (s) => {
+          sounds.current.checkmate = s;
+        });
       }
     });
     
     sounds.current.gameStart = new Sound('start.mp3', Sound.MAIN_BUNDLE, (error) => {
       if (error) {
         console.error('❌ [ChessGameScreen] Failed to load game start sound:', error);
-        try {
-          sounds.current.gameStart = new Sound(require('../../assets/sounds/start.mp3'), (error2) => {
-            if (error2) {
-              console.error('❌ [ChessGameScreen] Failed to load game start sound (fallback):', error2);
-            }
-          });
-        } catch (e) {
-          console.error('❌ [ChessGameScreen] Could not load game start sound:', e);
-        }
+        loadChessSoundFromBundledAsset(CHESS_ASSET_START, 'game start sound', (s) => {
+          sounds.current.gameStart = s;
+        });
       }
     });
     
@@ -167,7 +268,91 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setMoveAnimation({ key: moveAnimKeyRef.current, from, to, piece });
   }, []);
 
-  const playSound = useCallback((type: 'move' | 'capture' | 'check' | 'gameStart') => {
+  // Replay moves up to `reviewIndex` so the board shows that position with correct captured pieces.
+  useEffect(() => {
+    if (!reviewMode) return;
+    const replay = new Chess();
+    const cw: string[] = [];
+    const cb: string[] = [];
+    for (let i = 0; i < reviewIndex && i < moveHistory.length; i++) {
+      try {
+        const m = replay.move(moveHistory[i] as any);
+        if (m && m.captured) {
+          if (m.color === 'w') cb.push(m.captured);
+          else cw.push(m.captured);
+        }
+      } catch (e) {
+        // If the recorded move is somehow illegal in replay, stop here so we still show a valid FEN.
+        break;
+      }
+    }
+    setReviewFen(replay.fen());
+    setReviewCapturedWhite(cw);
+    setReviewCapturedBlack(cb);
+  }, [reviewMode, reviewIndex, moveHistory]);
+
+  const enterReview = useCallback(() => {
+    setMoveAnimation(null);
+    setSelectedSquare(null);
+    setLegalMoves([]);
+    setReviewIndex(moveHistory.length);
+    setReviewMode(true);
+  }, [moveHistory.length]);
+
+  const exitReview = useCallback(() => {
+    setMoveAnimation(null);
+    setReviewMode(false);
+  }, []);
+
+  /**
+   * Step forward animates the piece sliding from its origin to its destination
+   * (same animation the live board uses). Backward / jumps just teleport.
+   */
+  const reviewStep = useCallback((delta: number) => {
+    const next = Math.max(0, Math.min(reviewIndex + delta, moveHistory.length));
+    if (next === reviewIndex) return;
+
+    if (delta === 1 && next > 0) {
+      const move = moveHistory[next - 1];
+      try {
+        const replay = new Chess();
+        for (let k = 0; k < reviewIndex; k++) {
+          replay.move(moveHistory[k] as any);
+        }
+        const piece = replay.get(move.from as any);
+        if (piece && move.from && move.to) {
+          const pieceChar = move.promotion
+            ? (piece.color === 'w'
+                ? move.promotion.toUpperCase()
+                : move.promotion.toLowerCase())
+            : (piece.color === 'w'
+                ? piece.type.toUpperCase()
+                : piece.type.toLowerCase());
+          triggerMoveAnimation(move.from, move.to, pieceChar);
+        }
+      } catch (e) {
+        // If the recorded move can't be replayed for some reason, skip the animation.
+        setMoveAnimation(null);
+      }
+    } else {
+      // Stepping back or any other transition — no slide animation.
+      setMoveAnimation(null);
+    }
+
+    setReviewIndex(next);
+  }, [reviewIndex, moveHistory, triggerMoveAnimation]);
+
+  const reviewJumpToStart = useCallback(() => {
+    setMoveAnimation(null);
+    setReviewIndex(0);
+  }, []);
+
+  const reviewJumpToEnd = useCallback(() => {
+    setMoveAnimation(null);
+    setReviewIndex(moveHistory.length);
+  }, [moveHistory.length]);
+
+  const playSound = useCallback((type: 'move' | 'capture' | 'inCheck' | 'checkmate' | 'gameStart') => {
     const sound = sounds.current[type];
     if (sound) {
       sound.stop(() => {
@@ -213,6 +398,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
     
     console.log('♟️ [ChessGameScreen] RoomId changed, clearing state for:', roomId);
+    if (gameOverOverlayTimeoutRef.current != null) {
+      clearTimeout(gameOverOverlayTimeoutRef.current);
+      gameOverOverlayTimeoutRef.current = null;
+    }
+    setGameOverOverlayVisible(false);
     chess.reset();
     setFen(chess.fen());
     setCapturedWhite([]);
@@ -227,6 +417,12 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setPlayer1(null);
     setPlayer2(null);
     setOpponent(null);
+    // Reset review state for a fresh game
+    setMoveHistory([]);
+    setReviewMode(false);
+    setReviewIndex(0);
+    setReviewCapturedWhite([]);
+    setReviewCapturedBlack([]);
 
     // Store current roomId to track which room we're in
     const currentRoomId = roomId;
@@ -340,20 +536,17 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         return;
       }
       if (activeRoomId === currentRoomId) {
+        const reasonText = data.reason === 'resigned' ? 'A player resigned'
+          : data.reason === 'player_disconnected' ? 'A player disconnected'
+          : data.reason === 'checkmate' ? 'Checkmate!'
+          : data.reason === 'draw' ? 'Draw!'
+          : 'Game ended';
         setGameOver(true);
-        setGameResult(data.reason || 'Game ended');
-        setGameLive(false);
-        // Show toast and navigate back
-        const reasonText = data.reason === 'resigned' ? 'A player resigned' :
-                          data.reason === 'player_disconnected' ? 'A player disconnected' :
-                          data.reason === 'checkmate' ? 'Game ended - Checkmate!' :
-                          data.reason === 'draw' ? 'Game ended - Draw!' :
-                          'Game ended';
+        setGameResult(reasonText);
+        scheduleGameOverOverlayDelay();
+        // Keep `gameLive=true` so the board + Game Over overlay stay rendered.
+        // (Setting it false hides the whole screen behind the "Waiting for game to start…" spinner.)
         showToast('Game Ended', reasonText, 'info');
-        // Navigate back after a short delay
-        setTimeout(() => {
-          navigation.goBack();
-        }, 2000);
       }
     };
 
@@ -366,12 +559,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       }
       console.log('♟️ [ChessGameScreen] Game cleanup event');
       setGameOver(true);
-      setGameLive(false);
-      // Show toast and navigate back immediately for cleanup
-      showToast('Game Ended', 'Game was canceled or ended', 'info');
-      setTimeout(() => {
-        navigation.goBack();
-      }, 1000);
+      scheduleGameOverOverlayDelay();
+      // Do NOT set gameLive=false — that hides the board behind the "Waiting for game…" spinner.
+      // The user needs to see the final position and the "Review game" / "Back to Lobby" buttons.
     };
 
     socket.on('chessGameEnded', handleGameEnded);
@@ -406,6 +596,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
 
     return () => {
       console.log('♟️ [ChessGameScreen] Cleanup function called for room:', currentRoomId);
+      if (gameOverOverlayTimeoutRef.current != null) {
+        clearTimeout(gameOverOverlayTimeoutRef.current);
+        gameOverOverlayTimeoutRef.current = null;
+      }
       // Clear the ref FIRST to prevent any events from being processed
       currentRoomIdRef.current = null;
       // Remove ALL listeners (without handler reference to remove all instances)
@@ -572,9 +766,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           chess.load(data.move.after);
           setFen(data.move.after);
           
-          // Play appropriate sound for opponent's move
-          if (chess.inCheck()) {
-            playSound('check');
+          // Checkmate uses c.mp3; normal check uses king.mp3
+          if (chess.isCheckmate()) {
+            playSound('checkmate');
+          } else if (chess.inCheck()) {
+            playSound('inCheck');
           } else if (data.move.captured) {
             playSound('capture');
           } else {
@@ -587,6 +783,14 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             } else {
               setCapturedWhite(prev => [...prev, data.move.captured]);
             }
+          }
+
+          // Record opponent move for game review (after-FEN path).
+          if (data.move.from && data.move.to) {
+            setMoveHistory(prev => [
+              ...prev,
+              { from: data.move.from, to: data.move.to, promotion: data.move.promotion },
+            ]);
           }
         } catch (error) {
           console.error('❌ [ChessGameScreen] Failed to load after FEN:', error);
@@ -628,9 +832,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             const newFen = chess.fen();
             setFen(newFen);
             
-            // Play appropriate sound for opponent's move
-            if (chess.inCheck()) {
-              playSound('check');
+            // Checkmate uses c.mp3; normal check uses king.mp3
+            if (chess.isCheckmate()) {
+              playSound('checkmate');
+            } else if (chess.inCheck()) {
+              playSound('inCheck');
             } else if (moveResult.captured) {
               playSound('capture');
             } else {
@@ -644,6 +850,12 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
                 setCapturedWhite(prev => [...prev, moveResult.captured]);
               }
             }
+
+            // Record opponent move for game review (chess.move path).
+            setMoveHistory(prev => [
+              ...prev,
+              { from: moveResult.from, to: moveResult.to, promotion: moveResult.promotion },
+            ]);
           }
         } catch (error: any) {
           console.error('❌ [ChessGameScreen] Move application failed:', error.message);
@@ -722,6 +934,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     
     setGameOver(true);
     setGameResult(data.message || 'Game Over');
+    scheduleGameOverOverlayDelay();
     showToast('Game Over', data.message, 'info');
     // Remove own chess game post from feed immediately (frontend only)
     if (!isSpectator) {
@@ -734,18 +947,19 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (!isSpectator) {
       removeOwnChessPost();
     }
-    
+
     if (isSpectator) {
-      // For spectators, just navigate back
+      // For spectators, just navigate back (nothing to review for them)
       showToast('Game Ended', 'A player left the game', 'info');
       setTimeout(() => navigation.goBack(), 1000);
       return;
     }
-    Alert.alert(
-      'Opponent Left',
-      'Your opponent has left the game. You win by forfeit!',
-      [{ text: 'OK', onPress: () => navigation.goBack() }]
-    );
+
+    // Player: keep them on the board so they can press "Review game" or "Back".
+    setGameOver(true);
+    setGameResult('Your opponent left the game. You win by forfeit!');
+    scheduleGameOverOverlayDelay();
+    showToast('Opponent Left', 'You win by forfeit', 'info');
   };
 
   const handleOpponentResigned = () => {
@@ -753,38 +967,44 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (!isSpectator) {
       removeOwnChessPost();
     }
-    
+
     if (isSpectator) {
       // For spectators, just navigate back
       showToast('Game Ended', 'A player resigned', 'info');
       setTimeout(() => navigation.goBack(), 1000);
       return;
     }
-    Alert.alert(
-      'Opponent Resigned',
-      'Your opponent has resigned. You win!',
-      [{ text: 'OK', onPress: () => navigation.goBack() }]
-    );
+
+    // Player: keep them on the board so they can review.
+    setGameOver(true);
+    setGameResult('Your opponent resigned. You win!');
+    scheduleGameOverOverlayDelay();
+    showToast('Opponent Resigned', 'You win!', 'info');
   };
 
   const handleLocalGameOver = () => {
+    // Order matters: chess.js `isDraw()` returns true for stalemate / threefold / insufficient too,
+    // so check the specific reasons FIRST and fall through to generic draw last.
     let message = '';
-    
+
     if (chess.isCheckmate()) {
       const winner = chess.turn() === 'w' ? 'Black' : 'White';
-      message = `Checkmate! ${winner} wins!`;
-    } else if (chess.isDraw()) {
-      message = 'Draw!';
+      message = `Checkmate — ${winner} wins!`;
     } else if (chess.isStalemate()) {
-      message = 'Stalemate!';
+      message = 'Stalemate — Draw (no legal moves, not in check)';
     } else if (chess.isThreefoldRepetition()) {
-      message = 'Draw by threefold repetition!';
+      message = 'Draw by threefold repetition';
     } else if (chess.isInsufficientMaterial()) {
-      message = 'Draw by insufficient material!';
+      message = 'Draw by insufficient material';
+    } else if (chess.isDraw()) {
+      message = 'Draw (50-move rule)';
+    } else {
+      message = 'Game over';
     }
-    
+
     setGameOver(true);
     setGameResult(message);
+    scheduleGameOverOverlayDelay();
     
     // Remove own chess game post from feed immediately (frontend only)
     if (!isSpectator) {
@@ -821,7 +1041,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (isSpectator) {
       return;
     }
-    
+    // Review mode is read-only: arrows step through history, board is not interactive.
+    if (reviewMode) {
+      return;
+    }
+
     const currentTurn = chess.turn();
     const playerColor = orientation[0];
     
@@ -872,9 +1096,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             setSelectedSquare(null);
             setLegalMoves([]);
             
-            // Play appropriate sound
-            if (chess.inCheck()) {
-              playSound('check');
+            // Checkmate uses c.mp3; normal check uses king.mp3
+            if (chess.isCheckmate()) {
+              playSound('checkmate');
+            } else if (chess.inCheck()) {
+              playSound('inCheck');
             } else if (move.captured) {
               playSound('capture');
             } else {
@@ -888,7 +1114,13 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
                 setCapturedWhite(prev => [...prev, move.captured]);
               }
             }
-            
+
+            // Record for game review (step-by-step replay after game ends).
+            setMoveHistory(prev => [
+              ...prev,
+              { from: move.from, to: move.to, promotion: move.promotion },
+            ]);
+
             if (socket && roomId && opponentId) {
               const moveData = {
                 roomId,
@@ -935,10 +1167,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const handleBack = () => {
     // Only emit resign if user is a player (not a spectator)
     // Spectators should just leave silently without ending the game
-    if (!isSpectator && socket && roomId && opponentId) {
+    // Only emit resign if the game is still active. After game over, the back arrow just leaves.
+    if (!isSpectator && !gameOver && socket && roomId && opponentId) {
       socket.emit('resignChess', { roomId, to: opponentId });
-      // Remove own chess game post immediately (frontend only)
-      // Backend will also delete and broadcast to followers
       removeOwnChessPost();
     } else if (isSpectator) {
       console.log('👁️ [ChessGameScreen] Spectator leaving - not emitting any game end events');
@@ -947,6 +1178,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   };
 
   const handleResign = () => {
+    if (gameOver) return; // Already over — nothing to resign.
     Alert.alert(
       'Resign',
       'Are you sure you want to resign?',
@@ -959,9 +1191,14 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
             if (socket && roomId && opponentId) {
               socket.emit('resignChess', { roomId, to: opponentId });
             }
-            // Remove own chess game post from feed immediately (frontend only)
             removeOwnChessPost();
-            navigation.goBack();
+            // Stay on the board with the Game Over overlay so the player can review the game.
+            setGameOver(true);
+            setGameResult('You resigned.');
+            clearGameOverOverlayDelay();
+            setGameOverOverlayVisible(true);
+            setSelectedSquare(null);
+            setLegalMoves([]);
           },
         },
       ]
@@ -1028,12 +1265,20 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         <Text style={styles.headerTitle}>
           {isSpectator ? 'Watching Chess Game' : 'Chess Game'}
         </Text>
-        {!isSpectator && (
-          <TouchableOpacity onPress={handleResign} style={styles.resignButton}>
-            <Text style={styles.resignText}>Resign</Text>
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            onPress={() => setThemePickerOpen(true)}
+            style={styles.themeButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.themeButtonIcon}>🎨</Text>
           </TouchableOpacity>
-        )}
-        {isSpectator && <View style={styles.resignButton} />}
+          {!isSpectator && !gameOver && (
+            <TouchableOpacity onPress={handleResign} style={styles.resignButton}>
+              <Text style={styles.resignText}>Resign</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <View style={styles.playerInfo}>
@@ -1051,7 +1296,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       </View>
 
       {renderCapturedPieces(
-        orientation === 'white' ? capturedWhite : capturedBlack,
+        orientation === 'white'
+          ? (reviewMode ? reviewCapturedWhite : capturedWhite)
+          : (reviewMode ? reviewCapturedBlack : capturedBlack),
         orientation === 'white' ? 'white' : 'black',
         isSpectator
           ? (orientation === 'white' ? `${player2?.name || 'Black'} captured` : `${player1?.name || 'White'} captured`)
@@ -1061,22 +1308,69 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       <View style={styles.boardWrapper}>
         <View style={styles.boardContainer}>
           <ChessBoard
-            fen={fen}
+            key={`board-theme-${boardThemeId}`}
+            fen={reviewMode ? reviewFen : fen}
             orientation={orientation}
             onSquarePress={handleSquarePress}
-            selectedSquare={selectedSquare}
-            legalMoves={legalMoves}
+            selectedSquare={reviewMode ? null : selectedSquare}
+            legalMoves={reviewMode ? [] : legalMoves}
             moveAnimation={moveAnimation}
+            lightColor={boardTheme.light}
+            darkColor={boardTheme.dark}
           />
         </View>
       </View>
 
       {renderCapturedPieces(
-        orientation === 'white' ? capturedBlack : capturedWhite,
+        orientation === 'white'
+          ? (reviewMode ? reviewCapturedBlack : capturedBlack)
+          : (reviewMode ? reviewCapturedWhite : capturedWhite),
         orientation === 'white' ? 'black' : 'white',
         isSpectator
           ? (orientation === 'white' ? `${player1?.name || 'White'} captured` : `${player2?.name || 'Black'} captured`)
           : 'You captured'
+      )}
+
+      {reviewMode && (
+        <View style={styles.reviewToolbar}>
+          <TouchableOpacity
+            style={[styles.reviewBtn, reviewIndex === 0 && styles.reviewBtnDisabled]}
+            onPress={reviewJumpToStart}
+            disabled={reviewIndex === 0}
+          >
+            <Text style={styles.reviewBtnText}>|◀</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reviewBtn, reviewIndex === 0 && styles.reviewBtnDisabled]}
+            onPress={() => reviewStep(-1)}
+            disabled={reviewIndex === 0}
+          >
+            <Text style={styles.reviewBtnText}>◀</Text>
+          </TouchableOpacity>
+          <View style={styles.reviewCounterWrap}>
+            <Text style={styles.reviewCounter}>{reviewIndex} / {moveHistory.length}</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.reviewBtn, reviewIndex >= moveHistory.length && styles.reviewBtnDisabled]}
+            onPress={() => reviewStep(1)}
+            disabled={reviewIndex >= moveHistory.length}
+          >
+            <Text style={styles.reviewBtnText}>▶</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reviewBtn, reviewIndex >= moveHistory.length && styles.reviewBtnDisabled]}
+            onPress={reviewJumpToEnd}
+            disabled={reviewIndex >= moveHistory.length}
+          >
+            <Text style={styles.reviewBtnText}>▶|</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reviewBtn, styles.reviewExitBtn]}
+            onPress={exitReview}
+          >
+            <Text style={styles.reviewExitText}>Exit</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       <View style={styles.playerInfo}>
@@ -1093,17 +1387,103 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         </View>
       </View>
 
-      {gameOver && (
+      <Modal
+        visible={themePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setThemePickerOpen(false)}
+      >
+        <Pressable
+          style={styles.themeModalBackdrop}
+          onPress={() => setThemePickerOpen(false)}
+        >
+          <Pressable
+            style={styles.themeModalCard}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.themeModalHeader}>
+              <Text style={styles.themeModalTitle}>
+                {isRTL ? 'مظهر الرقعة' : 'Board theme'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setThemePickerOpen(false)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={styles.themeModalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.themeModalScroll}
+              contentContainerStyle={styles.themeGrid}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+            >
+              {CHESS_BOARD_THEMES.map((t) => {
+                const selected = t.id === boardThemeId;
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[
+                      styles.themeCard,
+                      selected && styles.themeCardSelected,
+                    ]}
+                    onPress={() => selectBoardTheme(t.id)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.themePreview}>
+                      {[0, 1, 2, 3].map((r) => (
+                        <View key={r} style={styles.themePreviewRow}>
+                          {[0, 1, 2, 3].map((c) => (
+                            <View
+                              key={c}
+                              style={{
+                                width: 18,
+                                height: 18,
+                                backgroundColor: (r + c) % 2 === 0 ? t.light : t.dark,
+                              }}
+                            />
+                          ))}
+                        </View>
+                      ))}
+                    </View>
+                    <Text style={styles.themeName} numberOfLines={1}>
+                      {isRTL ? t.nameAr : t.nameEn}
+                    </Text>
+                    {selected && (
+                      <View style={styles.themeSelectedBadge}>
+                        <Text style={styles.themeSelectedBadgeText}>✓</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {gameOver && gameOverOverlayVisible && !reviewMode && (
         <View style={styles.gameOverOverlay}>
           <View style={styles.gameOverBox}>
             <Text style={styles.gameOverTitle}>Game Over</Text>
             <Text style={styles.gameOverMessage}>{gameResult}</Text>
-            <TouchableOpacity
-              style={styles.gameOverButton}
-              onPress={() => navigation.goBack()}
-            >
-              <Text style={styles.gameOverButtonText}>Back to Lobby</Text>
-            </TouchableOpacity>
+            <View style={styles.gameOverActions}>
+              {moveHistory.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.gameOverButton, styles.gameOverReviewBtn]}
+                  onPress={enterReview}
+                >
+                  <Text style={styles.gameOverButtonText}>Review game</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.gameOverButton, styles.gameOverBackBtn]}
+                onPress={() => navigation.goBack()}
+              >
+                <Text style={styles.gameOverButtonText}>Back to Lobby</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       )}
@@ -1155,6 +1535,114 @@ const styles = StyleSheet.create({
     color: COLORS.error,
     fontSize: 14,
     fontWeight: 'bold',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  themeButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginRight: 4,
+  },
+  themeButtonIcon: {
+    fontSize: 20,
+  },
+  themeModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  themeModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: Math.min(SCREEN_HEIGHT * 0.88, 640),
+    backgroundColor: COLORS.backgroundLight,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingTop: 16,
+    paddingBottom: 8,
+    paddingHorizontal: 14,
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  themeModalScroll: {
+    flexGrow: 1,
+    flexShrink: 1,
+    maxHeight: Math.min(SCREEN_HEIGHT * 0.72, 520),
+  },
+  themeModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    marginBottom: 12,
+  },
+  themeModalTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  themeModalClose: {
+    color: COLORS.textGray,
+    fontSize: 22,
+    paddingHorizontal: 4,
+  },
+  themeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    paddingBottom: 36,
+    paddingTop: 4,
+  },
+  themeCard: {
+    width: '48%',
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    marginBottom: 12,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  themeCardSelected: {
+    borderColor: COLORS.primary,
+    borderWidth: 2,
+  },
+  themePreview: {
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  themePreviewRow: {
+    flexDirection: 'row',
+  },
+  themeName: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  themeSelectedBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  themeSelectedBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   playerInfo: {
     padding: 15,
@@ -1252,15 +1740,80 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 24,
   },
+  gameOverActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+  },
   gameOverButton: {
-    backgroundColor: COLORS.primary,
     paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     borderRadius: 8,
+    marginHorizontal: 4,
+    marginVertical: 4,
+  },
+  gameOverReviewBtn: {
+    backgroundColor: COLORS.primary,
+  },
+  gameOverBackBtn: {
+    backgroundColor: COLORS.backgroundLight,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   gameOverButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
+    fontWeight: 'bold',
+  },
+  reviewToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    backgroundColor: COLORS.backgroundLight,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  reviewBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginHorizontal: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 44,
+  },
+  reviewBtnDisabled: {
+    opacity: 0.4,
+  },
+  reviewBtnText: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  reviewCounterWrap: {
+    paddingHorizontal: 10,
+    minWidth: 64,
+    alignItems: 'center',
+  },
+  reviewCounter: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  reviewExitBtn: {
+    marginLeft: 10,
+    backgroundColor: COLORS.error,
+    borderColor: COLORS.error,
+  },
+  reviewExitText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: 'bold',
   },
   otherGamesContainer: {
