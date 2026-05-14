@@ -190,11 +190,29 @@ const SearchScreen = ({ navigation }: any) => {
       setSearchResults((prev) => updateList(prev));
       setSuggestedUsers((prev) => updateList(prev));
 
-      const nextFollowing = isCurrentlyFollowing
-        ? (currentUser.following || []).filter((id: any) => id?.toString() !== targetId)
-        : [...(currentUser.following || []), targetId];
+      // Prefer server session snapshot when it includes a plausible following list.
+      // Avoid treating [] as authoritative right after a follow (stale/empty payloads used to wipe context).
+      const serverFollowing = data?.current?.following;
+      const canTrustServerFollowing =
+        Array.isArray(serverFollowing) &&
+        (serverFollowing.length > 0 || (serverFollowing.length === 0 && !newFollowState));
 
-      updateUser({ following: nextFollowing as any });
+      if (canTrustServerFollowing && Array.isArray(data?.current?.followers)) {
+        updateUser({
+          following: serverFollowing as any,
+          followers: data.current.followers as any,
+        });
+      } else if (canTrustServerFollowing) {
+        updateUser({
+          following: serverFollowing as any,
+          followers: currentUser.followers as any,
+        });
+      } else {
+        const nextFollowing = isCurrentlyFollowing
+          ? (currentUser.following || []).filter((id: any) => id?.toString() !== targetId)
+          : [...(currentUser.following || []), targetId];
+        updateUser({ following: nextFollowing as any });
+      }
 
       // Remove from suggestions when newly followed
       if (newFollowState) {

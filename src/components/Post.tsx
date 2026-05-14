@@ -12,6 +12,7 @@ import {
   ScrollView,
   Modal,
   FlatList,
+  DeviceEventEmitter,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
@@ -21,7 +22,12 @@ import { usePost } from '../context/PostContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSocket } from '../context/SocketContext';
 import { apiService } from '../services/api';
-import { ENDPOINTS, COLORS, WEB_APP_URL } from '../utils/constants';
+import { ENDPOINTS, COLORS, WEB_APP_URL, CHESS_GAME_FEED_UI_ENDED } from '../utils/constants';
+import {
+  isChessRoomFeedEnded,
+  markChessRoomFeedEnded,
+  subscribeChessFeedEndedStore,
+} from '../utils/chessFeedEndedStore';
 import { useShowToast } from '../hooks/useShowToast';
 import { useLanguage } from '../context/LanguageContext';
 import VideoFeedPreview from './VideoFeedPreview';
@@ -286,6 +292,8 @@ const Post: React.FC<PostProps> = ({
   // Chess game post state
   const isChessPost = !!post?.chessGameData;
   const [chessGameData, setChessGameData] = useState<any>(null);
+  /** When socket says this room ended, flip Live → Ended without waiting for a feed refresh */
+  const [chessFeedEndedLocally, setChessFeedEndedLocally] = useState(false);
 
   // Football post state - fetch matches from API
   const [footballMatches, setFootballMatches] = useState<any[]>([]);
@@ -307,6 +315,42 @@ const Post: React.FC<PostProps> = ({
       setChessGameData(null);
     }
   }, [isChessPost, post?.chessGameData]);
+
+  /** Room id from props (immediate) — avoids one frame of stale `chessGameData` state so feed listeners match the second game. */
+  const chessRoomIdForFeed = useMemo(() => {
+    if (!isChessPost || !post?.chessGameData) return '';
+    try {
+      const p =
+        typeof post.chessGameData === 'string' ? JSON.parse(post.chessGameData) : post.chessGameData;
+      return p?.roomId != null ? String(p.roomId).trim() : '';
+    } catch {
+      return '';
+    }
+  }, [isChessPost, post?.chessGameData]);
+
+  useEffect(() => {
+    if (!chessRoomIdForFeed) {
+      setChessFeedEndedLocally(false);
+      return;
+    }
+    const sync = () => setChessFeedEndedLocally(isChessRoomFeedEnded(chessRoomIdForFeed));
+    sync();
+    const unsubStore = subscribeChessFeedEndedStore(sync);
+    const sub = DeviceEventEmitter.addListener(
+      CHESS_GAME_FEED_UI_ENDED,
+      (payload: { roomId?: string }) => {
+        const r = payload?.roomId != null ? String(payload.roomId).trim() : '';
+        if (r && r === chessRoomIdForFeed) {
+          markChessRoomFeedEnded(r);
+          sync();
+        }
+      },
+    );
+    return () => {
+      unsubStore();
+      sub.remove();
+    };
+  }, [post?._id, chessRoomIdForFeed]);
 
   // Do not auto-navigate from the feed into ChessGame — it caused false opens after cancel/reconnect
   // and duplicated AppNavigator's acceptChessChallenge handling. Players open the game from the modal / socket.
@@ -1849,13 +1893,14 @@ const Post: React.FC<PostProps> = ({
                 <Text style={[styles.chessSubtitle, { color: colors.cardText, opacity: 0.6 }]}>Tap to watch</Text>
               </View>
             </View>
-            {(chessGameData.gameStatus === 'active' || chessGameData.gameStatus == null) ? (
-              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
-                <Text style={styles.chessLiveText}>Live</Text>
-              </View>
-            ) : (
+            {(chessFeedEndedLocally ||
+              !(chessGameData.gameStatus === 'active' || chessGameData.gameStatus == null)) ? (
               <View style={[styles.chessLiveBadge, { backgroundColor: colors.textGray }]}>
                 <Text style={styles.chessLiveText}>Ended</Text>
+              </View>
+            ) : (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
+                <Text style={styles.chessLiveText}>Live</Text>
               </View>
             )}
           </View>

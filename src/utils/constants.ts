@@ -130,6 +130,9 @@ export const ENDPOINTS = {
 /** DeviceEventEmitter — refetch `/api/story/feed-strip` (rings red/gray, new slides) */
 export const STORY_STRIP_SHOULD_REFRESH = 'StoryStripShouldRefresh';
 
+/** DeviceEventEmitter payload `{ roomId: string }` — feed chess cards flip Live → Ended without refresh */
+export const CHESS_GAME_FEED_UI_ENDED = 'chessGameFeedUiEnded';
+
 // Socket Events
 export const SOCKET_EVENTS = {
   NEW_POST: 'newPost',

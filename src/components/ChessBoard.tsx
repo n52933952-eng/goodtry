@@ -1,11 +1,20 @@
 import React, { memo, useMemo, useRef, useLayoutEffect, useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing } from 'react-native';
+import { View, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing } from 'react-native';
 import { COLORS } from '../utils/constants';
+import LichessPieceSvg from './LichessPieceSvg';
+import {
+  CHESS_PIECE_SETS,
+  DEFAULT_CHESS_PIECE_SET_ID,
+  fenCharToPieceCode,
+  lichessPieceSvgUrl,
+} from '../utils/chessPieceSets';
 
 const { width } = Dimensions.get('window');
 const SQUARE_SIZE = (width - 32) / 8;
 const BOARD_SIZE = SQUARE_SIZE * 8;
-const MOVE_DURATION_MS = 320;
+/** Exported so review “step back” can delay FEN until the slide finishes. */
+export const CHESS_MOVE_ANIMATION_DURATION_MS = 320;
+const MOVE_DURATION_MS = CHESS_MOVE_ANIMATION_DURATION_MS;
 
 export interface ChessMoveAnimation {
   key: number;
@@ -23,16 +32,13 @@ interface ChessBoardProps {
   legalMoves: string[];
   /** When key changes, animates piece sliding from → to (both local and opponent moves). */
   moveAnimation?: ChessMoveAnimation | null;
+  /** Lichess piece-set folder id (same CDN as web). */
+  pieceSetId?: string;
   /** Light square color (defaults to the original wood palette). */
   lightColor?: string;
   /** Dark square color (defaults to the original wood palette). */
   darkColor?: string;
 }
-
-const PIECE_SYMBOLS: { [key: string]: string } = {
-  'P': '♟', 'N': '♞', 'B': '♝', 'R': '♜', 'Q': '♛', 'K': '♚',
-  'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚',
-};
 
 const ChessBoard: React.FC<ChessBoardProps> = memo(({
   fen,
@@ -43,7 +49,12 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   moveAnimation,
   lightColor = '#F0D9B5',
   darkColor = '#B58863',
+  pieceSetId = DEFAULT_CHESS_PIECE_SET_ID,
 }) => {
+  const setForPieces = CHESS_PIECE_SETS.some((s) => s.id === pieceSetId)
+    ? pieceSetId!
+    : DEFAULT_CHESS_PIECE_SET_ID;
+
   const overlayPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const overlayOpacity = useRef(new Animated.Value(1)).current;
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -179,7 +190,6 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     const squareName = getSquareName(row, col);
     const isSelected = squareName === selectedSquare;
     const isLegalMove = legalMoves.includes(squareName);
-    const isWhitePiece = piece && piece === piece.toUpperCase();
 
     const hideForSlide =
       isSliding &&
@@ -198,14 +208,13 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         onPress={() => onSquarePress(squareName)}
       >
         {piece && !hideForSlide && (
-          <Text
-            style={[
-              styles.piece,
-              isWhitePiece ? styles.whitePiece : styles.blackPiece,
-            ]}
-          >
-            {PIECE_SYMBOLS[piece] || piece}
-          </Text>
+          <View style={styles.pieceSvgWrap} pointerEvents="none">
+            <LichessPieceSvg
+              width={SQUARE_SIZE * 0.88}
+              height={SQUARE_SIZE * 0.88}
+              uri={lichessPieceSvgUrl(setForPieces, fenCharToPieceCode(piece))}
+            />
+          </View>
         )}
         {isLegalMove && !piece && <View style={styles.legalMoveDot} />}
       </TouchableOpacity>
@@ -213,8 +222,6 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   };
 
   const slidingPiece = moveAnimation?.piece;
-  const overlayIsWhite =
-    slidingPiece && slidingPiece === slidingPiece.toUpperCase();
 
   return (
     <View style={styles.container}>
@@ -238,14 +245,16 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           ]}
           pointerEvents="none"
         >
-          <Text
-            style={[
-              styles.piece,
-              overlayIsWhite ? styles.whitePiece : styles.blackPiece,
-            ]}
-          >
-            {PIECE_SYMBOLS[slidingPiece] || slidingPiece}
-          </Text>
+          <View style={styles.pieceSvgWrap} pointerEvents="none">
+            <LichessPieceSvg
+              width={SQUARE_SIZE * 0.88}
+              height={SQUARE_SIZE * 0.88}
+              uri={lichessPieceSvgUrl(
+                setForPieces,
+                fenCharToPieceCode(slidingPiece),
+              )}
+            />
+          </View>
         </Animated.View>
       )}
     </View>
@@ -256,11 +265,15 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     prevProps.orientation === nextProps.orientation &&
     prevProps.selectedSquare === nextProps.selectedSquare &&
     prevProps.moveAnimation?.key === nextProps.moveAnimation?.key &&
+    prevProps.pieceSetId === nextProps.pieceSetId &&
+    prevProps.lightColor === nextProps.lightColor &&
+    prevProps.darkColor === nextProps.darkColor &&
     JSON.stringify(prevProps.legalMoves) === JSON.stringify(nextProps.legalMoves)
   );
 });
 
 const styles = StyleSheet.create({
+  /** Chess files must always run a→h left-to-right, even when the app is RTL (Arabic). */
   container: {
     width: BOARD_SIZE,
     height: BOARD_SIZE,
@@ -268,11 +281,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     alignSelf: 'center',
     overflow: 'visible',
+    direction: 'ltr',
   },
   row: {
     flexDirection: 'row',
     width: BOARD_SIZE,
     height: SQUARE_SIZE,
+    direction: 'ltr',
   },
   square: {
     width: SQUARE_SIZE,
@@ -298,23 +313,11 @@ const styles = StyleSheet.create({
     left: 0,
     zIndex: 1000,
   },
-  piece: {
-    fontSize: SQUARE_SIZE * 0.85,
-    fontWeight: '400',
-    lineHeight: SQUARE_SIZE,
-  },
-  whitePiece: {
-    color: '#F5F5F5',
-    fontWeight: '500',
-    textShadowColor: 'rgba(0, 0, 0, 0.5)',
-    textShadowOffset: { width: 0.5, height: 0.5 },
-    textShadowRadius: 2,
-  },
-  blackPiece: {
-    color: '#1a1a1a',
-    textShadowColor: 'rgba(255, 255, 255, 0.9)',
-    textShadowOffset: { width: -1.5, height: -1.5 },
-    textShadowRadius: 4,
+  pieceSvgWrap: {
+    width: SQUARE_SIZE * 0.88,
+    height: SQUARE_SIZE * 0.88,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   legalMoveDot: {
     width: SQUARE_SIZE * 0.25,

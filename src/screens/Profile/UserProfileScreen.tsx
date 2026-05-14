@@ -345,24 +345,45 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     setFollowLoading(true);
     try {
       // Backend expects POST, not PUT (same as web)
-      await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
-      
+      const data = await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${profileUser._id}`);
+
+      if (data?.error) {
+        showToast(t('error'), data.error, 'error');
+        return;
+      }
+
       const profileUserId = profileUser._id?.toString();
       const isCurrentlyFollowing = following;
-      const nextFollowing = isCurrentlyFollowing
-        ? (currentUser.following || []).filter((id: any) => id?.toString() !== profileUserId)
-        : [...(currentUser.following || []), profileUserId];
-      
-      // Update local state
+
       setFollowing(!following);
-      
-      // Update UserContext so other screens (like SearchScreen) reflect the change
-      updateUser({ following: nextFollowing as any });
-      
+
+      const serverFollowing = data?.current?.following;
+      const nextIsFollowing = !isCurrentlyFollowing;
+      const canTrustServerFollowing =
+        Array.isArray(serverFollowing) &&
+        (serverFollowing.length > 0 || (serverFollowing.length === 0 && !nextIsFollowing));
+
+      if (canTrustServerFollowing && Array.isArray(data?.current?.followers)) {
+        updateUser({
+          following: serverFollowing as any,
+          followers: data.current.followers as any,
+        });
+      } else if (canTrustServerFollowing) {
+        updateUser({
+          following: serverFollowing as any,
+          followers: currentUser.followers as any,
+        });
+      } else {
+        const nextFollowing = isCurrentlyFollowing
+          ? (currentUser.following || []).filter((id: any) => id?.toString() !== profileUserId)
+          : [...(currentUser.following || []), profileUserId];
+        updateUser({ following: nextFollowing as any });
+      }
+
       // Refresh profile to get updated followers/following counts
       fetchUserProfile();
-      
-      showToast(t('success'), following ? t('unfollowed') : t('following'), 'success');
+
+      showToast(t('success'), isCurrentlyFollowing ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToFollowUnfollow'), 'error');
     } finally {

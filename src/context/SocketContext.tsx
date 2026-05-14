@@ -4,7 +4,14 @@ import { DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
-import { SOCKET_EVENTS, API_URL, STORAGE_KEYS, STORY_STRIP_SHOULD_REFRESH } from '../utils/constants';
+import {
+  SOCKET_EVENTS,
+  API_URL,
+  STORAGE_KEYS,
+  STORY_STRIP_SHOULD_REFRESH,
+  CHESS_GAME_FEED_UI_ENDED,
+} from '../utils/constants';
+import { markChessRoomFeedEnded } from '../utils/chessFeedEndedStore';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -394,6 +401,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off('newNotification');
     socketService.off('newMessage', onNewMessageForSocket);
     socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
+    socketService.off('chessGameEnded');
 
     console.log('🔧 [SocketContext] Installing core socket listeners');
 
@@ -772,6 +780,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
     socketService.on(SOCKET_EVENTS.STORY_STRIP_CHANGED, () => {
       DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
+    });
+
+    /** Followers’ feed chess cards: flip “Live” off when the room ends (no full refresh). */
+    socketService.on('chessGameEnded', (data: any) => {
+      const rid = data?.roomId;
+      if (rid == null) return;
+      const s = String(rid).trim();
+      if (!s) return;
+      markChessRoomFeedEnded(s);
+      DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
     });
     };
 

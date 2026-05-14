@@ -11,7 +11,9 @@ import {
   Pressable,
   ScrollView,
   Image,
+  DeviceEventEmitter,
 } from 'react-native';
+import LichessPieceSvg from '../../components/LichessPieceSvg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Chess } from 'chess.js';
 import Sound from 'react-native-sound';
@@ -19,15 +21,25 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { API_URL, COLORS } from '../../utils/constants';
+import { API_URL, COLORS, CHESS_GAME_FEED_UI_ENDED } from '../../utils/constants';
+import { markChessRoomFeedEnded } from '../../utils/chessFeedEndedStore';
 import { useShowToast } from '../../hooks/useShowToast';
-import ChessBoard, { ChessMoveAnimation } from '../../components/ChessBoard';
+import ChessBoard, {
+  ChessMoveAnimation,
+  CHESS_MOVE_ANIMATION_DURATION_MS,
+} from '../../components/ChessBoard';
 import {
   CHESS_BOARD_THEMES,
   DEFAULT_CHESS_BOARD_THEME_ID,
   BOARD_THEME_STORAGE_KEY,
   getBoardThemeById,
 } from '../../utils/chessThemes';
+import {
+  CHESS_PIECE_SETS,
+  DEFAULT_CHESS_PIECE_SET_ID,
+  PIECE_SET_STORAGE_KEY,
+  lichessPieceSvgUrl,
+} from '../../utils/chessPieceSets';
 
 const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -147,12 +159,20 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [reviewFen, setReviewFen] = useState<string>(chess.fen());
   const [reviewCapturedWhite, setReviewCapturedWhite] = useState<string[]>([]);
   const [reviewCapturedBlack, setReviewCapturedBlack] = useState<string[]>([]);
+  /** Keeps review step logic in sync when a “step back” FEN update is delayed until slide ends. */
+  const reviewIndexRef = useRef(0);
+  const reviewBackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewPendingIndexRef = useRef<number | null>(null);
   /** User-selectable board palette (light/dark square colors), persisted in AsyncStorage. */
   const [boardThemeId, setBoardThemeId] = useState<string>(DEFAULT_CHESS_BOARD_THEME_ID);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const boardTheme = getBoardThemeById(boardThemeId);
+  /** Piece graphics (Lichess CDN), persisted like web. */
+  const [pieceSetId, setPieceSetId] = useState<string>(DEFAULT_CHESS_PIECE_SET_ID);
+  const [appearanceTab, setAppearanceTab] = useState<'board' | 'pieces'>('board');
   /** If the user picks a theme before the async hydrate finishes, do not let hydrate overwrite their choice. */
   const userPickedBoardThemeRef = useRef(false);
+  const userPickedPieceSetRef = useRef(false);
 
   // Load saved board theme on mount (async — can finish after first paint).
   useEffect(() => {
@@ -173,6 +193,24 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(PIECE_SET_STORAGE_KEY);
+        if (cancelled || userPickedPieceSetRef.current) return;
+        if (saved && CHESS_PIECE_SETS.some((p) => p.id === saved)) {
+          setPieceSetId(saved);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const selectBoardTheme = useCallback(async (id: string) => {
     userPickedBoardThemeRef.current = true;
     setBoardThemeId(id);
@@ -183,10 +221,48 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       /* ignore */
     }
   }, []);
+
+  const selectPieceSet = useCallback(async (id: string) => {
+    userPickedPieceSetRef.current = true;
+    setPieceSetId(id);
+    setThemePickerOpen(false);
+    try {
+      await AsyncStorage.setItem(PIECE_SET_STORAGE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   // Track current roomId to prevent processing events from old rooms
   const currentRoomIdRef = useRef<string | null>(null);
   // Track previous roomId to detect game switches
   const previousRoomIdRef = useRef<string | null>(null);
+  /** Latest room / spectator for navigation `beforeRemove` (avoid stale closures). */
+  const roomIdRef = useRef<string | null>(roomId ?? null);
+  const isSpectatorRef = useRef(!!isSpectator);
+  useEffect(() => {
+    roomIdRef.current = roomId ?? null;
+    isSpectatorRef.current = !!isSpectator;
+  }, [roomId, isSpectator]);
+
+  /** Your feed chess card: flip Live → Ended without waiting for socket (you often never get `chessGameEnded` for your own client). */
+  const notifyChessFeedUiEnded = useCallback(() => {
+    if (isSpectatorRef.current) return;
+    const rid = roomIdRef.current;
+    if (rid == null) return;
+    const s = String(rid).trim();
+    if (!s) return;
+    markChessRoomFeedEnded(s);
+    DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
+  }, []);
+
+  // Header / hardware / gesture back after game over did not call `removeOwnChessPost` — always ping feed on leave.
+  useEffect(() => {
+    const sub = navigation.addListener('beforeRemove', () => {
+      notifyChessFeedUiEnded();
+    });
+    return sub;
+  }, [navigation, notifyChessFeedUiEnded]);
   
   // Sound effects
   const sounds = useRef<{
@@ -291,32 +367,66 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setReviewCapturedBlack(cb);
   }, [reviewMode, reviewIndex, moveHistory]);
 
+  useEffect(() => {
+    reviewIndexRef.current = reviewIndex;
+  }, [reviewIndex]);
+
+  const clearReviewBackTimer = useCallback(() => {
+    if (reviewBackTimerRef.current != null) {
+      clearTimeout(reviewBackTimerRef.current);
+      reviewBackTimerRef.current = null;
+    }
+  }, []);
+
+  /** Apply delayed “step back” index if a reverse animation was in progress (must run before next reviewStep). */
+  const flushPendingReviewBack = useCallback(() => {
+    clearReviewBackTimer();
+    if (reviewPendingIndexRef.current != null) {
+      const p = reviewPendingIndexRef.current;
+      reviewPendingIndexRef.current = null;
+      reviewIndexRef.current = p;
+      setReviewIndex(p);
+      setMoveAnimation(null);
+    }
+  }, [clearReviewBackTimer]);
+
+  const cancelPendingReviewBack = useCallback(() => {
+    clearReviewBackTimer();
+    reviewPendingIndexRef.current = null;
+  }, [clearReviewBackTimer]);
+
   const enterReview = useCallback(() => {
+    cancelPendingReviewBack();
     setMoveAnimation(null);
     setSelectedSquare(null);
     setLegalMoves([]);
-    setReviewIndex(moveHistory.length);
+    const end = moveHistory.length;
+    reviewIndexRef.current = end;
+    setReviewIndex(end);
     setReviewMode(true);
-  }, [moveHistory.length]);
+  }, [moveHistory.length, cancelPendingReviewBack]);
 
   const exitReview = useCallback(() => {
+    cancelPendingReviewBack();
     setMoveAnimation(null);
     setReviewMode(false);
-  }, []);
+  }, [cancelPendingReviewBack]);
 
   /**
-   * Step forward animates the piece sliding from its origin to its destination
-   * (same animation the live board uses). Backward / jumps just teleport.
+   * Step forward: slide from → to, then advance FEN.
+   * Step back: slide to → from (undo visually), then apply FEN after {@link CHESS_MOVE_ANIMATION_DURATION_MS}.
    */
   const reviewStep = useCallback((delta: number) => {
-    const next = Math.max(0, Math.min(reviewIndex + delta, moveHistory.length));
-    if (next === reviewIndex) return;
+    flushPendingReviewBack();
+    const startIdx = reviewIndexRef.current;
+    const next = Math.max(0, Math.min(startIdx + delta, moveHistory.length));
+    if (next === startIdx) return;
 
     if (delta === 1 && next > 0) {
       const move = moveHistory[next - 1];
       try {
         const replay = new Chess();
-        for (let k = 0; k < reviewIndex; k++) {
+        for (let k = 0; k < startIdx; k++) {
           replay.move(moveHistory[k] as any);
         }
         const piece = replay.get(move.from as any);
@@ -334,23 +444,66 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         // If the recorded move can't be replayed for some reason, skip the animation.
         setMoveAnimation(null);
       }
-    } else {
-      // Stepping back or any other transition — no slide animation.
-      setMoveAnimation(null);
+      reviewIndexRef.current = next;
+      setReviewIndex(next);
+      return;
     }
 
+    if (delta === -1 && next === startIdx - 1 && startIdx > 0) {
+      const move = moveHistory[startIdx - 1];
+      try {
+        const replay = new Chess();
+        for (let k = 0; k < startIdx; k++) {
+          replay.move(moveHistory[k] as any);
+        }
+        const piece = replay.get(move.to as any);
+        if (piece && move.from && move.to) {
+          const pieceChar = move.promotion
+            ? (piece.color === 'w'
+                ? move.promotion.toUpperCase()
+                : move.promotion.toLowerCase())
+            : (piece.color === 'w'
+                ? piece.type.toUpperCase()
+                : piece.type.toLowerCase());
+          triggerMoveAnimation(move.to, move.from, pieceChar);
+          reviewPendingIndexRef.current = next;
+          clearReviewBackTimer();
+          reviewBackTimerRef.current = setTimeout(() => {
+            reviewBackTimerRef.current = null;
+            const p = reviewPendingIndexRef.current;
+            reviewPendingIndexRef.current = null;
+            if (p != null) {
+              reviewIndexRef.current = p;
+              setReviewIndex(p);
+            }
+            setMoveAnimation(null);
+          }, CHESS_MOVE_ANIMATION_DURATION_MS);
+          return;
+        }
+      } catch (e) {
+        setMoveAnimation(null);
+      }
+    }
+
+    setMoveAnimation(null);
+    reviewIndexRef.current = next;
     setReviewIndex(next);
-  }, [reviewIndex, moveHistory, triggerMoveAnimation]);
+  }, [moveHistory, triggerMoveAnimation, flushPendingReviewBack, clearReviewBackTimer]);
 
   const reviewJumpToStart = useCallback(() => {
+    cancelPendingReviewBack();
     setMoveAnimation(null);
     setReviewIndex(0);
-  }, []);
+    reviewIndexRef.current = 0;
+  }, [cancelPendingReviewBack]);
 
   const reviewJumpToEnd = useCallback(() => {
+    cancelPendingReviewBack();
     setMoveAnimation(null);
-    setReviewIndex(moveHistory.length);
-  }, [moveHistory.length]);
+    const end = moveHistory.length;
+    setReviewIndex(end);
+    reviewIndexRef.current = end;
+  }, [moveHistory.length, cancelPendingReviewBack]);
 
   const playSound = useCallback((type: 'move' | 'capture' | 'inCheck' | 'checkmate' | 'gameStart') => {
     const sound = sounds.current[type];
@@ -402,6 +555,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       clearTimeout(gameOverOverlayTimeoutRef.current);
       gameOverOverlayTimeoutRef.current = null;
     }
+    if (reviewBackTimerRef.current != null) {
+      clearTimeout(reviewBackTimerRef.current);
+      reviewBackTimerRef.current = null;
+    }
+    reviewPendingIndexRef.current = null;
     setGameOverOverlayVisible(false);
     chess.reset();
     setFen(chess.fen());
@@ -421,6 +579,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setMoveHistory([]);
     setReviewMode(false);
     setReviewIndex(0);
+    reviewIndexRef.current = 0;
     setReviewCapturedWhite([]);
     setReviewCapturedBlack([]);
 
@@ -893,7 +1052,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       console.log('⚠️ [ChessGameScreen] No roomId to remove post');
       return;
     }
-    
+
+    const targetRoom = String(roomId).trim();
+
     // Find and delete all posts with matching roomId in chessGameData
     const postsToDelete: string[] = [];
     posts.forEach((post: any) => {
@@ -902,7 +1063,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           const chessData = typeof post.chessGameData === 'string' 
             ? JSON.parse(post.chessGameData) 
             : post.chessGameData;
-          if (chessData && chessData.roomId === roomId) {
+          const postRoom =
+            chessData?.roomId != null ? String(chessData.roomId).trim() : '';
+          if (postRoom && postRoom === targetRoom) {
             postsToDelete.push(post._id);
           }
         } catch (error) {
@@ -920,6 +1083,9 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (postsToDelete.length === 0) {
       console.log('ℹ️ [ChessGameScreen] No chess game posts found to remove');
     }
+
+    // Even if delete missed (id mismatch), flip “Live” on your feed when you end / resign / opponent ends.
+    notifyChessFeedUiEnded();
   };
 
   const handleGameOver = (data: any) => {
@@ -949,9 +1115,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
 
     if (isSpectator) {
-      // For spectators, just navigate back (nothing to review for them)
+      // Same as players: final position stays visible, then Game Over overlay after delay (no instant pop-out).
+      setGameOver(true);
+      setGameResult('A player left the game.');
+      scheduleGameOverOverlayDelay();
       showToast('Game Ended', 'A player left the game', 'info');
-      setTimeout(() => navigation.goBack(), 1000);
       return;
     }
 
@@ -969,9 +1137,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     }
 
     if (isSpectator) {
-      // For spectators, just navigate back
+      setGameOver(true);
+      setGameResult('A player resigned.');
+      scheduleGameOverOverlayDelay();
       showToast('Game Ended', 'A player resigned', 'info');
-      setTimeout(() => navigation.goBack(), 1000);
       return;
     }
 
@@ -1165,6 +1334,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound, triggerMoveAnimation]);
 
   const handleBack = () => {
+    // Always update your feed when you leave as a player — when `gameOver` is true the branch
+    // below is skipped, so we used to rely only on `beforeRemove` (not reliable on all stacks).
+    notifyChessFeedUiEnded();
+
     // Only emit resign if user is a player (not a spectator)
     // Spectators should just leave silently without ending the game
     // Only emit resign if the game is still active. After game over, the back arrow just leaves.
@@ -1254,7 +1427,16 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     );
   }
 
-  const isPlayerTurn = chess.turn() === orientation[0];
+  /** Only for an actual player — spectators must not use board orientation as “my color”. */
+  const isMyTurn = !isSpectator && chess.turn() === orientation[0];
+  /**
+   * Spectator layout matches players: top row is one seat, bottom the other.
+   * When viewing as white, top is black’s name — show “Thinking…” there on black’s turn, etc.
+   */
+  const spectatorTopThinking =
+    Boolean(isSpectator && !gameOver && chess.turn() === (orientation === 'white' ? 'b' : 'w'));
+  const spectatorBottomTurnLabel =
+    Boolean(isSpectator && !gameOver && chess.turn() === (orientation === 'white' ? 'w' : 'b'));
 
   return (
     <View style={styles.container}>
@@ -1267,7 +1449,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         </Text>
         <View style={styles.headerRight}>
           <TouchableOpacity
-            onPress={() => setThemePickerOpen(true)}
+            onPress={() => {
+              setAppearanceTab('board');
+              setThemePickerOpen(true);
+            }}
             style={styles.themeButton}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
@@ -1289,7 +1474,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           } ({orientation === 'white' ? 'Black' : 'White'})
         </Text>
         <View style={styles.turnIndicatorContainer}>
-          {!isPlayerTurn && !gameOver && (
+          {!isSpectator && !isMyTurn && !gameOver && (
+            <Text style={styles.turnIndicator}>Thinking...</Text>
+          )}
+          {spectatorTopThinking && (
             <Text style={styles.turnIndicator}>Thinking...</Text>
           )}
         </View>
@@ -1308,13 +1496,14 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       <View style={styles.boardWrapper}>
         <View style={styles.boardContainer}>
           <ChessBoard
-            key={`board-theme-${boardThemeId}`}
+            key={`board-${boardThemeId}-${pieceSetId}`}
             fen={reviewMode ? reviewFen : fen}
             orientation={orientation}
             onSquarePress={handleSquarePress}
             selectedSquare={reviewMode ? null : selectedSquare}
             legalMoves={reviewMode ? [] : legalMoves}
             moveAnimation={moveAnimation}
+            pieceSetId={pieceSetId}
             lightColor={boardTheme.light}
             darkColor={boardTheme.dark}
           />
@@ -1381,8 +1570,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           } ({orientation === 'white' ? 'White' : 'Black'})
         </Text>
         <View style={styles.turnIndicatorContainer}>
-          {isPlayerTurn && !gameOver && (
+          {isMyTurn && !gameOver && (
             <Text style={[styles.turnIndicator, styles.yourTurn]}>Your Turn</Text>
+          )}
+          {spectatorBottomTurnLabel && (
+            <Text style={[styles.turnIndicator, styles.yourTurn]}>
+              {chess.turn() === 'w'
+                ? (isRTL ? 'دور الأبيض' : 'White to move')
+                : (isRTL ? 'دور الأسود' : 'Black to move')}
+            </Text>
           )}
         </View>
       </View>
@@ -1403,13 +1599,31 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           >
             <View style={styles.themeModalHeader}>
               <Text style={styles.themeModalTitle}>
-                {isRTL ? 'مظهر الرقعة' : 'Board theme'}
+                {isRTL ? 'مظهر الرقعة والقطع' : 'Board & pieces'}
               </Text>
               <TouchableOpacity
                 onPress={() => setThemePickerOpen(false)}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <Text style={styles.themeModalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.appearanceTabRow}>
+              <TouchableOpacity
+                style={[styles.appearanceTab, appearanceTab === 'board' && styles.appearanceTabActive]}
+                onPress={() => setAppearanceTab('board')}
+              >
+                <Text style={[styles.appearanceTabText, appearanceTab === 'board' && styles.appearanceTabTextActive]}>
+                  {isRTL ? 'الرقعة' : 'Squares'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.appearanceTab, appearanceTab === 'pieces' && styles.appearanceTabActive]}
+                onPress={() => setAppearanceTab('pieces')}
+              >
+                <Text style={[styles.appearanceTabText, appearanceTab === 'pieces' && styles.appearanceTabTextActive]}>
+                  {isRTL ? 'القطع' : 'Pieces'}
+                </Text>
               </TouchableOpacity>
             </View>
             <ScrollView
@@ -1419,7 +1633,8 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
               keyboardShouldPersistTaps="handled"
               nestedScrollEnabled
             >
-              {CHESS_BOARD_THEMES.map((t) => {
+              {appearanceTab === 'board'
+                ? CHESS_BOARD_THEMES.map((t) => {
                 const selected = t.id === boardThemeId;
                 return (
                   <TouchableOpacity
@@ -1457,7 +1672,36 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
                     )}
                   </TouchableOpacity>
                 );
-              })}
+              })
+                : CHESS_PIECE_SETS.map((p) => {
+                    const selected = p.id === pieceSetId;
+                    const previewUri = lichessPieceSvgUrl(p.id, 'wN');
+                    return (
+                      <TouchableOpacity
+                        key={p.id}
+                        style={[styles.themeCard, selected && styles.themeCardSelected]}
+                        onPress={() => selectPieceSet(p.id)}
+                        activeOpacity={0.85}
+                      >
+                        <View
+                          style={[
+                            styles.piecePreviewBox,
+                            { borderColor: selected ? COLORS.primary : COLORS.border },
+                          ]}
+                        >
+                          <LichessPieceSvg width={44} height={44} uri={previewUri} />
+                        </View>
+                        <Text style={styles.themeName} numberOfLines={1}>
+                          {isRTL ? p.nameAr : p.nameEn}
+                        </Text>
+                        {selected && (
+                          <View style={styles.themeSelectedBadge}>
+                            <Text style={styles.themeSelectedBadgeText}>✓</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -1479,7 +1723,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
               )}
               <TouchableOpacity
                 style={[styles.gameOverButton, styles.gameOverBackBtn]}
-                onPress={() => navigation.goBack()}
+                onPress={handleBack}
               >
                 <Text style={styles.gameOverButtonText}>Back to Lobby</Text>
               </TouchableOpacity>
@@ -1590,6 +1834,43 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
     fontSize: 22,
     paddingHorizontal: 4,
+  },
+  appearanceTabRow: {
+    flexDirection: 'row',
+    marginBottom: 10,
+    gap: 8,
+  },
+  appearanceTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+  },
+  appearanceTabActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.background,
+  },
+  appearanceTabText: {
+    color: COLORS.textGray,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  appearanceTabTextActive: {
+    color: COLORS.primary,
+  },
+  piecePreviewBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    borderWidth: 1,
+    backgroundColor: '#F0D9B5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    overflow: 'hidden',
   },
   themeGrid: {
     flexDirection: 'row',
