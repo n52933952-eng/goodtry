@@ -2,6 +2,7 @@ import React, { useMemo, type ReactNode } from 'react';
 import { View, Text, Image, StyleSheet } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
+import { getMatchDisplayStatus } from '../utils/footballMatchStatus';
 
 export type FootballMatchCardMatch = {
   _id?: string;
@@ -18,6 +19,7 @@ export type FootballMatchCardMatch = {
   };
   goals?: { home?: number; away?: number };
   league?: { name?: string; logo?: string };
+  displayStatus?: { kind: string; label: string; elapsed?: number | null };
   homeTeam?: { name?: string };
   awayTeam?: { name?: string };
   homeScore?: number;
@@ -104,6 +106,17 @@ const FootballMatchCard: React.FC<Props> = ({
           fontSize: 11,
           fontWeight: 'bold',
         },
+        finishedBadge: {
+          backgroundColor: '#4B5563',
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 4,
+        },
+        finishedBadgeText: {
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
         halfTimeBadge: {
           backgroundColor: '#F97316',
           paddingHorizontal: 8,
@@ -111,6 +124,28 @@ const FootballMatchCard: React.FC<Props> = ({
           borderRadius: 4,
         },
         halfTimeBadgeText: {
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+        extraTimeBadge: {
+          backgroundColor: '#D97706',
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 4,
+        },
+        extraTimeBadgeText: {
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+        penBadge: {
+          backgroundColor: '#7C3AED',
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 4,
+        },
+        penBadgeText: {
           color: '#FFFFFF',
           fontSize: 11,
           fontWeight: 'bold',
@@ -200,12 +235,7 @@ const FootballMatchCard: React.FC<Props> = ({
 
   const short = String(match.fixture?.status?.short || match.status || '').trim();
   const events = (match as any).events;
-  const isLiveBadge =
-    short === '1H' ||
-    short === '2H' ||
-    short === 'LIVE' ||
-    short === 'IN_PLAY' ||
-    short === 'PAUSED';
+  const display = getMatchDisplayStatus(match);
 
   /** Same chrome as Football tab (`matchCard`); decoupled from `embedded`. */
   const useFeedFooterShell = feedFooter != null;
@@ -217,14 +247,32 @@ const FootballMatchCard: React.FC<Props> = ({
           <Image source={{ uri: match.league.logo }} style={styles.leagueLogo} />
         ) : null}
         <Text style={styles.leagueName}>{match.league?.name || t('unknownLeague')}</Text>
-        {showStatus && isLiveBadge && (
+        {showStatus && display.kind === 'live' && (
           <View style={styles.liveBadge}>
-            <Text style={styles.liveBadgeText}>🔴 LIVE</Text>
+            <Text style={styles.liveBadgeText}>
+              🔴 LIVE
+              {display.elapsed != null ? ` ${display.elapsed}'` : ''}
+            </Text>
           </View>
         )}
-        {showStatus && short === 'HT' && (
+        {showStatus && display.kind === 'finished' && (
+          <View style={styles.finishedBadge}>
+            <Text style={styles.finishedBadgeText}>FINISHED</Text>
+          </View>
+        )}
+        {showStatus && display.kind === 'halftime' && (
           <View style={styles.halfTimeBadge}>
             <Text style={styles.halfTimeBadgeText}>{t('halfTime')}</Text>
+          </View>
+        )}
+        {showStatus && display.kind === 'extratime' && (
+          <View style={styles.extraTimeBadge}>
+            <Text style={styles.extraTimeBadgeText}>{display.label}</Text>
+          </View>
+        )}
+        {showStatus && display.kind === 'penalties' && (
+          <View style={styles.penBadge}>
+            <Text style={styles.penBadgeText}>{display.label}</Text>
           </View>
         )}
       </View>
@@ -261,7 +309,7 @@ const FootballMatchCard: React.FC<Props> = ({
         </View>
       </View>
 
-      {short === 'FT' && Array.isArray(events) && events.length > 0 && (
+      {(short === 'FT' || display.kind === 'finished') && Array.isArray(events) && events.length > 0 && (
         <View style={styles.eventsContainer}>
           <Text style={styles.eventsTitle}>MATCH EVENTS</Text>
           {events

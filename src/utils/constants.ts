@@ -32,6 +32,8 @@ export const ENDPOINTS = {
   GET_USER: '/api/user/profile',
   // Web-compatible profile endpoint (accepts username OR userId): /api/user/getUserPro/:query
   GET_USER_PROFILE: '/api/user/getUserPro',
+  /** Session user — following/followers after follow on web or another device */
+  GET_ME: '/api/user/me',
   UPDATE_USER: '/api/user/update',
   FOLLOW_USER: '/api/user/follow',
   UNFOLLOW_USER: '/api/user/unfollow',

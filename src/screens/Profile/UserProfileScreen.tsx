@@ -28,11 +28,12 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
+import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
 import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
-  const { user: currentUser, updateUser, logout } = useUser();
+  const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
   const { colors } = useTheme();
   const username =
     usernameParam === 'self' ? currentUser?.username : usernameParam;
@@ -67,6 +68,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const POSTS_PER_PAGE = 9;
   const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
   const activeVideoPostIdRef = useRef<string | null>(null);
+
+  const followingSet = React.useMemo(() => {
+    const ids = (currentUser?.following || []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
+    return new Set(ids);
+  }, [currentUser?.following]);
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 65,
     minimumViewTime: 180,
@@ -128,23 +134,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when resolved username changes
   }, [username]);
 
-  // Keep follow button in sync when user follows/unfollows from another screen.
-  // BUT: if the API explicitly says isFollowedByMe=false (e.g. we were removed as a follower)
-  // while local context still thinks we're following, trust the API.
+  // Button label: following[] (from /me, includes web) OR server isFollowedByMe.
   useEffect(() => {
-    if (profileUser && currentUser) {
-      const profileUserId = profileUser._id?.toString();
-      const isFollowingFromContext = (currentUser.following || []).some(
-        (id: any) => id?.toString() === profileUserId
-      );
-      // API says not following but local state says following → we were removed; trust API
-      if (profileUser.isFollowedByMe === false && isFollowingFromContext) {
-        setFollowing(false);
-      } else {
-        setFollowing(isFollowingFromContext);
-      }
-    }
-  }, [profileUser?._id, profileUser?.isFollowedByMe, currentUser?.following]);
+    if (!profileUser || !currentUser) return;
+    setFollowing(isUserFollowedByMe(profileUser, followingSet));
+  }, [profileUser?._id, profileUser?.isFollowedByMe, followingSet]);
 
   useEffect(() => {
     if (!profileUser?._id) {
@@ -175,24 +169,32 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }, [])
   );
 
-  // Refresh profile when screen comes into focus (e.g., returning from UpdateProfile or CreatePost)
+  // Refresh profile when screen comes into focus (own profile or after follow on web)
   useFocusEffect(
     React.useCallback(() => {
       const isOwnProfile = username === currentUser?.username || username === 'self';
-      
-      // If viewing own profile, clear state first to prevent showing stale data
+
       if (isOwnProfile) {
         setProfileUser(null);
         setPosts([]);
         setLoading(true);
-        fetchUserProfile();
-        fetchUserPosts(false); // Also refresh posts to show newly created posts
+        void refetchSessionUser?.().then((me) => {
+          fetchUserProfile(me?.following);
+        });
+        fetchUserPosts(false);
         if (currentUser?._id) {
           apiService
             .get(`${ENDPOINTS.STORY_STATUS}/${currentUser._id}`)
             .then((d) => setStoryMeta(d))
             .catch(() => setStoryMeta({ active: false }));
         }
+        return;
+      }
+
+      if (username) {
+        void refetchSessionUser?.().then((me) => {
+          fetchUserProfile(me?.following);
+        });
       }
     }, [username, currentUser?.username, currentUser?._id])
   );
@@ -223,7 +225,12 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   }, [currentUser?.profilePic, currentUser?.name, currentUser?.username, currentUser?.bio, currentUser?.country, username]);
 
-  const fetchUserProfile = async () => {
+  const buildFollowingSet = (followingList?: unknown[]) => {
+    const ids = (followingList ?? currentUser?.following ?? []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
+    return new Set(ids);
+  };
+
+  const fetchUserProfile = async (followingOverride?: unknown[]) => {
     // Store current username to verify response is still relevant
     const currentUsername = username;
     
@@ -237,21 +244,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       }
       
       setProfileUser(data);
-      
-      // Check UserContext first for immediate accuracy (avoids double follow)
-      const profileUserId = data._id?.toString();
-      const isFollowingFromContext = (currentUser?.following || []).some(
-        (id: any) => id?.toString() === profileUserId
-      );
-      
-      // Prefer backend-calculated follow state (works even if follower list is capped for scalability)
-      // But also verify against UserContext to ensure consistency
-      if (typeof data?.isFollowedByMe === 'boolean') {
-        setFollowing(data.isFollowedByMe);
-      } else {
-        // Profile API omits full follower id lists; use context (login/follow actions) only
-        setFollowing(isFollowingFromContext);
-      }
+      setFollowing(isUserFollowedByMe(data, buildFollowingSet(followingOverride)));
     } catch (error: any) {
       // Only show error if we're still viewing the same profile
       if (currentUsername === username) {
@@ -596,8 +589,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              fetchUserProfile();
-              fetchUserPosts(false);
+              void refetchSessionUser?.().then((me) => {
+                fetchUserProfile(me?.following);
+                fetchUserPosts(false);
+              });
             }}
           />
         }

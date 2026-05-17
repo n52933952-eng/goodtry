@@ -25,6 +25,8 @@ interface UserContextType {
   login: (userData: User) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (updates: Partial<User>) => void;
+  /** Reload following/followers from server (e.g. followed someone on web). Returns fresh lists. */
+  refetchSessionUser: () => Promise<{ following?: string[]; followers?: string[] } | void>;
   isLoading: boolean;
 }
 
@@ -269,9 +271,64 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const userRef = useRef(user);
+  userRef.current = user;
+
+  const refetchSessionUser = async () => {
+    const prev = userRef.current;
+    if (!prev?._id) return;
+    try {
+      const [meData, followingList] = await Promise.all([
+        apiService.get(ENDPOINTS.GET_ME).catch(() => null),
+        apiService.get(ENDPOINTS.GET_FOLLOWING_USERS).catch(() => null),
+      ]);
+
+      const data = meData && !meData?.error && meData?._id ? meData : null;
+
+      // Follow collection via /following (same source as web); /me may lag until backend deploy.
+      let following: string[] = prev.following;
+      if (Array.isArray(followingList) && followingList.length > 0) {
+        following = followingList
+          .map((u: { _id?: string }) => u?._id)
+          .filter((id): id is string => Boolean(id));
+      } else if (data && Array.isArray(data.following)) {
+        following = data.following;
+      }
+
+      let followers: string[] = prev.followers;
+      if (data && Array.isArray(data.followers)) {
+        followers = data.followers;
+      }
+
+      if (!data?._id && following === prev.following) return;
+
+      setUser({
+        ...prev,
+        ...(data || {}),
+        _id: data?._id || data?.id || prev._id,
+        following,
+        followers,
+      });
+      return { following, followers };
+    } catch {
+      /* ignore */
+      return;
+    }
+  };
+
+  // When app returns to foreground, sync follow lists (web may have changed them).
+  useEffect(() => {
+    if (!user?._id) return;
+    const onActive = (state: AppStateStatus) => {
+      if (state === 'active') void refetchSessionUser();
+    };
+    const sub = AppState.addEventListener('change', onActive);
+    return () => sub.remove();
+  }, [user?._id]);
+
   return (
     <UserContext.Provider
-      value={{ user, setUser, login, logout, updateUser, isLoading }}
+      value={{ user, setUser, login, logout, updateUser, refetchSessionUser, isLoading }}
     >
       {children}
     </UserContext.Provider>

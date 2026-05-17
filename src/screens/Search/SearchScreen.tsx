@@ -17,9 +17,10 @@ import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
 
 const SearchScreen = ({ navigation }: any) => {
-  const { user: currentUser, updateUser } = useUser();
+  const { user: currentUser, updateUser, refetchSessionUser } = useUser();
   const { colors } = useTheme();
   const showToast = useShowToast();
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,27 +32,49 @@ const SearchScreen = ({ navigation }: any) => {
   const [updatingUserIds, setUpdatingUserIds] = useState<Record<string, boolean>>({});
 
   const followingSet = useMemo(() => {
-    const ids = (currentUser?.following || []).map((id: any) => id?.toString()).filter(Boolean);
+    const ids = (currentUser?.following || []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
     return new Set(ids);
   }, [currentUser?.following]);
 
+  const stampFollowFlags = (users: any[]) =>
+    users.map((u) => ({
+      ...u,
+      isFollowedByMe: isUserFollowedByMe(u, followingSet),
+    }));
+
   useEffect(() => {
-    fetchSuggestedUsers();
+    void (async () => {
+      await refetchSessionUser?.();
+      fetchSuggestedUsers();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Refresh when screen comes into focus to pick up follow/unfollow changes from other screens
+  // Sync buttons after follow on web or another screen
   useFocusEffect(
     React.useCallback(() => {
-      // Only refresh if we're not searching (showing suggested users)
-      if (!searchQuery.trim()) {
-        // Small delay to ensure UserContext has updated
-        const timer = setTimeout(() => {
+      let cancelled = false;
+      void (async () => {
+        await refetchSessionUser?.();
+        if (cancelled) return;
+        if (!searchQuery.trim()) {
           fetchSuggestedUsers();
-        }, 100);
-        return () => clearTimeout(timer);
-      }
+        } else {
+          handleSearch(searchQuery);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
     }, [searchQuery])
   );
+
+  // Re-stamp list rows when /me following[] updates (no extra network)
+  useEffect(() => {
+    setSuggestedUsers((prev) => (prev.length ? stampFollowFlags(prev) : prev));
+    setSearchResults((prev) => (prev.length ? stampFollowFlags(prev) : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followingSet]);
 
   useEffect(() => {
     if (searchQuery.trim()) {
@@ -102,7 +125,7 @@ const SearchScreen = ({ navigation }: any) => {
         // Only include real users (must have a valid username)
         return u.username.trim().length > 0;
       });
-      setSuggestedUsers(filtered);
+      setSuggestedUsers(stampFollowFlags(filtered));
     } catch (error) {
       console.error('Error fetching suggested users:', error);
       setSuggestedUsers([]);
@@ -114,10 +137,14 @@ const SearchScreen = ({ navigation }: any) => {
   };
 
   const handleRefresh = () => {
-    if (!searchQuery.trim()) {
-      // Only refresh suggested users if not searching
-      fetchSuggestedUsers(true);
-    }
+    void (async () => {
+      await refetchSessionUser?.();
+      if (!searchQuery.trim()) {
+        fetchSuggestedUsers(true);
+      } else {
+        handleSearch(searchQuery);
+      }
+    })();
   };
 
   const handleSearch = async (query: string) => {
@@ -140,7 +167,7 @@ const SearchScreen = ({ navigation }: any) => {
         // Only include real users (must have a valid username)
         return u.username.trim().length > 0;
       });
-      setSearchResults(filtered);
+      setSearchResults(stampFollowFlags(filtered));
     } catch (error) {
       console.error('Error searching users:', error);
       setSearchResults([]);
@@ -165,11 +192,7 @@ const SearchScreen = ({ navigation }: any) => {
 
     if (updatingUserIds[targetId]) return;
 
-    // Prefer isFollowedByMe from API (accurate) over stale followingSet
-    const isCurrentlyFollowing =
-      targetUser.isFollowedByMe !== undefined
-        ? targetUser.isFollowedByMe
-        : followingSet.has(targetId);
+    const isCurrentlyFollowing = isUserFollowedByMe(targetUser, followingSet);
 
     setUpdatingUserIds((prev) => ({ ...prev, [targetId]: true }));
     try {
@@ -236,11 +259,7 @@ const SearchScreen = ({ navigation }: any) => {
   const renderUser = ({ item }: { item: any }) => {
     const userId = item?._id?.toString() || '';
     const isUpdating = !!(userId && updatingUserIds[userId]);
-    // Prefer isFollowedByMe from API (set at fetch time and updated on toggle)
-    // Fall back to stale followingSet only when field is absent
-    const isFollowing = userId
-      ? (item.isFollowedByMe !== undefined ? item.isFollowedByMe : followingSet.has(userId))
-      : false;
+    const isFollowing = isUserFollowedByMe(item, followingSet);
 
     return (
       <View

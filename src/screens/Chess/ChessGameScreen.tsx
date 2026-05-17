@@ -7,10 +7,9 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  Modal,
-  Pressable,
-  ScrollView,
+  FlatList,
   Image,
+  ListRenderItem,
   DeviceEventEmitter,
 } from 'react-native';
 import LichessPieceSvg from '../../components/LichessPieceSvg';
@@ -33,15 +32,22 @@ import {
   DEFAULT_CHESS_BOARD_THEME_ID,
   BOARD_THEME_STORAGE_KEY,
   getBoardThemeById,
+  type ChessBoardTheme,
 } from '../../utils/chessThemes';
 import {
   CHESS_PIECE_SETS,
   DEFAULT_CHESS_PIECE_SET_ID,
   PIECE_SET_STORAGE_KEY,
   lichessPieceSvgUrl,
+  type ChessPieceSet,
 } from '../../utils/chessPieceSets';
 
 const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+/** Floating appearance panel — explicit scroll height so Android can scroll the grid. */
+const APPEARANCE_PANEL_MAX_H = Math.min(SCREEN_HEIGHT * 0.4, 300);
+const APPEARANCE_PANEL_SCROLL_H = APPEARANCE_PANEL_MAX_H - 48;
+const APPEARANCE_THEME_CARD_W = (width - 12 * 2 - 12 * 2 - 10) / 2;
 
 /** Delay before showing the Game Over overlay (review / lobby) so the final position is visible. */
 const GAME_OVER_OVERLAY_DELAY_MS = 4000;
@@ -165,11 +171,12 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const reviewPendingIndexRef = useRef<number | null>(null);
   /** User-selectable board palette (light/dark square colors), persisted in AsyncStorage. */
   const [boardThemeId, setBoardThemeId] = useState<string>(DEFAULT_CHESS_BOARD_THEME_ID);
-  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  /** Dropdown under header: live preview on board; dismiss only via ✕. */
+  const [appearancePanel, setAppearancePanel] = useState<'board' | 'pieces' | null>(null);
+  const [appearancePanelTop, setAppearancePanelTop] = useState(56);
   const boardTheme = getBoardThemeById(boardThemeId);
   /** Piece graphics (Lichess CDN), persisted like web. */
   const [pieceSetId, setPieceSetId] = useState<string>(DEFAULT_CHESS_PIECE_SET_ID);
-  const [appearanceTab, setAppearanceTab] = useState<'board' | 'pieces'>('board');
   /** If the user picks a theme before the async hydrate finishes, do not let hydrate overwrite their choice. */
   const userPickedBoardThemeRef = useRef(false);
   const userPickedPieceSetRef = useRef(false);
@@ -214,7 +221,6 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const selectBoardTheme = useCallback(async (id: string) => {
     userPickedBoardThemeRef.current = true;
     setBoardThemeId(id);
-    setThemePickerOpen(false);
     try {
       await AsyncStorage.setItem(BOARD_THEME_STORAGE_KEY, id);
     } catch {
@@ -225,13 +231,117 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const selectPieceSet = useCallback(async (id: string) => {
     userPickedPieceSetRef.current = true;
     setPieceSetId(id);
-    setThemePickerOpen(false);
     try {
       await AsyncStorage.setItem(PIECE_SET_STORAGE_KEY, id);
     } catch {
       /* ignore */
     }
   }, []);
+
+  const toggleAppearancePanel = useCallback((panel: 'board' | 'pieces') => {
+    setAppearancePanel((prev) => (prev === panel ? null : panel));
+  }, []);
+
+  const headerPieceIconUri = useMemo(
+    () =>
+      lichessPieceSvgUrl(
+        CHESS_PIECE_SETS.some((s) => s.id === pieceSetId) ? pieceSetId : DEFAULT_CHESS_PIECE_SET_ID,
+        'wN',
+      ),
+    [pieceSetId],
+  );
+
+  const appearanceListData = useMemo(
+    () => (appearancePanel === 'board' ? CHESS_BOARD_THEMES : CHESS_PIECE_SETS),
+    [appearancePanel],
+  );
+
+  const renderAppearanceBoardItem = useCallback(
+    ({ item: t }: { item: ChessBoardTheme }) => {
+      const selected = t.id === boardThemeId;
+      return (
+        <TouchableOpacity
+          style={[
+            styles.themeCard,
+            styles.themeCardSized,
+            selected && styles.themeCardSelected,
+          ]}
+          onPress={() => selectBoardTheme(t.id)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.themePreview}>
+            {[0, 1, 2, 3].map((r) => (
+              <View key={r} style={styles.themePreviewRow}>
+                {[0, 1, 2, 3].map((c) => (
+                  <View
+                    key={c}
+                    style={{
+                      width: 18,
+                      height: 18,
+                      backgroundColor: (r + c) % 2 === 0 ? t.light : t.dark,
+                    }}
+                  />
+                ))}
+              </View>
+            ))}
+          </View>
+          <Text style={styles.themeName} numberOfLines={1}>
+            {isRTL ? t.nameAr : t.nameEn}
+          </Text>
+          {selected && (
+            <View style={styles.themeSelectedBadge}>
+              <Text style={styles.themeSelectedBadgeText}>✓</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      );
+    },
+    [boardThemeId, isRTL, selectBoardTheme],
+  );
+
+  const renderAppearancePieceItem = useCallback(
+    ({ item: p }: { item: ChessPieceSet }) => {
+      const selected = p.id === pieceSetId;
+      const previewUri = lichessPieceSvgUrl(p.id, 'wN');
+      return (
+        <TouchableOpacity
+          style={[
+            styles.themeCard,
+            styles.themeCardSized,
+            selected && styles.themeCardSelected,
+          ]}
+          onPress={() => selectPieceSet(p.id)}
+          activeOpacity={0.85}
+        >
+          <View
+            style={[
+              styles.piecePreviewBox,
+              { borderColor: selected ? COLORS.primary : COLORS.border },
+            ]}
+          >
+            <LichessPieceSvg width={44} height={44} uri={previewUri} />
+          </View>
+          <Text style={styles.themeName} numberOfLines={1}>
+            {isRTL ? p.nameAr : p.nameEn}
+          </Text>
+          {selected && (
+            <View style={styles.themeSelectedBadge}>
+              <Text style={styles.themeSelectedBadgeText}>✓</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      );
+    },
+    [isRTL, pieceSetId, selectPieceSet],
+  );
+
+  const renderAppearanceItem: ListRenderItem<ChessBoardTheme | ChessPieceSet> = useCallback(
+    (info) =>
+      appearancePanel === 'board'
+        ? renderAppearanceBoardItem(info as { item: ChessBoardTheme })
+        : renderAppearancePieceItem(info as { item: ChessPieceSet }),
+    [appearancePanel, renderAppearanceBoardItem, renderAppearancePieceItem],
+  );
 
   // Track current roomId to prevent processing events from old rooms
   const currentRoomIdRef = useRef<string | null>(null);
@@ -1440,29 +1550,52 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-          <Text style={styles.backArrow}>←</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          {isSpectator ? 'Watching Chess Game' : 'Chess Game'}
-        </Text>
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            onPress={() => {
-              setAppearanceTab('board');
-              setThemePickerOpen(true);
-            }}
-            style={styles.themeButton}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Text style={styles.themeButtonIcon}>🎨</Text>
+      <View
+        style={styles.headerAnchor}
+        onLayout={(e) => {
+          const { height } = e.nativeEvent.layout;
+          if (height > 0) setAppearancePanelTop(height);
+        }}
+      >
+        <View style={styles.header}>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+            <Text style={styles.backArrow}>←</Text>
           </TouchableOpacity>
-          {!isSpectator && !gameOver && (
-            <TouchableOpacity onPress={handleResign} style={styles.resignButton}>
-              <Text style={styles.resignText}>Resign</Text>
+          <Text style={styles.headerTitle}>
+            {isSpectator ? 'Watching Chess Game' : 'Chess Game'}
+          </Text>
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              onPress={() => toggleAppearancePanel('board')}
+              style={[
+                styles.appearanceHeaderBtn,
+                appearancePanel === 'board' && styles.appearanceHeaderBtnActive,
+              ]}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel={isRTL ? 'ألوان الرقعة' : 'Board colors'}
+            >
+              <Text style={styles.appearanceHeaderBtnIcon}>🎨</Text>
             </TouchableOpacity>
-          )}
+            <TouchableOpacity
+              onPress={() => toggleAppearancePanel('pieces')}
+              style={[
+                styles.appearanceHeaderBtn,
+                styles.appearanceHeaderBtnPieces,
+                appearancePanel === 'pieces' && styles.appearanceHeaderBtnActive,
+              ]}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel={isRTL ? 'شكل القطع' : 'Piece style'}
+            >
+              <View style={styles.appearanceHeaderPieceIcon}>
+                <LichessPieceSvg width={22} height={22} uri={headerPieceIconUri} />
+              </View>
+            </TouchableOpacity>
+            {!isSpectator && !gameOver && (
+              <TouchableOpacity onPress={handleResign} style={styles.resignButton}>
+                <Text style={styles.resignText}>Resign</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </View>
 
@@ -1496,7 +1629,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       <View style={styles.boardWrapper}>
         <View style={styles.boardContainer}>
           <ChessBoard
-            key={`board-${boardThemeId}-${pieceSetId}`}
+            key={`board-${orientation}-${reviewMode ? 'review' : 'live'}`}
             fen={reviewMode ? reviewFen : fen}
             orientation={orientation}
             onSquarePress={handleSquarePress}
@@ -1583,129 +1716,45 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         </View>
       </View>
 
-      <Modal
-        visible={themePickerOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setThemePickerOpen(false)}
-      >
-        <Pressable
-          style={styles.themeModalBackdrop}
-          onPress={() => setThemePickerOpen(false)}
+      {appearancePanel != null && (
+        <View
+          style={[styles.appearanceDropPanel, { top: appearancePanelTop }]}
+          pointerEvents="box-none"
         >
-          <Pressable
-            style={styles.themeModalCard}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={styles.themeModalHeader}>
-              <Text style={styles.themeModalTitle}>
-                {isRTL ? 'مظهر الرقعة والقطع' : 'Board & pieces'}
+          <View style={styles.appearanceDropPanelInner} pointerEvents="auto">
+            <View style={styles.appearanceDropHeader}>
+              <Text style={styles.appearanceDropTitle}>
+                {appearancePanel === 'board'
+                  ? (isRTL ? 'ألوان الرقعة' : 'Square colors')
+                  : (isRTL ? 'شكل القطع' : 'Piece style')}
               </Text>
               <TouchableOpacity
-                onPress={() => setThemePickerOpen(false)}
+                onPress={() => setAppearancePanel(null)}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                accessibilityLabel={isRTL ? 'إغلاق' : 'Close'}
               >
-                <Text style={styles.themeModalClose}>✕</Text>
+                <Text style={styles.appearanceDropClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <View style={styles.appearanceTabRow}>
-              <TouchableOpacity
-                style={[styles.appearanceTab, appearanceTab === 'board' && styles.appearanceTabActive]}
-                onPress={() => setAppearanceTab('board')}
-              >
-                <Text style={[styles.appearanceTabText, appearanceTab === 'board' && styles.appearanceTabTextActive]}>
-                  {isRTL ? 'الرقعة' : 'Squares'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.appearanceTab, appearanceTab === 'pieces' && styles.appearanceTabActive]}
-                onPress={() => setAppearanceTab('pieces')}
-              >
-                <Text style={[styles.appearanceTabText, appearanceTab === 'pieces' && styles.appearanceTabTextActive]}>
-                  {isRTL ? 'القطع' : 'Pieces'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView
-              style={styles.themeModalScroll}
-              contentContainerStyle={styles.themeGrid}
+            <FlatList
+              key={appearancePanel}
+              data={appearanceListData}
+              renderItem={renderAppearanceItem}
+              keyExtractor={(item) => item.id}
+              numColumns={2}
+              style={styles.appearanceDropScroll}
+              contentContainerStyle={styles.themeGridFlatList}
+              columnWrapperStyle={styles.themeGridRow}
               showsVerticalScrollIndicator
-              keyboardShouldPersistTaps="handled"
               nestedScrollEnabled
-            >
-              {appearanceTab === 'board'
-                ? CHESS_BOARD_THEMES.map((t) => {
-                const selected = t.id === boardThemeId;
-                return (
-                  <TouchableOpacity
-                    key={t.id}
-                    style={[
-                      styles.themeCard,
-                      selected && styles.themeCardSelected,
-                    ]}
-                    onPress={() => selectBoardTheme(t.id)}
-                    activeOpacity={0.85}
-                  >
-                    <View style={styles.themePreview}>
-                      {[0, 1, 2, 3].map((r) => (
-                        <View key={r} style={styles.themePreviewRow}>
-                          {[0, 1, 2, 3].map((c) => (
-                            <View
-                              key={c}
-                              style={{
-                                width: 18,
-                                height: 18,
-                                backgroundColor: (r + c) % 2 === 0 ? t.light : t.dark,
-                              }}
-                            />
-                          ))}
-                        </View>
-                      ))}
-                    </View>
-                    <Text style={styles.themeName} numberOfLines={1}>
-                      {isRTL ? t.nameAr : t.nameEn}
-                    </Text>
-                    {selected && (
-                      <View style={styles.themeSelectedBadge}>
-                        <Text style={styles.themeSelectedBadgeText}>✓</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })
-                : CHESS_PIECE_SETS.map((p) => {
-                    const selected = p.id === pieceSetId;
-                    const previewUri = lichessPieceSvgUrl(p.id, 'wN');
-                    return (
-                      <TouchableOpacity
-                        key={p.id}
-                        style={[styles.themeCard, selected && styles.themeCardSelected]}
-                        onPress={() => selectPieceSet(p.id)}
-                        activeOpacity={0.85}
-                      >
-                        <View
-                          style={[
-                            styles.piecePreviewBox,
-                            { borderColor: selected ? COLORS.primary : COLORS.border },
-                          ]}
-                        >
-                          <LichessPieceSvg width={44} height={44} uri={previewUri} />
-                        </View>
-                        <Text style={styles.themeName} numberOfLines={1}>
-                          {isRTL ? p.nameAr : p.nameEn}
-                        </Text>
-                        {selected && (
-                          <View style={styles.themeSelectedBadge}>
-                            <Text style={styles.themeSelectedBadgeText}>✓</Text>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
+              keyboardShouldPersistTaps="handled"
+              scrollEnabled
+              bounces
+              overScrollMode="always"
+            />
+          </View>
+        </View>
+      )}
 
       {gameOver && gameOverOverlayVisible && !reviewMode && (
         <View style={styles.gameOverOverlay}>
@@ -1740,6 +1789,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+    position: 'relative',
   },
   loadingContainer: {
     flex: 1,
@@ -1752,6 +1802,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginTop: 16,
   },
+  headerAnchor: {
+    zIndex: 2,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1759,6 +1812,7 @@ const styles = StyleSheet.create({
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.background,
   },
   backButton: {
     padding: 5,
@@ -1784,82 +1838,79 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  themeButton: {
+  appearanceHeaderBtn: {
     paddingHorizontal: 8,
     paddingVertical: 4,
-    marginRight: 4,
+    marginRight: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
-  themeButtonIcon: {
+  appearanceHeaderBtnActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.backgroundLight,
+  },
+  appearanceHeaderBtnIcon: {
     fontSize: 20,
   },
-  themeModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
+  appearanceHeaderBtnPieces: {
+    width: 36,
+    height: 32,
     alignItems: 'center',
-    padding: 20,
+    justifyContent: 'center',
   },
-  themeModalCard: {
-    width: '100%',
-    maxWidth: 420,
-    maxHeight: Math.min(SCREEN_HEIGHT * 0.88, 640),
-    backgroundColor: COLORS.backgroundLight,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingTop: 16,
-    paddingBottom: 8,
-    paddingHorizontal: 14,
-    flexDirection: 'column',
+  appearanceHeaderPieceIcon: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F0D9B5',
+    borderRadius: 4,
     overflow: 'hidden',
   },
-  themeModalScroll: {
-    flexGrow: 1,
-    flexShrink: 1,
-    maxHeight: Math.min(SCREEN_HEIGHT * 0.72, 520),
+  /** Above board + player rows so scroll gestures are not stolen. */
+  appearanceDropPanel: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    zIndex: 300,
+    elevation: 24,
   },
-  themeModalHeader: {
+  appearanceDropPanelInner: {
+    maxHeight: APPEARANCE_PANEL_MAX_H,
+    overflow: 'hidden',
+    backgroundColor: COLORS.backgroundLight,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 12,
+  },
+  appearanceDropHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 4,
-    marginBottom: 12,
+    marginBottom: 8,
+    paddingHorizontal: 2,
   },
-  themeModalTitle: {
+  appearanceDropTitle: {
     color: COLORS.text,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
   },
-  themeModalClose: {
+  appearanceDropClose: {
     color: COLORS.textGray,
     fontSize: 22,
     paddingHorizontal: 4,
   },
-  appearanceTabRow: {
-    flexDirection: 'row',
-    marginBottom: 10,
-    gap: 8,
-  },
-  appearanceTab: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.background,
-    alignItems: 'center',
-  },
-  appearanceTabActive: {
-    borderColor: COLORS.primary,
-    backgroundColor: COLORS.background,
-  },
-  appearanceTabText: {
-    color: COLORS.textGray,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  appearanceTabTextActive: {
-    color: COLORS.primary,
+  appearanceDropScroll: {
+    height: APPEARANCE_PANEL_SCROLL_H,
   },
   piecePreviewBox: {
     width: 56,
@@ -1872,15 +1923,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     overflow: 'hidden',
   },
-  themeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  themeGridFlatList: {
+    paddingBottom: 28,
+    paddingTop: 2,
+  },
+  themeGridRow: {
     justifyContent: 'space-between',
-    paddingBottom: 36,
-    paddingTop: 4,
+    marginBottom: 10,
   },
   themeCard: {
-    width: '48%',
     backgroundColor: COLORS.background,
     borderRadius: 12,
     borderWidth: 1,
@@ -1890,6 +1941,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     alignItems: 'center',
     position: 'relative',
+  },
+  themeCardSized: {
+    width: APPEARANCE_THEME_CARD_W,
   },
   themeCardSelected: {
     borderColor: COLORS.primary,
