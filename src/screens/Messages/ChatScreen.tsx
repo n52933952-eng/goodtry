@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   View,
   Text,
   FlatList,
   TextInput,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   ActivityIndicator,
   Image,
@@ -27,7 +28,6 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
-
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
 
@@ -124,6 +124,9 @@ const ChatScreen = ({ route, navigation }: any) => {
   const hasMarkedSeenRef = useRef(false); // Prevent duplicate markmessageasSeen emits
   const lastForegroundRefreshAtRef = useRef(0); // Debounce app-active refresh
   const ignoreNextForegroundRefreshRef = useRef(false); // Image picker can trigger inactive->active
+  const lastChatPresenceRefreshAtRef = useRef(0);
+  const CHAT_PRESENCE_REFRESH_FOCUS_MIN_MS = 10_000;
+
   const lastScrollOffsetRef = useRef(0);
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
   const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
@@ -133,6 +136,8 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
+  const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
+  const isChatFocused = useIsFocused();
 
   const toIdString = useCallback((value: any): string => {
     if (!value) return '';
@@ -158,6 +163,10 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const routeConversationIdStr = useMemo(() => toIdString(conversationId), [conversationId, toIdString]);
   const routeGroupConversationIdStr = useMemo(() => toIdString(groupConversation?._id), [groupConversation?._id, toIdString]);
+
+  useEffect(() => {
+    lastChatPresenceRefreshAtRef.current = 0;
+  }, [user?._id, routeConversationIdStr, userId, otherUser?._id]);
 
   const currentUserIdStr = useMemo(() => (user?._id?.toString?.() ?? String(user?._id ?? '')), [user?._id]);
   
@@ -199,6 +208,15 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
     if (!url.includes('/image/upload/')) return url;
     return url.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
+  }, []);
+
+  const getVideoThumbnailUrl = useCallback((rawUrl: string) => {
+    const url = String(rawUrl || '');
+    if (!url) return url;
+    if (url.includes('res.cloudinary.com') && url.includes('/video/upload/')) {
+      return url.replace('/video/upload/', '/video/upload/so_0,f_jpg,w_420,h_280,c_fill/');
+    }
+    return url.replace(/\.(mp4|webm|ogg|mov)(\?.*)?$/i, '.jpg$2');
   }, []);
 
   const handleNewMessage = useCallback((data: any) => {
@@ -545,7 +563,11 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   useFocusEffect(
     useCallback(() => {
-      refreshPresenceSubscription();
+      const now = Date.now();
+      if (now - lastChatPresenceRefreshAtRef.current >= CHAT_PRESENCE_REFRESH_FOCUS_MIN_MS) {
+        lastChatPresenceRefreshAtRef.current = now;
+        refreshPresenceSubscription();
+      }
     }, [refreshPresenceSubscription])
   );
   
@@ -1084,11 +1106,52 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const CHAT_MEDIA_SIZE = 220;
 
-  const buildChatVideoHtml = (videoUrl: string) => {
+  const buildChatVideoHtml = (videoUrl: string, autoplay = false) => {
     const optimized = optimizeCloudinaryMediaUrl(videoUrl, 'video');
     const safe = String(optimized).replace(/"/g, '&quot;').replace(/</g, '');
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata" src="${safe}"></video></body></html>`;
+    const autoplayAttr = autoplay ? ' autoplay' : '';
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata"${autoplayAttr} src="${safe}"></video></body></html>`;
   };
+
+  const openSharedPostDetail = useCallback(
+    (postId: string) => {
+      setSharedPostVideoPlaying({});
+      const params = { postId, fromScreen: 'Chat' as const };
+      // Chat lives on the root stack; use nested navigation (same pattern as Post.tsx → Feed).
+      // Do not pass raw `state` into CommonActions — it can merge incorrectly and land on FeedScreen only.
+      let nav: any = navigation;
+      for (let i = 0; i < 8 && nav; i++) {
+        const names = nav.getState?.()?.routeNames;
+        if (Array.isArray(names) && names.includes('MainTabs')) {
+          nav.navigate('MainTabs', {
+            screen: 'Feed',
+            params: {
+              screen: 'PostDetail',
+              params,
+            },
+          });
+          return;
+        }
+        nav = nav.getParent?.();
+      }
+      navigation.navigate('MainTabs', {
+        screen: 'Feed',
+        params: {
+          screen: 'PostDetail',
+          params,
+        },
+      });
+    },
+    [navigation]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setSharedPostVideoPlaying({});
+      };
+    }, [])
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1145,6 +1208,8 @@ const ChatScreen = ({ route, navigation }: any) => {
       : String(item?.text || '');
     const sharedPostImage = String(sharedPost?.img || '');
     const sharedPostHasVideo = !!sharedPostImage && isVideoUrl(sharedPostImage);
+    const sharedVideoMsgKey = String(item._id || item._clientMsgId || '');
+    const isSharedPostVideoPlaying = !!sharedPostVideoPlaying[sharedVideoMsgKey];
 
     return (
       <View style={[styles.messageRow, isSenderLeft ? styles.leftRow : styles.rightRow]}>
@@ -1228,17 +1293,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           )}
 
           {sharedPostId ? (
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onPress={() =>
-                navigation.navigate('MainTabs', {
-                  screen: 'Feed',
-                  params: {
-                    screen: 'PostDetail',
-                    params: { postId: sharedPostId },
-                  },
-                })
-              }
+            <View
               style={[styles.sharedPostCard, { borderColor: colors.border, backgroundColor: isSenderLeft ? 'rgba(0,0,0,0.08)' : colors.backgroundLight }]}
             >
               {sharedPost === undefined ? (
@@ -1250,42 +1305,78 @@ const ChatScreen = ({ route, navigation }: any) => {
                 <>
                   {!!sharedPostHasVideo && (
                     <View style={styles.sharedPostMediaWrap}>
-                      <WebView
-                        source={{ html: buildChatVideoHtml(sharedPostImage) }}
-                        style={styles.sharedPostMedia}
-                        allowsFullscreenVideo
-                        mediaPlaybackRequiresUserAction
-                        scrollEnabled={false}
-                        showsVerticalScrollIndicator={false}
-                        showsHorizontalScrollIndicator={false}
-                        androidLayerType="hardware"
-                      />
+                      {isChatFocused && isSharedPostVideoPlaying ? (
+                        <WebView
+                          source={{ html: buildChatVideoHtml(sharedPostImage, true) }}
+                          style={styles.sharedPostMedia}
+                          allowsFullscreenVideo
+                          mediaPlaybackRequiresUserAction={false}
+                          scrollEnabled={false}
+                          showsVerticalScrollIndicator={false}
+                          showsHorizontalScrollIndicator={false}
+                          androidLayerType="hardware"
+                        />
+                      ) : (
+                        <>
+                          <Pressable
+                            style={StyleSheet.absoluteFill}
+                            onPress={() => openSharedPostDetail(sharedPostId)}
+                          >
+                            <Image
+                              source={{ uri: getVideoThumbnailUrl(sharedPostImage) }}
+                              style={styles.sharedPostMedia}
+                              resizeMode="cover"
+                            />
+                          </Pressable>
+                          <TouchableOpacity
+                            style={styles.sharedPostPlayBtn}
+                            activeOpacity={0.85}
+                            onPress={() => {
+                              if (!sharedVideoMsgKey) return;
+                              setSharedPostVideoPlaying((prev) => ({ ...prev, [sharedVideoMsgKey]: true }));
+                            }}
+                          >
+                            <View style={styles.sharedPostPlayCircle}>
+                              <Text style={styles.sharedPostPlayIcon}>▶</Text>
+                            </View>
+                          </TouchableOpacity>
+                        </>
+                      )}
                     </View>
                   )}
-                  {!!sharedPostImage && !sharedPostHasVideo && (
-                    <Image
-                      source={{ uri: optimizeCloudinaryMediaUrl(sharedPostImage, 'image') }}
-                      style={styles.sharedPostImage}
-                      resizeMode="cover"
-                    />
-                  )}
-                  <Text style={[styles.sharedPostAuthor, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}>
-                    {sharedPost?.postedBy?.name || sharedPost?.postedBy?.username || 'Shared post'}
-                  </Text>
-                  {!!sharedPost?.text && (
-                    <Text
-                      numberOfLines={2}
-                      style={[styles.sharedPostText, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}
-                    >
-                      {sharedPost.text}
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={() => openSharedPostDetail(sharedPostId)}
+                  >
+                    {!!sharedPostImage && !sharedPostHasVideo && (
+                      <Image
+                        source={{ uri: optimizeCloudinaryMediaUrl(sharedPostImage, 'image') }}
+                        style={styles.sharedPostImage}
+                        resizeMode="cover"
+                      />
+                    )}
+                    <Text style={[styles.sharedPostAuthor, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}>
+                      {sharedPost?.postedBy?.name || sharedPost?.postedBy?.username || 'Shared post'}
                     </Text>
-                  )}
-                  <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Tap to open post</Text>
+                    {!!sharedPost?.text && (
+                      <Text
+                        numberOfLines={2}
+                        style={[styles.sharedPostText, { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor }]}
+                      >
+                        {sharedPost.text}
+                      </Text>
+                    )}
+                    <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>
+                      {sharedPostHasVideo && isSharedPostVideoPlaying ? 'Tap caption to open post' : 'Tap to open post'}
+                    </Text>
+                  </TouchableOpacity>
                 </>
               ) : (
-                <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Shared post (tap to open)</Text>
+                <TouchableOpacity activeOpacity={0.9} onPress={() => openSharedPostDetail(sharedPostId)}>
+                  <Text style={[styles.sharedPostMeta, { color: colors.textGray }]}>Shared post (tap to open)</Text>
+                </TouchableOpacity>
               )}
-            </TouchableOpacity>
+            </View>
           ) : null}
 
           {!!item.img && !isVideoUrl(item.img) && (
@@ -1306,7 +1397,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             />
           )}
 
-          {!!item.img && isVideoUrl(item.img) && (
+          {!!item.img && isVideoUrl(item.img) && isChatFocused && (
             <View style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
               <WebView
                 source={{ html: buildChatVideoHtml(item.img) }}
@@ -1920,6 +2011,25 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#000',
     marginBottom: 6,
+    position: 'relative',
+  },
+  sharedPostPlayBtn: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sharedPostPlayCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sharedPostPlayIcon: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    marginLeft: 4,
   },
   sharedPostMedia: {
     width: '100%',

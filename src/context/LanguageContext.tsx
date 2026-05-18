@@ -89,6 +89,7 @@ const translations: Record<Language, Record<string, string>> = {
     'editProfile': 'Edit Profile',
     'noPostsYet': 'No posts yet',
     'profilePhoto': 'Profile photo',
+    'viewFullImage': 'View full image',
     
     // Post Detail Screen
     'comments': 'Comments',
@@ -410,6 +411,7 @@ const translations: Record<Language, Record<string, string>> = {
     'editProfile': 'تعديل الملف الشخصي',
     'noPostsYet': 'لا توجد منشورات بعد',
     'profilePhoto': 'الصورة الشخصية',
+    'viewFullImage': 'عرض الصورة كاملة',
     
     // Post Detail Screen
     'comments': 'التعليقات',

@@ -368,14 +368,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
       const shouldPlay = !isFromCurrentUser && !isFromOpenConversation;
 
-      console.log('🔔 [SocketContext] Message notification check:', {
-        sender: messageSenderId,
-        openConversation: openId || 'none',
-        isFromMe: isFromCurrentUser,
-        isFromOpenChat: isFromOpenConversation,
-        willPlaySound: shouldPlay,
-      });
-
       if (shouldPlay) {
         playNotificationSound('message');
         Vibration.vibrate(400);
@@ -402,8 +394,13 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off('newMessage', onNewMessageForSocket);
     socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
     socketService.off('chessGameEnded');
-
-    console.log('🔧 [SocketContext] Installing core socket listeners');
+    // Game busy / available — must clear before re-on; otherwise reconnect / effect re-run stacks duplicates.
+    socketService.off('userBusyChess');
+    socketService.off('userBusyCard');
+    socketService.off('userBusyRace');
+    socketService.off('userAvailableChess');
+    socketService.off('userAvailableCard');
+    socketService.off('userAvailableRace');
 
     socketService.on('presenceSnapshot', (payload: any) => {
       const users = payload?.onlineUsers;
@@ -882,6 +879,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       removeSocketReady();
       removeConnectListener();
       socketService.off('getOnlineUser');
+      socketService.off('callBusy');
+      socketService.off('cancleCall');
       socketService.off('presenceSnapshot');
       socketService.off('presenceUpdate');
       socketService.off(SOCKET_EVENTS.NEW_POST);
@@ -895,6 +894,13 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off('newNotification');
       socketService.off('newMessage', onNewMessageForSocket);
       socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
+      socketService.off('chessGameEnded');
+      socketService.off('userBusyChess');
+      socketService.off('userBusyCard');
+      socketService.off('userBusyRace');
+      socketService.off('userAvailableChess');
+      socketService.off('userAvailableCard');
+      socketService.off('userAvailableRace');
     };
   }, [user?._id, addPost, updatePost, deletePost, playNotificationSound, onNewMessageForSocket]);
 

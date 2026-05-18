@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Pressable,
   Dimensions,
+  useWindowDimensions,
   Modal,
   FlatList,
   ActivityIndicator,
@@ -25,6 +26,22 @@ import { useLanguage } from '../../context/LanguageContext';
 
 const { width: W, height: H } = Dimensions.get('window');
 
+/** Cloudinary: fit inside screen — never crop (full image visible). */
+function storyImageDisplayUrl(rawUrl: string, screenW: number, screenH: number) {
+  let url = String(rawUrl || '');
+  if (!url.includes('res.cloudinary.com') || !url.includes('/image/upload/')) return url;
+  if (url.includes('c_fill')) {
+    url = url.replace(/c_fill[^/]*/g, 'c_limit').replace(/,g_auto/g, '');
+  }
+  const w = Math.max(320, Math.round(screenW));
+  const h = Math.max(480, Math.round(screenH));
+  if (url.includes('/image/upload/c_')) return url;
+  return url.replace(
+    '/image/upload/',
+    `/image/upload/c_limit,w_${w},h_${h},f_auto,q_auto/`,
+  );
+}
+
 const STORY_TAP_NAV_MS = 280;
 const STORY_TAP_LEFT_FRAC = 0.35;
 const STORY_TAP_RIGHT_FRAC = 0.65;
@@ -42,6 +59,7 @@ type Props = { route: { params?: { userId: string } }; navigation: any };
 const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const userId = route.params?.userId;
   const insets = useSafeAreaInsets();
+  const { width: winW, height: winH } = useWindowDimensions();
   const { colors } = useTheme();
   const { t } = useLanguage();
 
@@ -381,7 +399,11 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={styles.mediaWrap}>
         {slide.type === 'image' ? (
           <>
-            <Image source={{ uri: optimizeCloudinaryMediaUrl(slide.url, 'image') }} style={styles.media} resizeMode="cover" />
+            <Image
+              source={{ uri: storyImageDisplayUrl(slide.url, winW, winH) }}
+              style={styles.media}
+              resizeMode="contain"
+            />
             <Pressable
               style={styles.imageHoldOverlay}
               onPressIn={onImageHoldPressIn}
@@ -391,8 +413,8 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
         ) : (
           <>
             <StoryVideo uri={optimizeCloudinaryMediaUrl(slide.url, 'video')} onEnded={onVideoEnd} />
-            <TouchableOpacity style={styles.tapLeft} activeOpacity={1} onPress={goPrev} />
-            <TouchableOpacity style={styles.tapRight} activeOpacity={1} onPress={goNext} />
+            <TouchableOpacity style={[styles.tapLeft, { height: winH }]} activeOpacity={1} onPress={goPrev} />
+            <TouchableOpacity style={[styles.tapRight, { height: winH }]} activeOpacity={1} onPress={goNext} />
           </>
         )}
 
@@ -448,8 +470,8 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
 function StoryVideo({ uri, onEnded }: { uri: string; onEnded: () => void }) {
   const safe = encodeURI(uri);
   const html = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
-<body style="margin:0;background:#000;">
-<video id="v" playsinline webkit-playsinline style="width:100vw;height:100vh;object-fit:contain" src="${safe}"></video>
+<body style="margin:0;background:#000;overflow:hidden;">
+<video id="v" playsinline webkit-playsinline style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain" src="${safe}"></video>
 <script>
 (function(){
   var v=document.getElementById('v');
@@ -530,13 +552,14 @@ const styles = StyleSheet.create({
   headerCloseHit: { padding: 4, marginRight: 2 },
   closeX: { color: '#fff', fontSize: 22, fontWeight: '300' },
   mediaWrap: {
-    flex: 1,
-    width: W,
-    height: H,
-    justifyContent: 'center',
-    alignItems: 'center',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
   },
-  media: { width: W, height: H, backgroundColor: '#000' },
+  media: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+  },
   captionWrap: {
     position: 'absolute',
     left: 20,
@@ -574,16 +597,16 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: 0,
+    bottom: 0,
     width: W * 0.35,
-    height: H,
     zIndex: 5,
   },
   tapRight: {
     position: 'absolute',
     right: 0,
     top: 0,
+    bottom: 0,
     width: W * 0.35,
-    height: H,
     zIndex: 5,
   },
   closeBtn: {

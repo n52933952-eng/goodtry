@@ -155,11 +155,9 @@ class SocketService {
 
   on(event: string, callback: (data: any) => void) {
     if (!this.socket) {
-      console.log(`📋 Socket not initialized yet, queueing listener for: ${event}`);
       this.pendingListeners.push({ event, callback });
       return;
     }
-    console.log(`👂 Setting up listener for event: ${event}`);
     this.socket.on(event, callback);
   }
 
@@ -185,7 +183,6 @@ class SocketService {
       return;
     }
     
-    console.log('📡 [Socket] Emitting event:', event, data ? '(with data)' : '(no data)');
     this.socket.emit(event, data);
   }
 

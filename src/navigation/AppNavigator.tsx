@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity } from 'react-native';
+import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable } from 'react-native';
 import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -48,13 +48,28 @@ import { useSocket } from '../context/SocketContext';
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
+const postDetailHeaderOptions = (colors: any) => ({
+  headerShown: true,
+  headerTitle: () => (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
+    </View>
+  ),
+  headerTitleAlign: 'center' as const,
+  headerStyle: {
+    backgroundColor: colors.backgroundLight,
+  },
+  headerTintColor: colors.text,
+  headerRight: () => <View style={{ width: 44 }} />,
+});
+
 // Auth Stack
 const AuthStack = () => {
   const { colors } = useTheme();
   
   return (
     <Stack.Navigator
-      detachInactiveScreens={false}
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -72,32 +87,17 @@ const FeedStack = () => {
   
   return (
     <Stack.Navigator
-      detachInactiveScreens={false}
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
       }}
     >
       <Stack.Screen name="FeedScreen" component={FeedScreen} />
-      <Stack.Screen 
-        name="PostDetail" 
+      <Stack.Screen
+        name="PostDetail"
         component={PostDetailScreen}
-        options={{
-          headerShown: true,
-          // Android: use custom headerTitle to guarantee true centering
-          headerTitle: () => (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
-            </View>
-          ),
-          headerTitleAlign: 'center',
-          headerStyle: {
-            backgroundColor: colors.backgroundLight,
-          },
-          headerTintColor: colors.text,
-          // Balance left/right so title stays centered
-          headerRight: () => <View style={{ width: 44 }} />,
-        }}
+        options={postDetailHeaderOptions(colors)}
       />
     </Stack.Navigator>
   );
@@ -134,7 +134,7 @@ const SearchStack = () => {
 
   return (
     <Stack.Navigator
-      detachInactiveScreens={false}
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -244,36 +244,65 @@ const MainTabs = () => {
             const color = isFocused ? colors.primary : colors.textGray;
 
             const onPress = () => {
+              const tabRoute = props.state.routes.find((r) => r.name === route.name);
+              const nestedState = tabRoute?.state;
+              const nestedStackIndex = nestedState?.index ?? 0;
+              const activeNestedName =
+                nestedState?.routes?.[nestedStackIndex]?.name ?? 'FeedScreen';
+
+              // Home: avoid double dispatch when switching from Search/Messages (was: popToTop + navigate → double focus/refresh)
+              if (route.name === 'Feed') {
+                if (!isFocused) {
+                  props.navigation.navigate('Feed', { screen: 'FeedScreen' });
+                  return;
+                }
+
+                if (activeNestedName !== 'FeedScreen' || nestedStackIndex > 0) {
+                  props.navigation.navigate('Feed', { screen: 'FeedScreen' });
+                } else {
+                  props.navigation.emit({ type: 'scrollToTop', target: route.key });
+                }
+                return;
+              }
+
               const event = props.navigation.emit({
                 type: 'tabPress',
                 target: route.key,
                 canPreventDefault: true,
               });
+              if (event.defaultPrevented) return;
 
-              if (!isFocused && !event.defaultPrevented) {
-                // Special handling for Profile tab: always navigate to own profile
+              if (!isFocused) {
                 if (route.name === 'Profile') {
                   props.navigation.navigate('Profile', {
                     screen: 'UserProfile',
-                    params: { username: 'self' }
+                    params: { username: 'self' },
                   });
+                } else if (route.name === 'Search') {
+                  props.navigation.navigate('Search', { screen: 'SearchMain' });
                 } else {
                   props.navigation.navigate(route.name);
                 }
               } else if (isFocused && route.name === 'Profile') {
-                // If already on Profile tab, navigate to own profile (in case viewing another user's profile)
                 props.navigation.navigate('Profile', {
                   screen: 'UserProfile',
-                  params: { username: 'self' }
+                  params: { username: 'self' },
                 });
+              } else if (isFocused && route.name === 'Search') {
+                if (nestedStackIndex > 0) {
+                  props.navigation.navigate('Search', { screen: 'SearchMain' });
+                } else {
+                  props.navigation.emit({ type: 'scrollToTop', target: route.key });
+                }
               }
             };
 
             const Icon = options.tabBarIcon;
             
             return (
-              <View
+              <Pressable
                 key={route.key}
+                onPress={onPress}
                 style={{
                   flex: 1,
                   justifyContent: 'center',
@@ -281,10 +310,9 @@ const MainTabs = () => {
                   height: tabBarHeight,
                   width: '100%',
                 }}
-                onTouchEnd={onPress}
               >
                 {Icon && <Icon color={color} />}
-              </View>
+              </Pressable>
             );
           })}
         </View>
@@ -360,7 +388,7 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
   
   return (
     <Stack.Navigator
-      detachInactiveScreens={false}
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: false,
         cardStyle: { backgroundColor: colors.background },
@@ -447,7 +475,7 @@ const MainStack = () => {
   
   return (
     <Stack.Navigator
-      detachInactiveScreens={false}
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: false,
         presentation: 'card',
@@ -474,8 +502,8 @@ const MainStack = () => {
         }}
       />
       <Stack.Screen name="Activity" component={ActivityScreen} />
-      <Stack.Screen 
-        name="ChatScreen" 
+      <Stack.Screen
+        name="ChatScreen"
         component={ChatScreen}
         options={{
           cardStyle: { backgroundColor: colors.background },

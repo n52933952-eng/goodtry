@@ -66,6 +66,7 @@ const FeedScreen = ({ navigation }: any) => {
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const activeVideoPostIdRef = useRef<string | null>(null);
   const pendingVideoSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedListRef = useRef<FlatList>(null);
   const LOAD_MORE_DEBOUNCE_MS = 2000;
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 65,
@@ -77,6 +78,13 @@ const FeedScreen = ({ navigation }: any) => {
   useEffect(() => {
     feedSessionUserIdRef.current = user?._id;
   }, [user?._id]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('scrollToTop', () => {
+      feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+    });
+    return unsub;
+  }, [navigation]);
 
   useEffect(() => {
     activeVideoPostIdRef.current = activeVideoPostId;
@@ -612,6 +620,7 @@ const FeedScreen = ({ navigation }: any) => {
       </View>
 
       <FlatList
+        ref={feedListRef}
         data={loading ? [] : posts}
         renderItem={renderPost}
         removeClippedSubviews={false}

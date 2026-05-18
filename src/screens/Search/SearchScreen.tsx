@@ -45,7 +45,7 @@ const SearchScreen = ({ navigation }: any) => {
   useEffect(() => {
     void (async () => {
       await refetchSessionUser?.();
-      fetchSuggestedUsers();
+      fetchSuggestedUsers({ initial: true });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -58,9 +58,9 @@ const SearchScreen = ({ navigation }: any) => {
         await refetchSessionUser?.();
         if (cancelled) return;
         if (!searchQuery.trim()) {
-          fetchSuggestedUsers();
+          await fetchSuggestedUsers();
         } else {
-          handleSearch(searchQuery);
+          await handleSearch(searchQuery);
         }
       })();
       return () => {
@@ -105,13 +105,9 @@ const SearchScreen = ({ navigation }: any) => {
     });
   };
 
-  const fetchSuggestedUsers = async (isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    
+  const fetchSuggestedUsers = async (opts?: { initial?: boolean }) => {
+    if (opts?.initial) setLoading(true);
+
     try {
       const data = await apiService.get(ENDPOINTS.GET_SUGGESTED_USERS);
       const arr = Array.isArray(data) ? data : [];
@@ -131,29 +127,34 @@ const SearchScreen = ({ navigation }: any) => {
       setSuggestedUsers([]);
       showToast('Error', 'Failed to load suggested users', 'error');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (opts?.initial) setLoading(false);
     }
   };
 
   const handleRefresh = () => {
+    // Must set synchronously — delaying until after refetch breaks every 2nd pull on Android.
+    setRefreshing(true);
     void (async () => {
-      await refetchSessionUser?.();
-      if (!searchQuery.trim()) {
-        fetchSuggestedUsers(true);
-      } else {
-        handleSearch(searchQuery);
+      try {
+        await refetchSessionUser?.();
+        if (!searchQuery.trim()) {
+          await fetchSuggestedUsers();
+        } else {
+          await handleSearch(searchQuery, { silent: true });
+        }
+      } finally {
+        setRefreshing(false);
       }
     })();
   };
 
-  const handleSearch = async (query: string) => {
+  const handleSearch = async (query: string, opts?: { silent?: boolean }) => {
     if (!query.trim()) {
       setSearchResults([]);
       return;
     }
 
-    setSearchLoading(true);
+    if (!opts?.silent) setSearchLoading(true);
     try {
       const data = await apiService.get(`${ENDPOINTS.SEARCH_USERS}?search=${encodeURIComponent(query)}`);
       const arr = Array.isArray(data) ? data : [];
@@ -172,7 +173,7 @@ const SearchScreen = ({ navigation }: any) => {
       console.error('Error searching users:', error);
       setSearchResults([]);
     } finally {
-      setSearchLoading(false);
+      if (!opts?.silent) setSearchLoading(false);
     }
   };
 
@@ -345,7 +346,7 @@ const SearchScreen = ({ navigation }: any) => {
         autoCapitalize="none"
       />
 
-      {searchLoading && (
+      {searchLoading && !refreshing && (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -361,36 +362,50 @@ const SearchScreen = ({ navigation }: any) => {
               ? styles.listEmptyGrow
               : [styles.listContent, { paddingTop: 14, backgroundColor: colors.background }]
           }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+            />
+          }
           ListEmptyComponent={
-            !searchLoading ? (
+            searchLoading ? (
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
+            ) : (
               <Text style={[styles.emptyText, { color: colors.textGray }]}>No users found</Text>
-            ) : null
+            )
           }
         />
       ) : (
         <View style={[styles.suggestedSection, { backgroundColor: colors.background }]}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Suggested Users</Text>
-          {loading ? (
-            <ActivityIndicator size="large" color={colors.primary} />
-          ) : (
-            <FlatList
-              data={suggestedUsers}
-              renderItem={renderUser}
-              keyExtractor={(item) => item._id}
-              contentContainerStyle={
-                suggestedUsers.length === 0
-                  ? styles.listEmptyGrow
-                  : [styles.listContent, { paddingTop: 8, paddingBottom: 20, backgroundColor: colors.background }]
-              }
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={handleRefresh}
-                  tintColor={colors.primary}
-                />
-              }
-            />
-          )}
+          <FlatList
+            data={suggestedUsers}
+            renderItem={renderUser}
+            keyExtractor={(item) => item._id}
+            contentContainerStyle={
+              suggestedUsers.length === 0
+                ? styles.listEmptyGrow
+                : [styles.listContent, { paddingTop: 8, paddingBottom: 20, backgroundColor: colors.background }]
+            }
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={colors.primary}
+                colors={[colors.primary]}
+              />
+            }
+            ListEmptyComponent={
+              loading ? (
+                <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
+              ) : (
+                <Text style={[styles.emptyText, { color: colors.textGray }]}>No suggested users</Text>
+              )
+            }
+          />
         </View>
       )}
     </View>

@@ -13,6 +13,7 @@ import {
   Modal,
   FlatList,
   DeviceEventEmitter,
+  Pressable,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
@@ -167,6 +168,7 @@ const Post: React.FC<PostProps> = ({
   const [manageContribOpen, setManageContribOpen] = useState(false);
   const [editPostOpen, setEditPostOpen] = useState(false);
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
+  const [postImagePreviewOpen, setPostImagePreviewOpen] = useState(false);
 
   // Contributor hydration: sometimes API/socket returns contributor ids only. Fetch profiles so avatars show without reload.
   const [contribHydrateMap, setContribHydrateMap] = useState<Record<string, any>>({});
@@ -1025,6 +1027,9 @@ const Post: React.FC<PostProps> = ({
     post.img.includes('/video/upload/')
   );
   const isAnimatedImagePost = isAnimatedImageUrl(String(post.img || ''));
+  const canPreviewPostImage =
+    !!post.img && disableNavigation && !isYouTubePost && !isVideoPost;
+  const postImagePreviewUrl = String(post.img || '');
   const optimizedImageUrl = (() => {
     const raw = String(post.img || '');
     // Keep original URL for animated images so playback works on mobile.
@@ -1719,11 +1724,63 @@ const Post: React.FC<PostProps> = ({
         )
       ) : post.img ? (
         disableNavigation ? (
-          <SafeImage 
-            source={{ uri: optimizedImageUrl }} 
-            style={styles.postImage}
-            resizeMode="contain"
-          />
+          <>
+            <TouchableOpacity
+              activeOpacity={0.95}
+              onPress={() => canPreviewPostImage && setPostImagePreviewOpen(true)}
+              disabled={!canPreviewPostImage}
+              accessibilityRole="button"
+              accessibilityLabel={t('viewFullImage')}
+            >
+              <SafeImage
+                source={{ uri: optimizedImageUrl }}
+                style={styles.postImage}
+                resizeMode="contain"
+              />
+              {canPreviewPostImage ? (
+                <View style={styles.postImageExpandBtn} pointerEvents="none">
+                  <Text style={styles.postImageExpandBtnText}>⛶</Text>
+                </View>
+              ) : null}
+            </TouchableOpacity>
+            <Modal
+              visible={postImagePreviewOpen && !!postImagePreviewUrl}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setPostImagePreviewOpen(false)}
+            >
+              <View style={styles.postImagePreviewRoot}>
+                <Pressable
+                  style={StyleSheet.absoluteFill}
+                  onPress={() => setPostImagePreviewOpen(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('close')}
+                />
+                <View style={styles.postImagePreviewImageWrap} pointerEvents="box-none">
+                  <Image
+                    source={{ uri: postImagePreviewUrl }}
+                    style={[
+                      styles.postImagePreviewImage,
+                      {
+                        width: Dimensions.get('window').width,
+                        height: Dimensions.get('window').height * 0.82,
+                      },
+                    ]}
+                    resizeMode="contain"
+                  />
+                </View>
+                <TouchableOpacity
+                  style={styles.postImagePreviewClose}
+                  onPress={() => setPostImagePreviewOpen(false)}
+                  hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('close')}
+                >
+                  <Text style={styles.postImagePreviewCloseText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            </Modal>
+          </>
         ) : (
           <TouchableOpacity 
             onPress={() => {
@@ -2290,6 +2347,56 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 10,
     backgroundColor: '#000',
+  },
+  postImageExpandBtn: {
+    position: 'absolute',
+    right: 10,
+    bottom: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.52)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  postImageExpandBtnText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  postImagePreviewRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.94)',
+    justifyContent: 'center',
+  },
+  postImagePreviewImageWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postImagePreviewImage: {
+    maxWidth: '100%',
+  },
+  postImagePreviewClose: {
+    position: 'absolute',
+    top: 48,
+    right: 16,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  postImagePreviewCloseText: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '600',
+    lineHeight: 24,
   },
   videoContainer: {
     width: '100%',

@@ -84,6 +84,23 @@ const MessagesScreen = ({ navigation }: any) => {
   
   // Ref to fetchConversations function so it can be called from handleNewMessage
   const fetchConversationsRef = useRef<any>(null);
+  /** Throttle expensive aux work when bouncing Messages ↔ Chat ↔ other tabs (conversations still refresh every focus). */
+  const lastFollowingFetchAtRef = useRef(0);
+  const lastPresenceRefreshAtRef = useRef(0);
+  const FOLLOWING_REFETCH_FOCUS_MIN_MS = 45_000;
+  const PRESENCE_REFRESH_FOCUS_MIN_MS = 12_000;
+  /** Skip redundant list+story API when bouncing Messages ↔ Chat within a few seconds (socket still updates rows). */
+  const lastConvListAndStoryFetchAtRef = useRef(0);
+  const CONV_LIST_STORY_FOCUS_MIN_MS = 5_000;
+  /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
+  const lastPresenceWatchKeyRef = useRef('');
+
+  useEffect(() => {
+    lastFollowingFetchAtRef.current = 0;
+    lastPresenceRefreshAtRef.current = 0;
+    lastConvListAndStoryFetchAtRef.current = 0;
+    lastPresenceWatchKeyRef.current = '';
+  }, [user?._id]);
 
   // Update selectedConversationId ref whenever it changes
   useEffect(() => {
@@ -92,16 +109,6 @@ const MessagesScreen = ({ navigation }: any) => {
 
   // Handle new messages - STABLE FUNCTION (like web version)
   const handleNewMessage = React.useCallback((messageData: any) => {
-    console.log('🔔🔔🔔 [MessagesScreen] handleNewMessage: Received newMessage event!', {
-      hasData: !!messageData,
-      conversationId: messageData?.conversationId,
-      selectedConversationId: selectedConversationIdRef.current,
-      senderId: messageData?.sender?._id || messageData?.sender,
-      currentUserId: user?._id,
-      messageId: messageData?._id,
-      messageText: messageData?.text?.substring(0, 30)
-    });
-    
     setConversations((prevConvos) => {
       const conversationId = messageData.conversationId?.toString();
       if (!conversationId) return prevConvos;
@@ -142,8 +149,6 @@ const MessagesScreen = ({ navigation }: any) => {
         return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
       } else {
         // New conversation - fetch it from API to get full conversation data
-        console.log('💬 [MessagesScreen] New conversation detected, fetching...');
-        // Silent refresh so header/search doesn't flash a full-screen spinner
         if (fetchConversationsRef.current) {
           fetchConversationsRef.current(false, { silent: true });
         }
@@ -152,8 +157,7 @@ const MessagesScreen = ({ navigation }: any) => {
     });
   }, [user?._id]);
 
-  const handleUnreadCountUpdate = React.useCallback((data: any) => {
-    console.log('🔔 [MessagesScreen] Unread count update:', data);
+  const handleUnreadCountUpdate = React.useCallback((_data: any) => {
     // Optionally update total unread count if needed
   }, []);
 
@@ -195,7 +199,6 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.on('newMessage', handleNewMessage);
       socket.on('unreadCountUpdate', handleUnreadCountUpdate);
       socket.on('conversationMarkedRead', handleMessagesSeen);
-      console.log('✅ [MessagesScreen] Conversation socket listeners bound');
     };
 
     bindConversationListeners();
@@ -244,19 +247,26 @@ const MessagesScreen = ({ navigation }: any) => {
   // (e.g., when returning from ChatScreen or after following a new user)
   useFocusEffect(
     React.useCallback(() => {
-      setStoryRingReplayKey((k) => k + 1);
-      fetchStoryStrip();
-      // On first load, show loading spinner if no conversations yet
-      // On subsequent loads (returning from ChatScreen), refresh silently
-      const isFirstLoad = isFirstLoadRef.current;
-      if (isFirstLoad) {
-        isFirstLoadRef.current = false;
+      const first = isFirstLoadRef.current;
+      if (first) isFirstLoadRef.current = false;
+
+      const now = Date.now();
+      const listStale =
+        first || now - lastConvListAndStoryFetchAtRef.current >= CONV_LIST_STORY_FOCUS_MIN_MS;
+      if (listStale) {
+        lastConvListAndStoryFetchAtRef.current = now;
+        fetchStoryStrip();
+        fetchConversations(false, { silent: !first });
       }
-      fetchConversations(false, { silent: !isFirstLoad });
-      
-      // Refresh following users list so newly followed users appear in search
-      fetchFollowingUsers();
-      refreshPresenceSubscription();
+
+      if (now - lastFollowingFetchAtRef.current >= FOLLOWING_REFETCH_FOCUS_MIN_MS) {
+        lastFollowingFetchAtRef.current = now;
+        fetchFollowingUsers();
+      }
+      if (now - lastPresenceRefreshAtRef.current >= PRESENCE_REFRESH_FOCUS_MIN_MS) {
+        lastPresenceRefreshAtRef.current = now;
+        refreshPresenceSubscription();
+      }
     }, [refreshPresenceSubscription, fetchStoryStrip])
   );
 
@@ -333,6 +343,7 @@ const MessagesScreen = ({ navigation }: any) => {
   // without needing to open an individual chat first.
   useEffect(() => {
     if (!user?._id) {
+      lastPresenceWatchKeyRef.current = '';
       setPresenceWatchUserIds([]);
       return;
     }
@@ -349,6 +360,10 @@ const MessagesScreen = ({ navigation }: any) => {
       })
       .filter((id: string) => !!id);
 
+    const watchKey = partnerIds.slice().sort().join('|');
+    if (watchKey === lastPresenceWatchKeyRef.current) return;
+    lastPresenceWatchKeyRef.current = watchKey;
+
     setPresenceWatchUserIds(partnerIds);
   }, [conversations, user?._id, setPresenceWatchUserIds]);
 
@@ -362,18 +377,14 @@ const MessagesScreen = ({ navigation }: any) => {
 
   const fetchFollowingUsers = async () => {
     if (!user?._id) {
-      console.log('🔍 [MessagesScreen] fetchFollowingUsers: No user._id, skipping');
       return;
     }
-    
-      // Light log (avoid huge JSON.stringify in dev)
-      console.log('🔍 [MessagesScreen] fetchFollowingUsers: fetching...');
+
     try {
       // Scalable: backend already provides a dedicated endpoint returning user objects (limited to 30)
       const data = await apiService.get(ENDPOINTS.GET_FOLLOWING_USERS);
       const users = Array.isArray(data) ? data : (data?.users || []);
-      console.log('🔍 [MessagesScreen] fetchFollowingUsers: count =', users.length);
-      
+
       setFollowingUsers(users);
     } catch (error: any) {
       console.error('❌ [MessagesScreen] fetchFollowingUsers: Error:', error);
@@ -383,11 +394,8 @@ const MessagesScreen = ({ navigation }: any) => {
 
   const handleSearch = async (query: string) => {
     setSearchQuery(query);
-    
-    console.log('🔍 [MessagesScreen] handleSearch:', { query, followingCount: followingUsers.length });
-    
+
     if (!query.trim()) {
-      console.log('🔍 [MessagesScreen] handleSearch: Empty query, clearing results');
       setSearchResults([]);
       return;
     }
@@ -396,7 +404,7 @@ const MessagesScreen = ({ navigation }: any) => {
     try {
       const searchTerm = query.toLowerCase();
       // Search through following users (client-side filter for better UX)
-      
+
       const filtered = followingUsers.filter((u: any) => {
         const name = (u.name || '').toLowerCase();
         const username = (u.username || '').toLowerCase();
@@ -405,9 +413,7 @@ const MessagesScreen = ({ navigation }: any) => {
         const matches = nameMatch || usernameMatch;
         return matches;
       });
-      
-      console.log('🔍 [MessagesScreen] handleSearch: Filtered results count:', filtered.length);
-      
+
       setSearchResults(filtered);
     } catch (error: any) {
       console.error('❌ [MessagesScreen] handleSearch: Error:', error);
@@ -846,6 +852,11 @@ const MessagesScreen = ({ navigation }: any) => {
             const id = item._id?.toString?.() ?? String(item._id);
             return id || `conversation-${index}`;
           }}
+          windowSize={10}
+          maxToRenderPerBatch={8}
+          initialNumToRender={12}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews={Platform.OS === 'android'}
           onEndReached={() => {
             if (loadingMoreConversations || !hasMoreConversations) return;
             fetchConversations(true);
