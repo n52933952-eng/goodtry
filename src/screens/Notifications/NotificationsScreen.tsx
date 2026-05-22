@@ -22,6 +22,12 @@ interface NotificationsScreenProps {
   navigation: any;
 }
 
+/** Keep name + action on the left (LTR) even when the name is Arabic. */
+const NOTIF_LTR = {
+  textAlign: 'left' as const,
+  writingDirection: 'ltr' as const,
+};
+
 const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation }) => {
   const { user } = useUser();
   const { socket, notificationCount, setNotificationCount } = useSocket();
@@ -210,12 +216,9 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     
     // Navigate based on notification type (matching web behavior)
     if (notification.type === 'follow') {
-      // Navigate to user profile
-      navigation.navigate('Profile', {
-        screen: 'UserProfile',
-        params: {
-          username: notification.from?.username || notification.from?.name || 'user',
-        },
+      navigation.navigate('UserProfile', {
+        username: notification.from?.username || notification.from?.name || 'user',
+        fromScreen: 'Notifications',
       });
     } else if (
       notification.type === 'comment' || 
@@ -227,17 +230,15 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     ) {
       // Navigate to post detail page (matching web: /${postOwner}/post/${postId})
       if (notification.post && notification.post._id) {
-        // Navigate to Feed tab, then to PostDetail (nested navigation to show tab bar)
-        navigation.navigate('Feed', {
-          screen: 'PostDetail',
-          params: { postId: notification.post._id }
+        navigation.navigate('PostDetail', {
+          postId: notification.post._id,
+          fromScreen: 'Notifications',
         });
       } else if (notification.metadata?.postId || notification.post?._id) {
-        // Fallback: try to get postId from metadata or post object
         const postId = notification.metadata?.postId || notification.post?._id;
-        navigation.navigate('Feed', {
-          screen: 'PostDetail',
-          params: { postId }
+        navigation.navigate('PostDetail', {
+          postId,
+          fromScreen: 'Notifications',
         });
       }
     } else if (notification.type === 'chess_challenge') {
@@ -267,33 +268,32 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     }
   };
 
-  const getNotificationText = (notification: any) => {
-    const fromName = notification.from?.name || notification.from?.username || t('someone');
-    
+  const getNotificationFromName = (notification: any) =>
+    notification.from?.name || notification.from?.username || t('someone');
+
+  /** Action text only (name is rendered separately for stable LTR layout). */
+  const getNotificationActionText = (notification: any) => {
     switch (notification.type) {
       case 'like':
-        // Check if it's a comment/reply like (has comment text) or post like
-        if (notification.comment) {
-          return `${fromName} ${t('likedYourComment')}`;
-        } else {
-          return `${fromName} ${t('likedYourPost')}`;
-        }
+        return notification.comment ? t('likedYourComment') : t('likedYourPost');
       case 'comment':
-        return `${fromName} ${t('commentedOnYourPost')}`;
+        return t('commentedOnYourPost');
       case 'mention':
-        return `${fromName} ${t('mentionedYouInAComment')}`;
+        return t('mentionedYouInAComment');
       case 'follow':
-        return `${fromName} ${t('startedFollowingYou')}`;
+        return t('startedFollowingYou');
       case 'chess_challenge':
-        return `${fromName} ${t('challengedYouToAChessGame')}`;
+        return t('challengedYouToAChessGame');
       case 'message':
-        return `${fromName} ${t('sentYouAMessage')}`;
-      case 'collaboration':
+        return t('sentYouAMessage');
+      case 'collaboration': {
         const postText = notification.metadata?.postText || 'a collaborative post';
-        return `${fromName} ${t('addedYouAsAContributor')} "${postText}"`;
-      case 'post_edit':
+        return `${t('addedYouAsAContributor')} "${postText}"`;
+      }
+      case 'post_edit': {
         const editedPostText = notification.metadata?.postText || 'your collaborative post';
-        return `${fromName} ${t('edited')} "${editedPostText}"`;
+        return `${t('edited')} "${editedPostText}"`;
+      }
       case 'capsule_opened':
         return t('capsuleOpenedText') || 'Your reminder is ready. Tap to open the post.';
       default:
@@ -316,7 +316,12 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     return date.toLocaleDateString();
   };
 
-  const renderNotification = ({ item }: { item: any }) => (
+  const renderNotification = ({ item }: { item: any }) => {
+    const fromName = getNotificationFromName(item);
+    const actionText = getNotificationActionText(item);
+    const useSplitName = item.type !== 'capsule_opened' && !!item.from;
+
+    return (
     <TouchableOpacity
       style={[
         styles.notificationItem,
@@ -346,23 +351,61 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
           )}
           
           <View style={styles.textContainer}>
-            <Text style={[styles.notificationText, { color: !item.read ? colors.cardText : colors.text }]}>
-              {getNotificationText(item)}
-            </Text>
+            {useSplitName ? (
+              <Text
+                style={[
+                  styles.notificationText,
+                  NOTIF_LTR,
+                  { color: !item.read ? colors.cardText : colors.text },
+                ]}
+                numberOfLines={3}
+              >
+                <Text style={[styles.notificationName, NOTIF_LTR]}>{fromName}</Text>
+                <Text style={NOTIF_LTR}>{' '}{actionText}</Text>
+              </Text>
+            ) : (
+              <Text
+                style={[
+                  styles.notificationText,
+                  NOTIF_LTR,
+                  { color: !item.read ? colors.cardText : colors.text },
+                ]}
+                numberOfLines={3}
+              >
+                {actionText}
+              </Text>
+            )}
             {item.type === 'capsule_opened' && item.post?.text ? (
               <Text
-                style={[styles.commentText, { color: !item.read ? colors.cardText : colors.textGray }]}
+                style={[
+                  styles.commentText,
+                  NOTIF_LTR,
+                  { color: !item.read ? colors.cardText : colors.textGray },
+                ]}
                 numberOfLines={2}
               >
                 "{item.post.text}"
               </Text>
             ) : null}
             {item.comment && (
-              <Text style={[styles.commentText, { color: !item.read ? colors.cardText : colors.textGray }]} numberOfLines={2}>
+              <Text
+                style={[
+                  styles.commentText,
+                  NOTIF_LTR,
+                  { color: !item.read ? colors.cardText : colors.textGray },
+                ]}
+                numberOfLines={2}
+              >
                 "{item.comment}"
               </Text>
             )}
-            <Text style={[styles.notificationTime, { color: !item.read ? colors.cardText : colors.textGray }]}>
+            <Text
+              style={[
+                styles.notificationTime,
+                NOTIF_LTR,
+                { color: !item.read ? colors.cardText : colors.textGray },
+              ]}
+            >
               {formatTime(item.createdAt)}
             </Text>
           </View>
@@ -396,6 +439,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
       </View>
     </TouchableOpacity>
   );
+  };
 
   if (loading) {
     return (
@@ -500,6 +544,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    direction: 'ltr',
   },
   iconContainer: {
     marginRight: 12,
@@ -530,12 +575,20 @@ const styles = StyleSheet.create({
   },
   textContainer: {
     flex: 1,
+    alignItems: 'flex-start',
+    direction: 'ltr',
   },
   notificationText: {
     fontSize: 15,
     color: COLORS.text,
     marginBottom: 4,
     fontWeight: '600',
+    alignSelf: 'stretch',
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  notificationName: {
+    fontWeight: '700',
   },
   commentText: {
     fontSize: 13,

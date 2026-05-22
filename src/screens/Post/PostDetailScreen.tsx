@@ -39,17 +39,20 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   
   // Customize back button behavior based on where we came from
   React.useEffect(() => {
-    if (fromScreen === 'UserProfile') {
+    const needsCustomBack = fromScreen === 'UserProfile' || fromScreen === 'Notifications';
+    if (needsCustomBack) {
       navigation.setOptions({
         headerLeft: () => (
           <TouchableOpacity
             onPress={() => {
-              // Use goBack first so this detail screen unmounts and media stops cleanly.
               if (navigation.canGoBack?.()) {
                 navigation.goBack();
                 return;
               }
-              // Fallback only when opened directly without back stack.
+              if (fromScreen === 'Notifications') {
+                navigation.navigate('Notifications', { screen: 'NotificationsMain' });
+                return;
+              }
               if (userProfileParams) navigation.navigate('UserProfile', userProfileParams);
             }}
             style={{ marginLeft: 10 }}
@@ -59,7 +62,6 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         ),
       });
     } else {
-      // Default back button - will go back to previous screen (FeedScreen or UserProfile)
       navigation.setOptions({
         headerLeft: undefined,
       });

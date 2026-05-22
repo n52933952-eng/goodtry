@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -245,7 +245,28 @@ const Post: React.FC<PostProps> = ({
   const [feedVideoErrored, setFeedVideoErrored] = useState(false);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
+  const autoPlayMediaRef = useRef(autoPlayMedia);
+  autoPlayMediaRef.current = autoPlayMedia;
   const lastFeedVideoTimeRef = useRef(0);
+
+  const pauseDetailVideo = useCallback(() => {
+    detailVideoWebViewRef.current?.injectJavaScript(`
+      (function () {
+        var v = document.querySelector('video');
+        if (!v) return;
+        try { v.pause(); v.removeAttribute('src'); v.load(); } catch (_) {}
+      })();
+      true;
+    `);
+  }, []);
+
+  useEffect(() => {
+    if (!disableNavigation) return;
+    if (!autoPlayMedia) {
+      pauseDetailVideo();
+      setYoutubePlaying(false);
+    }
+  }, [disableNavigation, autoPlayMedia, pauseDetailVideo]);
   const lastFeedVideoTimeUpdateRef = useRef(0);
   const [feedVideoPreviewTimeMs, setFeedVideoPreviewTimeMs] = useState(1000);
   const resumeFeedVideo = () => {
@@ -1405,11 +1426,12 @@ const Post: React.FC<PostProps> = ({
 
       {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
+          autoPlayMedia ? (
           <View style={styles.videoContainer}>
             <YoutubePlayer
             height={styles.videoContainer.height}
             videoId={youtubeVideoId}
-            play={disableNavigation && autoPlayMedia ? true : youtubePlaying}
+            play={youtubePlaying}
             mute={false}
             webViewProps={{
               allowsInlineMediaPlayback: true,
@@ -1438,6 +1460,20 @@ const Post: React.FC<PostProps> = ({
             }}
           />
           </View>
+          ) : (
+            <View style={styles.videoContainer}>
+              <SafeImage
+                source={{ uri: `https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg` }}
+                style={styles.youtubeThumbnail}
+                resizeMode="cover"
+              />
+              <View style={styles.youtubeOverlay} pointerEvents="none">
+                <View style={styles.youtubePlayButton}>
+                  <Text style={styles.youtubePlayIcon}>▶</Text>
+                </View>
+              </View>
+            </View>
+          )
         ) : (
           // FEED OPTIMIZATION: render a lightweight thumbnail instead of mounting YoutubePlayer in a scrolling list
           <TouchableOpacity
@@ -1461,6 +1497,7 @@ const Post: React.FC<PostProps> = ({
         )
       ) : post.img && isVideoPost ? (
         disableNavigation ? (
+          autoPlayMedia ? (
           <View style={styles.videoContainer}>
             <WebView
             ref={detailVideoWebViewRef}
@@ -1540,8 +1577,11 @@ const Post: React.FC<PostProps> = ({
             startInLoadingState={true}
             originWhitelist={['*']}
             onLoadEnd={() => {
-              if (!autoPlayMedia) return;
-              // Force immediate play after WebView is ready.
+              if (!autoPlayMediaRef.current) {
+                pauseDetailVideo();
+                return;
+              }
+              // Force immediate play after WebView is ready (only while Post Detail is focused).
               detailVideoWebViewRef.current?.injectJavaScript(`
                 (function () {
                   var v = document.querySelector('video');
@@ -1567,6 +1607,22 @@ const Post: React.FC<PostProps> = ({
             }}
           />
           </View>
+          ) : (
+            <View style={styles.videoContainer}>
+              <VideoFeedPreview
+                videoUrl={thumbnailVideoUrl}
+                serverThumbnail={serverVideoThumbnail}
+                preferredTimeMs={feedVideoPreviewTimeMs}
+                placeholderColor={colors.background}
+                spinnerColor={colors.primary}
+              />
+              <View style={styles.feedPreviewOverlay} pointerEvents="none">
+                <View style={styles.feedPreviewPlayButton}>
+                  <Text style={styles.feedPreviewPlayIcon}>▶</Text>
+                </View>
+              </View>
+            </View>
+          )
         ) : (
           autoPlayMedia && !feedVideoErrored ? (
             <View style={styles.videoContainer}>

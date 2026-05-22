@@ -16,6 +16,8 @@ import {
   Alert,
   AppState,
   ScrollView,
+  Modal,
+  Dimensions,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
@@ -137,6 +139,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
   const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
+  const [chatImagePreviewUri, setChatImagePreviewUri] = useState<string | null>(null);
   const isChatFocused = useIsFocused();
 
   const toIdString = useCallback((value: any): string => {
@@ -1113,6 +1116,11 @@ const ChatScreen = ({ route, navigation }: any) => {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata"${autoplayAttr} src="${safe}"></video></body></html>`;
   };
 
+  const openChatImagePreview = useCallback((uri: string) => {
+    const u = String(uri || '').trim();
+    if (u) setChatImagePreviewUri(u);
+  }, []);
+
   const openSharedPostDetail = useCallback(
     (postId: string) => {
       setSharedPostVideoPlaying({});
@@ -1152,6 +1160,13 @@ const ChatScreen = ({ route, navigation }: any) => {
       };
     }, [])
   );
+
+  useEffect(() => {
+    const unsubBlur = navigation.addListener('blur', () => {
+      setSharedPostVideoPlaying({});
+    });
+    return unsubBlur;
+  }, [navigation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1380,21 +1395,31 @@ const ChatScreen = ({ route, navigation }: any) => {
           ) : null}
 
           {!!item.img && !isVideoUrl(item.img) && (
-            <Image
-              source={{ uri: optimizeCloudinaryMediaUrl(item.img, 'image') }}
-              style={styles.chatImage}
-              resizeMode="cover"
-              onLoadEnd={() => {
-                // When an image finishes loading, the content height changes; scroll again.
-                if (shouldAutoScrollRef.current) {
-                  setTimeout(() => {
-                    try {
-                      (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
-                    } catch (_) {}
-                  }, 80);
-                }
-              }}
-            />
+            <TouchableOpacity
+              activeOpacity={0.92}
+              onPress={() => openChatImagePreview(item.img)}
+              accessibilityRole="button"
+              accessibilityLabel={t('viewFullImage')}
+              style={styles.chatImagePressWrap}
+            >
+              <Image
+                source={{ uri: optimizeCloudinaryMediaUrl(item.img, 'image') }}
+                style={styles.chatImage}
+                resizeMode="cover"
+                onLoadEnd={() => {
+                  if (shouldAutoScrollRef.current) {
+                    setTimeout(() => {
+                      try {
+                        (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
+                      } catch (_) {}
+                    }, 80);
+                  }
+                }}
+              />
+              <View style={styles.chatImageExpandBtn} pointerEvents="none">
+                <Text style={styles.chatImageExpandBtnText}>⛶</Text>
+              </View>
+            </TouchableOpacity>
           )}
 
           {!!item.img && isVideoUrl(item.img) && isChatFocused && (
@@ -1815,6 +1840,46 @@ const ChatScreen = ({ route, navigation }: any) => {
           </TouchableOpacity>
         </View>
       )}
+
+      <Modal
+        visible={!!chatImagePreviewUri}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setChatImagePreviewUri(null)}
+      >
+        <View style={styles.chatImagePreviewRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setChatImagePreviewUri(null)}
+            accessibilityRole="button"
+            accessibilityLabel={t('close')}
+          />
+          <View style={styles.chatImagePreviewImageWrap} pointerEvents="box-none">
+            {chatImagePreviewUri ? (
+              <Image
+                source={{ uri: chatImagePreviewUri }}
+                style={[
+                  styles.chatImagePreviewImage,
+                  {
+                    width: Dimensions.get('window').width,
+                    height: Dimensions.get('window').height * 0.82,
+                  },
+                ]}
+                resizeMode="contain"
+              />
+            ) : null}
+          </View>
+          <TouchableOpacity
+            style={styles.chatImagePreviewClose}
+            onPress={() => setChatImagePreviewUri(null)}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            accessibilityRole="button"
+            accessibilityLabel={t('close')}
+          >
+            <Text style={styles.chatImagePreviewCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
     </Wrapper>
   );
 };
@@ -1978,11 +2043,65 @@ const styles = StyleSheet.create({
   receiverTime: {
     color: COLORS.textGray,
   },
+  chatImagePressWrap: {
+    marginTop: 8,
+    position: 'relative',
+    alignSelf: 'flex-start',
+  },
   chatImage: {
     width: 220,
     height: 220,
     borderRadius: 12,
-    marginTop: 8,
+  },
+  chatImageExpandBtn: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.52)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  chatImageExpandBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  chatImagePreviewRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.94)',
+    justifyContent: 'center',
+  },
+  chatImagePreviewImageWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatImagePreviewImage: {
+    maxWidth: '100%',
+  },
+  chatImagePreviewClose: {
+    position: 'absolute',
+    top: 48,
+    right: 16,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  chatImagePreviewCloseText: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '600',
+    lineHeight: 24,
   },
   chatVideoContainer: {
     borderRadius: 12,

@@ -176,6 +176,68 @@ const SearchStack = () => {
   );
 };
 
+// Notifications stack — post/profile open inside this tab so ← returns to the list
+const NotificationsStack = () => {
+  const { colors } = useTheme();
+
+  const notifProfileHeaderOptions = ({ navigation }: any) => ({
+    headerShown: true,
+    title: 'Profile',
+    headerTitleAlign: 'center' as const,
+    headerStyle: {
+      backgroundColor: colors.backgroundLight,
+    },
+    headerTintColor: colors.text,
+    headerTitleStyle: {
+      fontWeight: 'bold' as const,
+      fontSize: 18,
+    },
+    headerLeft: () => (
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        style={{ marginLeft: 15, padding: 5 }}
+      >
+        <Text style={{ color: colors.text, fontSize: 28, fontWeight: 'bold' }}>←</Text>
+      </TouchableOpacity>
+    ),
+  });
+
+  return (
+    <Stack.Navigator
+      detachInactiveScreens={true}
+      screenOptions={{
+        headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="NotificationsMain" component={NotificationsScreen} />
+      <Stack.Screen
+        name="UserProfile"
+        component={UserProfileScreen}
+        options={notifProfileHeaderOptions}
+      />
+      <Stack.Screen
+        name="PostDetail"
+        component={PostDetailScreen}
+        options={{
+          headerShown: true,
+          headerTitle: () => (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
+            </View>
+          ),
+          headerTitleAlign: 'center' as const,
+          headerStyle: {
+            backgroundColor: colors.backgroundLight,
+          },
+          headerTintColor: colors.text,
+          headerRight: () => <View style={{ width: 44 }} />,
+        }}
+      />
+    </Stack.Navigator>
+  );
+};
+
 // Main Tab Navigator (after login)
 const MainTabs = () => {
   const { colors } = useTheme();
@@ -184,7 +246,9 @@ const MainTabs = () => {
   
   return (
   <Tab.Navigator
+    detachInactiveScreens={true}
     screenOptions={{
+      lazy: true,
       headerShown: false,
       sceneStyle: { backgroundColor: colors.background },
       tabBarShowLabel: false, // Remove text labels below icons
@@ -355,7 +419,7 @@ const MainTabs = () => {
     {/* Hidden tabs */}
     <Tab.Screen
       name="Notifications"
-      component={NotificationsScreen}
+      component={NotificationsStack}
       options={{ tabBarButton: () => null }}
     />
     <Tab.Screen

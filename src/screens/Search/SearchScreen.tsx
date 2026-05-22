@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -7,9 +7,11 @@ import {
   FlatList,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   Image,
   ActivityIndicator,
   RefreshControl,
+  Keyboard,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -18,6 +20,12 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
+
+/** Keep search text on the left (same as English) when typing Arabic on RTL devices. */
+const SEARCH_INPUT_LTR = {
+  textAlign: 'left' as const,
+  writingDirection: 'ltr' as const,
+};
 
 const SearchScreen = ({ navigation }: any) => {
   const { user: currentUser, updateUser, refetchSessionUser } = useUser();
@@ -30,6 +38,15 @@ const SearchScreen = ({ navigation }: any) => {
   const [searchLoading, setSearchLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [updatingUserIds, setUpdatingUserIds] = useState<Record<string, boolean>>({});
+  const searchInputRef = useRef<TextInput>(null);
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchLoading(false);
+    Keyboard.dismiss();
+    searchInputRef.current?.blur();
+  }, []);
 
   const followingSet = useMemo(() => {
     const ids = (currentUser?.following || []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
@@ -337,20 +354,44 @@ const SearchScreen = ({ navigation }: any) => {
         <Text style={[styles.headerTitle, { color: colors.text }]}>Search</Text>
       </View>
 
-      <TextInput
-        style={[styles.searchInput, { backgroundColor: colors.backgroundLight, color: colors.text, borderColor: colors.border }]}
-        placeholder="Search users..."
-        placeholderTextColor={colors.textGray}
-        value={searchQuery}
-        onChangeText={setSearchQuery}
-        autoCapitalize="none"
-      />
-
-      {searchLoading && !refreshing && (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      )}
+      <View
+        style={[
+          styles.searchInputRow,
+          { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+        ]}
+      >
+        <TextInput
+          ref={searchInputRef}
+          style={[
+            styles.searchInput,
+            SEARCH_INPUT_LTR,
+            { color: colors.text, paddingRight: searchQuery.length > 0 ? 48 : 12 },
+          ]}
+          placeholder="Search users..."
+          placeholderTextColor={colors.textGray}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          returnKeyType="search"
+          textAlign="left"
+        />
+        {searchQuery.length > 0 ? (
+          <Pressable
+            onPressIn={clearSearch}
+            style={({ pressed }) => [
+              styles.searchClearBtn,
+              pressed && styles.searchClearBtnPressed,
+            ]}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <View style={[styles.searchClearBtnInner, { backgroundColor: colors.border }]}>
+              <Text style={[styles.searchClearBtnText, { color: colors.text }]}>✕</Text>
+            </View>
+          </Pressable>
+        ) : null}
+      </View>
 
       {searchQuery.trim() ? (
         <FlatList
@@ -427,20 +468,49 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: COLORS.text,
   },
-  searchInput: {
-    backgroundColor: COLORS.backgroundLight,
+  searchInputRow: {
+    position: 'relative',
     borderWidth: 1,
-    borderColor: COLORS.border,
     borderRadius: 8,
-    padding: 15,
     marginHorizontal: 16,
     marginVertical: 12,
-    color: COLORS.text,
-    fontSize: 16,
+    minHeight: 52,
+    justifyContent: 'center',
+    direction: 'ltr',
   },
-  loadingContainer: {
-    padding: 20,
+  searchInput: {
+    width: '100%',
+    paddingVertical: 14,
+    paddingLeft: 15,
+    fontSize: 16,
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  searchClearBtn: {
+    position: 'absolute',
+    right: 6,
+    top: 0,
+    bottom: 0,
+    width: 48,
+    justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 10,
+    elevation: 10,
+  },
+  searchClearBtnPressed: {
+    opacity: 0.65,
+  },
+  searchClearBtnInner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchClearBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 18,
   },
   suggestedSection: {
     flex: 1,

@@ -1,14 +1,16 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
+  Pressable,
   TextInput,
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Keyboard,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { API_URL } from '../../utils/constants';
@@ -71,13 +73,48 @@ const WeatherScreen = () => {
         searchContainer: {
           padding: 15,
         },
-        searchInput: {
+        searchInputRow: {
+          position: 'relative',
           backgroundColor: colors.backgroundLight,
           borderRadius: 10,
+          minHeight: 48,
+          justifyContent: 'center',
+          direction: 'ltr',
+        },
+        searchInput: {
           paddingVertical: 12,
-          paddingHorizontal: 15,
+          paddingLeft: 15,
           color: colors.text,
           fontSize: 16,
+          textAlign: 'left',
+          writingDirection: 'ltr',
+        },
+        searchClearBtn: {
+          position: 'absolute',
+          right: 6,
+          top: 0,
+          bottom: 0,
+          width: 48,
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 10,
+          elevation: 10,
+        },
+        searchClearBtnPressed: {
+          opacity: 0.65,
+        },
+        searchClearBtnInner: {
+          width: 32,
+          height: 32,
+          borderRadius: 16,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.border,
+        },
+        searchClearBtnText: {
+          fontSize: 16,
+          fontWeight: '700',
+          color: colors.textGray,
         },
         listContainer: {
           padding: 15,
@@ -168,9 +205,7 @@ const WeatherScreen = () => {
           textAlign: 'center',
         },
         searchLoading: {
-          position: 'absolute',
-          right: 15,
-          top: 15,
+          marginRight: 4,
         },
         searchResultsContainer: {
           maxHeight: 300,
@@ -259,6 +294,16 @@ const WeatherScreen = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const searchInputRef = useRef<TextInput>(null);
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchLoading(false);
+    Keyboard.dismiss();
+    searchInputRef.current?.blur();
+  }, []);
+
   useEffect(() => {
     fetchWeatherData();
     fetchUserPreferences();
@@ -522,20 +567,44 @@ const WeatherScreen = () => {
       </View>
 
       <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder={t('searchCities')}
-          placeholderTextColor={colors.textGray}
-          value={searchQuery}
-          onChangeText={handleSearch}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        {searchLoading && (
-          <View style={styles.searchLoading}>
-            <ActivityIndicator size="small" color={colors.primary} />
-          </View>
-        )}
+        <View style={styles.searchInputRow}>
+          <TextInput
+            ref={searchInputRef}
+            style={[
+              styles.searchInput,
+              {
+                paddingRight: searchQuery.length > 0 || searchLoading ? 48 : 12,
+              },
+            ]}
+            placeholder={t('searchCities')}
+            placeholderTextColor={colors.textGray}
+            value={searchQuery}
+            onChangeText={handleSearch}
+            autoCapitalize="none"
+            autoCorrect={false}
+            textAlign="left"
+          />
+          {searchLoading ? (
+            <View style={styles.searchClearBtn}>
+              <ActivityIndicator size="small" color={colors.primary} style={styles.searchLoading} />
+            </View>
+          ) : searchQuery.length > 0 ? (
+            <Pressable
+              onPressIn={clearSearch}
+              style={({ pressed }) => [
+                styles.searchClearBtn,
+                pressed && styles.searchClearBtnPressed,
+              ]}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+            >
+              <View style={styles.searchClearBtnInner}>
+                <Text style={styles.searchClearBtnText}>✕</Text>
+              </View>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       {/* Search Results */}
