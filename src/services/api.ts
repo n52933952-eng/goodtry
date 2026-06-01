@@ -20,6 +20,15 @@ const client = axios.create({
   },
 });
 
+client.interceptors.request.use((config) => {
+  const url = String(config.url || '');
+  if (url.includes('/api/user/follow/')) {
+    config.headers = config.headers || {};
+    (config.headers as Record<string, string>)['X-Client-Type'] = 'mobile';
+  }
+  return config;
+});
+
 client.interceptors.response.use(
   (res) => res,
   async (error: AxiosError<any>) => {

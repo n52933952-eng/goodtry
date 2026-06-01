@@ -172,7 +172,7 @@ class IncomingCallActivity : Activity() {
 
         // Call type text
         val callTypeText = TextView(this).apply {
-            text = if (callType == "video") "Incoming Video Call" else "Incoming Voice Call"
+            text = if (callType == "video") getString(R.string.call_incoming_video_title) else getString(R.string.call_incoming_voice_title)
             textSize = 16f
             setTextColor(Color.parseColor("#8B98A5"))
             gravity = android.view.Gravity.CENTER
@@ -200,7 +200,7 @@ class IncomingCallActivity : Activity() {
 
         // Decline button
         declineButton = Button(this).apply {
-            text = "Decline"
+            text = getString(R.string.notification_action_decline)
             setBackgroundColor(Color.parseColor("#F4212E"))
             setTextColor(Color.WHITE)
             textSize = 16f
@@ -217,7 +217,7 @@ class IncomingCallActivity : Activity() {
 
         // Answer button
         answerButton = Button(this).apply {
-            text = "Answer"
+            text = getString(R.string.notification_action_answer)
             setBackgroundColor(Color.parseColor("#00BA7C"))
             setTextColor(Color.WHITE)
             textSize = 16f

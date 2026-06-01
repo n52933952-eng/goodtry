@@ -20,7 +20,7 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { API_URL, COLORS, CHESS_GAME_FEED_UI_ENDED } from '../../utils/constants';
+import { API_URL, COLORS, CHESS_GAME_FEED_UI_ENDED, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
 import { markChessRoomFeedEnded } from '../../utils/chessFeedEndedStore';
 import { useShowToast } from '../../hooks/useShowToast';
 import ChessBoard, {
@@ -1460,6 +1460,25 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     navigation.goBack();
   };
 
+  const resignGameNow = useCallback(() => {
+    if (isSpectator || gameOver) return;
+    if (socket && roomId && opponentId) {
+      socket.emit('resignChess', { roomId, to: opponentId });
+    }
+    removeOwnChessPost();
+    setGameOver(true);
+    setGameResult('You resigned.');
+    clearGameOverOverlayDelay();
+    setGameOverOverlayVisible(true);
+    setSelectedSquare(null);
+    setLegalMoves([]);
+  }, [isSpectator, gameOver, socket, roomId, opponentId]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(LIVE_BAR_RESIGN_GAME, resignGameNow);
+    return () => sub.remove();
+  }, [resignGameNow]);
+
   const handleResign = () => {
     if (gameOver) return; // Already over — nothing to resign.
     Alert.alert(
@@ -1470,19 +1489,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         {
           text: 'Resign',
           style: 'destructive',
-          onPress: () => {
-            if (socket && roomId && opponentId) {
-              socket.emit('resignChess', { roomId, to: opponentId });
-            }
-            removeOwnChessPost();
-            // Stay on the board with the Game Over overlay so the player can review the game.
-            setGameOver(true);
-            setGameResult('You resigned.');
-            clearGameOverOverlayDelay();
-            setGameOverOverlayVisible(true);
-            setSelectedSquare(null);
-            setLegalMoves([]);
-          },
+          onPress: resignGameNow,
         },
       ]
     );

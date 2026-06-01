@@ -132,7 +132,8 @@ const LiveViewerScreen = () => {
         roomRef.current = lkRoom;
 
         lkRoom.on(RoomEvent.TrackSubscribed, (track: any) => {
-          if (track.kind === 'video' && mounted) setRemoteVideoTrack(track);
+          if (!mounted) return;
+          if (track.kind === 'video') setRemoteVideoTrack(track);
         });
         lkRoom.on(RoomEvent.TrackUnsubscribed, (track: any) => {
           if (track.kind === 'video') setRemoteVideoTrack(null);
@@ -148,6 +149,17 @@ const LiveViewerScreen = () => {
         });
 
         await lkRoom.connect(livekitUrl, token);
+        if (mounted) {
+          for (const participant of lkRoom.remoteParticipants.values()) {
+            for (const pub of participant.trackPublications.values()) {
+              if (!pub.isSubscribed) {
+                try { await pub.setSubscribed(true); } catch (_) {}
+              }
+              if (!pub.track || pub.kind !== 'video') continue;
+              setRemoteVideoTrack(pub.track);
+            }
+          }
+        }
         try {
           InCallManager.start({ media: 'video', auto: false, ringback: '' });
           InCallManager.setForceSpeakerphoneOn(true);
@@ -198,10 +210,11 @@ const LiveViewerScreen = () => {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.container}>
-        {/* Full-screen video */}
+        {/* Full-screen video: shared screen takes priority, with the host's camera as a thumbnail */}
         {remoteVideoTrack ? (
           <View style={[styles.videoRoot, { width: winW, height: winH }]} pointerEvents="none">
             <VideoView
+              key={remoteVideoTrack?.sid || 'cam'}
               videoTrack={remoteVideoTrack}
               style={{ width: winW, height: winH }}
               objectFit="cover"

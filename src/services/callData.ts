@@ -60,6 +60,49 @@ export const clearCallCancelFlagsNative = async (): Promise<void> => {
   }
 };
 
+/**
+ * Android: start the ongoing-call foreground service when a call connects.
+ * Keeps audio alive while the app is backgrounded; the service ends the call on swipe-away.
+ */
+export const startOngoingCallNative = async (
+  callerName?: string,
+  withCamera: boolean = false,
+): Promise<void> => {
+  try {
+    if (CallDataModule?.startOngoingCall) {
+      await CallDataModule.startOngoingCall(callerName ?? null, withCamera);
+    }
+  } catch (error) {
+    console.error('[CallData] startOngoingCall:', error);
+  }
+};
+
+/** Android: stop the ongoing-call foreground service when the call ends / is left. */
+export const stopOngoingCallNative = async (): Promise<void> => {
+  try {
+    if (CallDataModule?.stopOngoingCall) {
+      await CallDataModule.stopOngoingCall();
+    }
+  } catch (error) {
+    console.error('[CallData] stopOngoingCall:', error);
+  }
+};
+
+/**
+ * Android: send the app to the home screen without destroying it (like the Home button).
+ * Lets the back button keep a live stream / call running in the background.
+ */
+export const moveAppToBackgroundNative = async (): Promise<boolean> => {
+  try {
+    if (CallDataModule?.moveToBackground) {
+      return await CallDataModule.moveToBackground();
+    }
+  } catch (error) {
+    console.error('[CallData] moveToBackground:', error);
+  }
+  return false;
+};
+
 export const setCurrentUserId = async (userId: string): Promise<void> => {
   try {
     if (CallDataModule && CallDataModule.setCurrentUserId) {

@@ -25,6 +25,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Screen sharing (Google Meet style) — MediaProjection foreground service (Android 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     
     <!-- Income library: full-screen incoming call (WhatsApp-like) -->
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
@@ -102,6 +104,14 @@
         android:enabled="true"
         android:exported="false"
         android:foregroundServiceType="phoneCall" />
+
+      <!-- Ongoing Call / Live Service - Keeps audio (and live-stream camera) alive in background;
+           ends the session on swipe-away -->
+      <service
+        android:name=".OngoingCallService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="microphone|camera" />
 
       <!-- Firebase Messaging Service - Handles FCM when app is killed -->
       <service

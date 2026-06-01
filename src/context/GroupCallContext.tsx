@@ -26,6 +26,8 @@ import {
 import { useSocket } from './SocketContext';
 import { useUser } from './UserContext';
 import { API_URL } from '../utils/constants';
+import { startOngoingCallNative, stopOngoingCallNative } from '../services/callData';
+import { callSessionNav } from '../services/callSessionNav';
 
 interface IncomingGroupCall {
   conversationId: string;
@@ -45,10 +47,18 @@ interface GroupCallContextType {
   /** Same as `room` but from ref — reliable for mute/camera while state catches up. */
   getGroupCallRoom:  () => Room | null;
   activeConvId:      string;
+  /** True when *I* am sharing my screen in this group call. */
+  isScreenSharing:   boolean;
+  /** Start/stop sharing my screen (Google Meet style; triggers Android capture-permission dialog). */
+  toggleScreenShare: () => Promise<void>;
   startGroupCall:    (conversationId: string, type?: 'audio' | 'video') => Promise<void>;
   joinGroupCall:     () => Promise<void>;
   declineGroupCall:  () => void;
   leaveGroupCall:    () => void;
+  /** User left GroupCallScreen but call is still active. */
+  isGroupCallUIMinimized: boolean;
+  minimizeGroupCallUI: () => void;
+  openGroupCallUI: () => void;
 }
 
 export const GroupCallContext = createContext<GroupCallContextType | undefined>(undefined);
@@ -64,9 +74,32 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [participants,      setParticipants]       = useState<RemoteParticipant[]>([]);
   const [activeConvId,      setActiveConvId]       = useState('');
   const [room,              setRoom]              = useState<Room | null>(null);
+  const [isScreenSharing,   setIsScreenSharing]   = useState(false);
+  const [isGroupCallUIMinimized, setIsGroupCallUIMinimized] = useState(false);
   const roomRef = useRef<Room | null>(null);
+  const isScreenSharingRef = useRef(false);
 
   const getGroupCallRoom = useCallback(() => roomRef.current, []);
+
+  // ── screen sharing (Google Meet style) ──────────────────────────────────────
+  const toggleScreenShare = useCallback(async () => {
+    const lk = roomRef.current;
+    if (!lk) return;
+    const next = !isScreenSharingRef.current;
+    try {
+      await lk.localParticipant.setScreenShareEnabled(next);
+      isScreenSharingRef.current = next;
+      setIsScreenSharing(next);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      console.warn('⚠️ [GroupCall] screen share toggle failed:', msg);
+      isScreenSharingRef.current = false;
+      setIsScreenSharing(false);
+      if (next && !/cancel|denied|abort/i.test(msg)) {
+        Alert.alert('Screen share', `Could not start screen sharing.\n\n${msg}`);
+      }
+    }
+  }, []);
 
   // ── fetch token ────────────────────────────────────────────────────────────
   const fetchToken = useCallback(async (conversationId: string) => {
@@ -88,6 +121,9 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       setRoom(null);
     }
     setParticipants([]);
+    isScreenSharingRef.current = false;
+    setIsScreenSharing(false);
+    stopOngoingCallNative();
   }, []);
 
   // ── connect ────────────────────────────────────────────────────────────────
@@ -111,6 +147,8 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
 
     await lkRoom.connect(livekitUrl, token);
+    // Keep the group call alive while backgrounded; ends on swipe-away (OngoingCallService).
+    startOngoingCallNative('Group call', type !== 'audio');
     await lkRoom.localParticipant.setMicrophoneEnabled(true);
     if (type !== 'audio') await lkRoom.localParticipant.setCameraEnabled(true);
     refresh();
@@ -171,8 +209,19 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       await disconnectRoom();
       setGroupCallActive(false);
       setActiveConvId('');
+      setIsGroupCallUIMinimized(false);
     })();
   }, [disconnectRoom]);
+
+  const minimizeGroupCallUI = useCallback(() => {
+    if (!groupCallActive) return;
+    setIsGroupCallUIMinimized(true);
+    callSessionNav.minimizeToAppHome?.();
+  }, [groupCallActive]);
+
+  const openGroupCallUI = useCallback(() => {
+    setIsGroupCallUIMinimized(false);
+  }, []);
 
   // ── Socket listeners ───────────────────────────────────────────────────────
   // Re-bind on every new Socket.IO instance (reconnect / replace). Otherwise listeners stay on the
@@ -248,7 +297,9 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     <GroupCallContext.Provider value={{
       incomingGroupCall, groupCallActive, groupCallType,
       participants, room, getGroupCallRoom, activeConvId,
+      isScreenSharing, toggleScreenShare,
       startGroupCall, joinGroupCall, declineGroupCall, leaveGroupCall,
+      isGroupCallUIMinimized, minimizeGroupCallUI, openGroupCallUI,
     }}>
       {children}
     </GroupCallContext.Provider>

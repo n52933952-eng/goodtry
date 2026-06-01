@@ -2,4 +2,8 @@
     <string name="app_name">PlaySocial</string>
     <string name="notification_action_answer">Answer</string>
     <string name="notification_action_decline">Decline</string>
+    <string name="call_incoming_video_title">Incoming Video Call</string>
+    <string name="call_incoming_voice_title">Incoming Voice Call</string>
+    <string name="call_notification_title">Incoming Call</string>
+    <string name="call_notification_text">%1$s is calling…</string>
 </resources>

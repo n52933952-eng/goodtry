@@ -14,7 +14,7 @@
 import React, {
   createContext, useContext, useEffect, useRef, useState, useCallback,
 } from 'react';
-import { DeviceEventEmitter } from 'react-native';
+import { DeviceEventEmitter, Alert } from 'react-native';
 import {
   Room,
   RoomEvent,
@@ -29,7 +29,11 @@ import {
 import { useSocket } from './SocketContext';
 import { useUser } from './UserContext';
 import { API_URL } from '../utils/constants';
-import { onCallSessionEndedNative, clearCallCancelFlagsNative } from '../services/callData';
+import {
+  onCallSessionEndedNative, clearCallCancelFlagsNative,
+  startOngoingCallNative, stopOngoingCallNative,
+} from '../services/callData';
+import { callSessionNav } from '../services/callSessionNav';
 
 // ─── types ───────────────────────────────────────────────────────────────────
 interface Call {
@@ -63,6 +67,13 @@ interface LiveKitContextType {
   localVideoTrack: LocalTrack | null;
   remoteVideoTrack: RemoteTrack | null;
   remoteAudioTrack: RemoteTrack | null;
+  // ── screen sharing (Google Meet style) ──
+  /** True when *I* am sharing my screen. */
+  isScreenSharing: boolean;
+  /** Start/stop sharing my screen (triggers the Android capture-permission dialog). */
+  toggleScreenShare: () => Promise<void>;
+  /** The other party's screen-share video track, shown full-screen when present. */
+  remoteScreenTrack: RemoteTrack | null;
   room: Room | null;
   /** Prefer this for mic/camera actions — always the connected `Room` instance (state `room` can lag one frame). */
   getLiveKitRoom: () => Room | null;
@@ -70,6 +81,10 @@ interface LiveKitContextType {
   // ── busy users (same as mobile SocketContext busyUsers) ──
   busyUsers: Set<string>;
   isUserBusy: (userId: unknown) => boolean;
+  /** User left CallScreen but call is still active (app home while sharing). */
+  isCallUIMinimized: boolean;
+  minimizeCallUI: () => void;
+  openCallUI: () => void;
 }
 
 const LiveKitContext = createContext<LiveKitContextType | undefined>(undefined);
@@ -105,6 +120,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [localVideoTrack,   setLocalVideoTrack]   = useState<LocalTrack | null>(null);
   const [remoteVideoTrack,  setRemoteVideoTrack]  = useState<RemoteTrack | null>(null);
   const [remoteAudioTrack,  setRemoteAudioTrack]  = useState<RemoteTrack | null>(null);
+  const [remoteScreenTrack, setRemoteScreenTrack] = useState<RemoteTrack | null>(null);
+  const [isScreenSharing,   setIsScreenSharing]   = useState(false);
+  const [isCallUIMinimized,   setIsCallUIMinimized]   = useState(false);
+  const isScreenSharingRef = useRef(false);
 
   const roomRef        = useRef<Room | null>(null);
   const callPartnerRef = useRef<{ id: string; name: string } | null>(null);
@@ -139,7 +158,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setLocalVideoTrack(null);
     setRemoteVideoTrack(null);
     setRemoteAudioTrack(null);
+    setRemoteScreenTrack(null);
+    isScreenSharingRef.current = false;
+    setIsScreenSharing(false);
     setConnectionState(ConnectionState.Disconnected);
+    // Tear down the background-call foreground service (no longer in a call).
+    stopOngoingCallNative();
   }, []);
 
   const startIncomingTokenPrefetch = useCallback((callerId: string, callType: 'audio' | 'video') => {
@@ -190,12 +214,20 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setCallAccepted(true);
         setIsCalling(false);
       }
-      if (track.kind === Track.Kind.Video) setRemoteVideoTrack(track);
+      const isScreen = _pub?.source === Track.Source.ScreenShare;
+      if (track.kind === Track.Kind.Video) {
+        if (isScreen) setRemoteScreenTrack(track);
+        else setRemoteVideoTrack(track);
+      }
       if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(track);
     });
 
-    lkRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-      if (track.kind === Track.Kind.Video) setRemoteVideoTrack(null);
+    lkRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, _pub: any) => {
+      const isScreen = _pub?.source === Track.Source.ScreenShare;
+      if (track.kind === Track.Kind.Video) {
+        if (isScreen) setRemoteScreenTrack(null);
+        else setRemoteVideoTrack(null);
+      }
       if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(null);
     });
 
@@ -241,18 +273,33 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     await lkRoom.connect(livekitUrl, token);
 
-    await lkRoom.localParticipant.setMicrophoneEnabled(true);
+    // Keep the call alive when the app is backgrounded (home/app-switch). Started while the call
+    // screen is in the foreground, so the typed (microphone) foreground service is allowed to start.
+    startOngoingCallNative(callPartnerRef.current?.name, type === 'video');
+
+    // If the caller already joined + published (common: they ring first), the room link is up and remotes
+    // are present right after connect(). Mark connected NOW so the UI leaves "Connecting…" immediately,
+    // BEFORE the slower mic/camera acquisition below.
+    markConnectedIfRemotePresent();
+
+    // Mic is essential + fast — enable it, but don't let it block the connected state.
+    lkRoom.localParticipant.setMicrophoneEnabled(true).catch(() => {});
     if (type === 'video') {
-      try {
-        await lkRoom.localParticipant.setCameraEnabled(true);
-        syncLocalVideoFromParticipant();
-        requestAnimationFrame(() => syncLocalVideoFromParticipant());
-        setTimeout(() => syncLocalVideoFromParticipant(), 120);
-        setTimeout(() => syncLocalVideoFromParticipant(), 450);
-      } catch (_) {}
+      // Camera acquisition is the slowest step on many Android devices. Do NOT block the connect path on it
+      // (it was adding seconds to "Connecting…"). The preview attaches via LocalTrackPublished /
+      // syncLocalVideoFromParticipant when the track is ready.
+      lkRoom.localParticipant
+        .setCameraEnabled(true)
+        .then(() => {
+          syncLocalVideoFromParticipant();
+          requestAnimationFrame(() => syncLocalVideoFromParticipant());
+          setTimeout(() => syncLocalVideoFromParticipant(), 120);
+          setTimeout(() => syncLocalVideoFromParticipant(), 450);
+        })
+        .catch(() => {});
     }
 
-    // If the other side connected first (common after early socket ring), remotes are already present.
+    // Re-check in case the remote joined while mic was being set up.
     markConnectedIfRemotePresent();
   }, [disconnectRoom]);
 
@@ -282,6 +329,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setCallEnded(true);
     setCallAccepted(false);
     setIsCalling(false);
+    setIsCallUIMinimized(false);
     setCall({});
     disconnectRoom();
     callPartnerRef.current = null;
@@ -394,6 +442,40 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       answerCallInFlightRef.current = false;
     }
   }, [call, fetchToken, connectRoom, disconnectRoom, connectionState]);
+
+  // ── PUBLIC: toggleScreenShare (Google Meet style) ─────────────────────────
+  // Android captures the WHOLE screen (no single-window capture on mobile). The first call
+  // triggers the system MediaProjection consent dialog; LiveKit publishes a ScreenShare track.
+  const toggleScreenShare = useCallback(async () => {
+    const lk = roomRef.current;
+    if (!lk) return;
+    const next = !isScreenSharingRef.current;
+    try {
+      await lk.localParticipant.setScreenShareEnabled(next);
+      isScreenSharingRef.current = next;
+      setIsScreenSharing(next);
+    } catch (err: any) {
+      // User cancelled the capture-permission dialog, or it failed — revert to off.
+      const msg = err?.message || String(err);
+      console.warn('⚠️ [LiveKit] screen share toggle failed:', msg);
+      isScreenSharingRef.current = false;
+      setIsScreenSharing(false);
+      // Only surface real failures (not a plain user-cancel of the system dialog).
+      if (next && !/cancel|denied|abort/i.test(msg)) {
+        Alert.alert('Screen share', `Could not start screen sharing.\n\n${msg}`);
+      }
+    }
+  }, []);
+
+  const minimizeCallUI = useCallback(() => {
+    if (!callAcceptedRef.current) return;
+    setIsCallUIMinimized(true);
+    callSessionNav.minimizeToAppHome?.();
+  }, []);
+
+  const openCallUI = useCallback(() => {
+    setIsCallUIMinimized(false);
+  }, []);
 
   // ── PUBLIC: leaveCall ────────────────────────────────────────────────────
   const leaveCall = useCallback(() => {
@@ -554,8 +636,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setIncomingCallFromNotification,
       getIncomingCallFromNotificationCallerId,
       localVideoTrack, remoteVideoTrack, remoteAudioTrack,
+      isScreenSharing, toggleScreenShare, remoteScreenTrack,
       room, getLiveKitRoom, connectionState,
       busyUsers, isUserBusy,
+      isCallUIMinimized, minimizeCallUI, openCallUI,
     }}>
       {children}
     </LiveKitContext.Provider>

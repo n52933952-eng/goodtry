@@ -6,17 +6,100 @@ import {
   StyleSheet,
   ActivityIndicator,
   Image,
+  NativeModules,
+  Platform,
+  AppState,
 } from 'react-native';
 import { VideoView, useLocalParticipant, useRemoteParticipants, useTracks } from '@livekit/react-native';
 import { Track, ConnectionState, RoomEvent, LocalVideoTrack, facingModeFromLocalTrack, ParticipantEvent } from 'livekit-client';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
+import { moveAppToBackgroundNative } from '../../services/callData';
+import ScreenShareViewer from '../../components/ScreenShareViewer';
 
 const idEq = (a: unknown, b: unknown) =>
   String(a ?? '').trim() === String(b ?? '').trim();
+
+/**
+ * Call UI follows the PHONE language (not the in-app toggle) so it matches the native
+ * incoming-call screen + notification: Arabic phone → Arabic, every other language → English.
+ */
+const getDeviceLanguage = (): string => {
+  try {
+    let locale = '';
+    if (Platform.OS === 'ios') {
+      const s = NativeModules.SettingsManager?.settings;
+      locale = s?.AppleLocale || s?.AppleLanguages?.[0] || '';
+    } else {
+      locale = NativeModules.I18nManager?.localeIdentifier || '';
+    }
+    return String(locale).toLowerCase();
+  } catch {
+    return '';
+  }
+};
+
+const IS_ARABIC_DEVICE = getDeviceLanguage().startsWith('ar');
+
+const CALL_TEXT = {
+  en: {
+    incomingCallFrom: 'Incoming call from',
+    videoCall: 'Video call',
+    voiceCall: 'Voice call',
+    decline: 'Decline',
+    answer: 'Answer',
+    connecting: 'Connecting…',
+    startingVideoCall: 'Starting video call',
+    startingVoiceCall: 'Starting voice call',
+    cancel: 'Cancel',
+    ringing: 'Ringing…',
+    end: 'End',
+    mute: 'Mute',
+    unmute: 'Unmute',
+    speaker: 'Speaker',
+    earpiece: 'Earpiece',
+    camOn: 'Cam On',
+    camOff: 'Cam Off',
+    flip: 'Flip',
+    share: 'Share',
+    stopShare: 'Stop',
+    screenLabel: 'Screen',
+    youArePresenting: 'You are sharing your screen',
+    appHome: 'App home',
+    phoneHome: 'Phone',
+  },
+  ar: {
+    incomingCallFrom: 'مكالمة واردة من',
+    videoCall: 'مكالمة فيديو',
+    voiceCall: 'مكالمة صوتية',
+    decline: 'رفض',
+    answer: 'رد',
+    connecting: 'جارٍ الاتصال…',
+    startingVideoCall: 'بدء مكالمة فيديو',
+    startingVoiceCall: 'بدء مكالمة صوتية',
+    cancel: 'إلغاء',
+    ringing: 'يرن…',
+    end: 'إنهاء',
+    mute: 'كتم',
+    unmute: 'إلغاء الكتم',
+    speaker: 'مكبر الصوت',
+    earpiece: 'سماعة الأذن',
+    camOn: 'تشغيل الكاميرا',
+    camOff: 'إيقاف الكاميرا',
+    flip: 'تبديل',
+    share: 'مشاركة',
+    stopShare: 'إيقاف',
+    screenLabel: 'الشاشة',
+    youArePresenting: 'أنت تشارك شاشتك',
+    appHome: 'الرئيسية',
+    phoneHome: 'الهاتف',
+  },
+} as const;
+
+const CT = IS_ARABIC_DEVICE ? CALL_TEXT.ar : CALL_TEXT.en;
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
@@ -36,6 +119,11 @@ const CallScreen = () => {
     localVideoTrack,
     remoteVideoTrack,
     getLiveKitRoom,
+    isScreenSharing,
+    toggleScreenShare,
+    remoteScreenTrack,
+    minimizeCallUI,
+    openCallUI,
   } = useWebRTC();
 
   const params = route.params || {};
@@ -81,6 +169,7 @@ const CallScreen = () => {
   const isVideo = (paramCallType || call.callType) === 'video';
   const isConnected = connectionState === ConnectionState.Connected && callAccepted;
   const [localPreviewFallbackTrack, setLocalPreviewFallbackTrack] = useState<any>(null);
+  const [localPreviewKey, setLocalPreviewKey] = useState(0);
 
   const resolveCallRoom = useCallback(
     () => getLiveKitRoom() ?? room,
@@ -129,6 +218,17 @@ const CallScreen = () => {
       clearInterval(periodicSync);
     };
   }, [resolveCallRoom, isVideo, callAccepted, syncLocalPreviewFallback]);
+
+  // Re-attach local camera preview after leaving the app (screen share / home).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        syncLocalPreviewFallback();
+        setLocalPreviewKey((k) => k + 1);
+      }
+    });
+    return () => sub.remove();
+  }, [syncLocalPreviewFallback]);
 
   // Keep Mute / Unmute label in sync with the real mic track (voice + video).
   useEffect(() => {
@@ -279,6 +379,22 @@ const CallScreen = () => {
     if (navigation.canGoBack()) navigation.goBack();
   };
 
+  const goAppHomeWhileSharing = useCallback(() => {
+    minimizeCallUI();
+  }, [minimizeCallUI]);
+
+  useFocusEffect(
+    useCallback(() => {
+      openCallUI();
+    }, [openCallUI]),
+  );
+
+  const goPhoneHomeWhileSharing = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      await moveAppToBackgroundNative();
+    }
+  }, []);
+
   const handleAnswer = async () => {
     if (isAnswering) return;
     setIsAnswering(true);
@@ -304,7 +420,7 @@ const CallScreen = () => {
   if (call.isReceivingCall && !callAccepted && autoAnswerFromNative) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>Connecting…</Text>
+        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>{CT.connecting}</Text>
         {callerAvatar ? (
           <Image source={{ uri: callerAvatar }} style={styles.outgoingAvatar} />
         ) : (
@@ -314,11 +430,11 @@ const CallScreen = () => {
         )}
         <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
         <Text style={[styles.callStatus, { color: colors.textGray }]}>
-          {isVideo ? 'Starting video call' : 'Starting voice call'}
+          {isVideo ? CT.startingVideoCall : CT.startingVoiceCall}
         </Text>
         <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
         <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error, marginTop: 32 }]} onPress={handleLeave}>
-          <Text style={styles.btnLabel}>Cancel</Text>
+          <Text style={styles.btnLabel}>{CT.cancel}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -328,7 +444,7 @@ const CallScreen = () => {
   if (call.isReceivingCall && !callAccepted) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>Incoming call from</Text>
+        <Text style={[styles.incomingTitle, { color: colors.textGray }]}>{CT.incomingCallFrom}</Text>
         {callerAvatar ? (
           <Image source={{ uri: callerAvatar }} style={styles.outgoingAvatar} />
         ) : (
@@ -338,18 +454,18 @@ const CallScreen = () => {
         )}
         <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
         <Text style={[styles.callStatus, { color: colors.textGray }]}>
-          {isVideo ? 'Video call' : 'Voice call'}
+          {isVideo ? CT.videoCall : CT.voiceCall}
         </Text>
         <View style={styles.incomingActions}>
           <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error }]} onPress={handleLeave}>
-            <Text style={styles.btnLabel}>Decline</Text>
+            <Text style={styles.btnLabel}>{CT.decline}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.btn, { backgroundColor: colors.success, opacity: isAnswering ? 0.85 : 1 }]}
             onPress={handleAnswer}
             disabled={isAnswering}
           >
-            {isAnswering ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnLabel}>Answer</Text>}
+            {isAnswering ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnLabel}>{CT.answer}</Text>}
           </TouchableOpacity>
         </View>
       </View>
@@ -368,9 +484,9 @@ const CallScreen = () => {
           </View>
         )}
         <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
-        <Text style={[styles.ringingText, { color: colors.primary }]}>Ringing…</Text>
+        <Text style={[styles.ringingText, { color: colors.primary }]}>{CT.ringing}</Text>
         <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error, marginTop: 32 }]} onPress={handleLeave}>
-          <Text style={styles.btnLabel}>Cancel</Text>
+          <Text style={styles.btnLabel}>{CT.cancel}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -380,8 +496,14 @@ const CallScreen = () => {
   return (
     <View style={[styles.container, { backgroundColor: '#000' }]}>
 
-      {/* Remote video (full screen) */}
-      {isVideo && remoteVideoTrack ? (
+      {/* Remote screen share takes priority over the camera (Google Meet style) */}
+      {remoteScreenTrack ? (
+        <ScreenShareViewer
+          videoTrack={remoteScreenTrack}
+          label={CT.screenLabel}
+          style={styles.remoteVideo}
+        />
+      ) : isVideo && remoteVideoTrack ? (
         <VideoView
           videoTrack={remoteVideoTrack}
           style={styles.remoteVideo}
@@ -418,7 +540,7 @@ const CallScreen = () => {
           ) : (
             <>
               <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 16 }} />
-              <Text style={[styles.connectingText, { color: '#fff' }]}>Connecting…</Text>
+              <Text style={[styles.connectingText, { color: '#fff' }]}>{CT.connecting}</Text>
             </>
           )}
         </View>
@@ -428,6 +550,7 @@ const CallScreen = () => {
       {isVideo && localTrackForPiP && (
         <View style={styles.localVideoWrap} pointerEvents="box-none">
           <VideoView
+            key={`local-pip-${localTrackForPiP.sid ?? 'cam'}-${localPreviewKey}`}
             videoTrack={localTrackForPiP}
             style={styles.localVideo}
             objectFit="cover"
@@ -441,8 +564,19 @@ const CallScreen = () => {
       {isVideo && callAccepted && (
         <View style={styles.topBar}>
           <Text style={styles.durationText}>
-            {isConnected ? formatDuration(durationSeconds) : 'Connecting…'}
+            {isConnected ? formatDuration(durationSeconds) : CT.connecting}
           </Text>
+        </View>
+      )}
+
+      {isScreenSharing && (
+        <View style={styles.shareLeaveRow}>
+          <TouchableOpacity style={styles.shareLeaveBtn} onPress={goAppHomeWhileSharing}>
+            <Text style={styles.shareLeaveText}>🏠 {CT.appHome}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.shareLeaveBtn} onPress={goPhoneHomeWhileSharing}>
+            <Text style={styles.shareLeaveText}>↓ {CT.phoneHome}</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -453,7 +587,7 @@ const CallScreen = () => {
           onPress={handleMute}
         >
           <Text style={[styles.controlLabel, { color: isMuted ? '#fff' : colors.text }]}>
-            {isMuted ? 'Unmute' : 'Mute'}
+            {isMuted ? CT.unmute : CT.mute}
           </Text>
         </TouchableOpacity>
 
@@ -462,7 +596,7 @@ const CallScreen = () => {
           onPress={handleSpeakerToggle}
         >
           <Text style={[styles.controlLabel, { color: isSpeaker ? '#fff' : colors.text }]}>
-            {isSpeaker ? 'Speaker' : 'Earpiece'}
+            {isSpeaker ? CT.speaker : CT.earpiece}
           </Text>
         </TouchableOpacity>
 
@@ -473,25 +607,40 @@ const CallScreen = () => {
               onPress={handleCamToggle}
             >
               <Text style={[styles.controlLabel, { color: isCamOff ? '#fff' : colors.text }]}>
-                {isCamOff ? 'Cam On' : 'Cam Off'}
+                {isCamOff ? CT.camOn : CT.camOff}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.controlBtn, { backgroundColor: colors.backgroundLight }]}
               onPress={handleFlipCamera}
             >
-              <Text style={[styles.controlLabel, { color: colors.text }]}>Flip</Text>
+              <Text style={[styles.controlLabel, { color: colors.text }]}>{CT.flip}</Text>
             </TouchableOpacity>
           </>
         )}
 
         <TouchableOpacity
+          style={[styles.controlBtn, { backgroundColor: isScreenSharing ? colors.primary : colors.backgroundLight }]}
+          onPress={toggleScreenShare}
+        >
+          <Text style={[styles.controlLabel, { color: isScreenSharing ? '#fff' : colors.text }]}>
+            {isScreenSharing ? CT.stopShare : CT.share}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.hangUpControlBtn, { backgroundColor: colors.error }]}
           onPress={handleLeave}
         >
-          <Text style={styles.btnLabel}>End</Text>
+          <Text style={styles.btnLabel}>{CT.end}</Text>
         </TouchableOpacity>
       </View>
+
+      {isScreenSharing && (
+        <View style={styles.presentingBanner}>
+          <Text style={styles.presentingText}>{CT.youArePresenting}</Text>
+        </View>
+      )}
     </View>
   );
 };
@@ -526,6 +675,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'center',
     flexWrap: 'wrap', gap: 12, paddingHorizontal: 16,
   },
+  shareLeaveRow:     {
+    position: 'absolute', bottom: 118, left: 16, right: 16,
+    flexDirection: 'row', gap: 10,
+  },
+  shareLeaveBtn:     {
+    flex: 1, alignItems: 'center', paddingVertical: 10,
+    borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.72)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  shareLeaveText:    { color: '#fff', fontSize: 13, fontWeight: '600' },
   controlBtn:        {
     paddingVertical: 10, paddingHorizontal: 16,
     borderRadius: 20, minWidth: 70, alignItems: 'center',
@@ -542,6 +701,18 @@ const styles = StyleSheet.create({
   connectedAvatarLabel: { color: '#fff', fontSize: 13, maxWidth: 80, textAlign: 'center' },
   connectingText:    { color: '#fff', fontSize: 16, marginTop: 8 },
   durationLarge:     { color: '#fff', fontSize: 24, fontWeight: '600', marginTop: 8 },
+  screenBadge:       {
+    position: 'absolute', top: 48, left: 16,
+    backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 4,
+  },
+  screenBadgeText:   { color: '#fff', fontSize: 12, fontWeight: '600' },
+  presentingBanner:  {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    paddingTop: 48, paddingBottom: 8, paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center',
+  },
+  presentingText:    { color: '#fff', fontSize: 13, fontWeight: '600' },
 });
 
 export default CallScreen;

@@ -152,6 +152,52 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     }
 
     /**
+     * Start the ongoing-call foreground service so the call survives the app being backgrounded
+     * (home button / switching apps). Must be called while the app is in the foreground (i.e. when
+     * the call connects), which it is from the call screen.
+     */
+    @ReactMethod
+    fun startOngoingCall(callerName: String?, withCamera: Boolean, promise: Promise) {
+        try {
+            OngoingCallService.start(reactApplicationContext, callerName, withCamera)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "startOngoingCall failed: ${e.message}", e)
+        }
+    }
+
+    /** Stop the ongoing-call foreground service (call ended / left). */
+    @ReactMethod
+    fun stopOngoingCall(promise: Promise) {
+        try {
+            OngoingCallService.stop(reactApplicationContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", "stopOngoingCall failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Send the app to the home screen WITHOUT destroying it (like pressing the Home button).
+     * Used so the back button while live/in a call goes home and keeps the foreground service
+     * (camera/mic/screen-share) running, instead of tearing down the stream.
+     */
+    @ReactMethod
+    fun moveToBackground(promise: Promise) {
+        try {
+            val activity = currentActivity
+            if (activity != null) {
+                activity.runOnUiThread { activity.moveTaskToBack(true) }
+                promise.resolve(true)
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.reject("ERROR", "moveToBackground failed: ${e.message}", e)
+        }
+    }
+
+    /**
      * Generic SharedPreferences reader for small payloads (e.g. notification actions).
      * Returns a map of all keys/values in the given prefsName.
      */

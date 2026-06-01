@@ -7,6 +7,7 @@ import { PostProvider } from './context/PostContext';
 import { SocketProvider } from './context/SocketContext';
 import { LiveKitProvider } from './context/LiveKitContext';
 import { GroupCallProvider } from './context/GroupCallContext';
+import { LiveBroadcastProvider } from './context/LiveBroadcastContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import AppNavigator from './navigation/AppNavigator';
@@ -48,7 +49,9 @@ const App = () => {
                 <SocketProvider>
                   <LiveKitProvider>
                     <GroupCallProvider>
-                      <AppNavigator />
+                      <LiveBroadcastProvider>
+                        <AppNavigator />
+                      </LiveBroadcastProvider>
                     </GroupCallProvider>
                   </LiveKitProvider>
                 </SocketProvider>

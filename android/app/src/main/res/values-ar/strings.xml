@@ -1,0 +1,8 @@
+<resources>
+    <string name="notification_action_answer">رد</string>
+    <string name="notification_action_decline">رفض</string>
+    <string name="call_incoming_video_title">مكالمة فيديو واردة</string>
+    <string name="call_incoming_voice_title">مكالمة صوتية واردة</string>
+    <string name="call_notification_title">مكالمة واردة</string>
+    <string name="call_notification_text">‏%1$s يتصل بك…</string>
+</resources>

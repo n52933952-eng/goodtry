@@ -44,6 +44,8 @@ import ActivityScreen from '../screens/Activity/ActivityScreen';
 import CreateStoryScreen from '../screens/Stories/CreateStoryScreen';
 import StoryViewerScreen from '../screens/Stories/StoryViewerScreen';
 import { useSocket } from '../context/SocketContext';
+import CallSessionMiniBar from '../components/CallSessionMiniBar';
+import { callSessionNav } from '../services/callSessionNav';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -654,7 +656,7 @@ const AppNavigator = () => {
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
   const pendingChessAcceptNavRef = useRef<any>(null);
   const pendingCardAcceptNavRef  = useRef<any>(null);
-  const lastNavigateToCallRef = useRef<{ callerId: string; ts: number } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x)
+  const lastNavigateToCallRef = useRef<{ callerId: string; ts: number; auto?: boolean } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x). `auto` = that nav was an auto-answer.
   const lastIncomingOfferSdpRef = useRef<string | undefined>(undefined); // New offer SDP = new call session (same caller after decline)
   const prevIsReceivingRef = useRef(false);
   const lastSetUpForCallerRef = useRef<string | null>(null); // P0: Avoid calling setIncomingCallFromNotification twice (listener + effect)
@@ -677,6 +679,28 @@ const AppNavigator = () => {
     });
     return () => sub.remove();
   }, []);
+
+  // Calls: navigate away while keeping session alive, or return to call UI
+  useEffect(() => {
+    if (!navReady) return;
+    callSessionNav.minimizeToAppHome = () => {
+      navigationRef.current?.navigate('MainTabs', {
+        screen: 'Feed',
+        params: { screen: 'FeedScreen' },
+      });
+    };
+    callSessionNav.returnToOneToOne = () => {
+      navigationRef.current?.navigate('CallScreen');
+    };
+    callSessionNav.returnToGroup = () => {
+      navigationRef.current?.navigate('GroupCallScreen');
+    };
+    return () => {
+      callSessionNav.minimizeToAppHome = null;
+      callSessionNav.returnToOneToOne = null;
+      callSessionNav.returnToGroup = null;
+    };
+  }, [navReady]);
 
   // Navigate to GroupCallScreen when an incoming group call arrives
   const { incomingGroupCall } = useGroupCall();
@@ -792,7 +816,22 @@ const AppNavigator = () => {
         console.log('⏸️ [AppNavigator] Skipping socket navigation - pending NavigateToCallScreen event will handle it');
         return;
       }
-      
+
+      // If user already pressed Answer on native UI for THIS call, pass notification params so CallScreen auto-answers.
+      // Use getter (ref) so we see cleared value immediately after CallCanceled – no wait for React state.
+      const notificationCallerId = getIncomingCallFromNotificationCallerId?.() ?? null;
+      const fromNotificationAnswer = notificationCallerId != null && notificationCallerId === call.from;
+
+      // ROOT FIX: the in-app Answer/Decline UI must ONLY appear when a call arrives while the app is in the
+      // FOREGROUND. If the call arrived while backgrounded/locked, the native IncomingCallActivity already
+      // shows Answer/Decline; pre-navigating here would stage a SECOND in-app Answer/Decline that the user
+      // sees after pressing Answer on the notification. In that case do nothing — the Answer flow
+      // (MainActivity → NavigateToCallScreen, shouldAutoAnswer=true) drives navigation straight to Connecting.
+      if (AppState.currentState !== 'active' && !fromNotificationAnswer) {
+        console.log('⏸️ [AppNavigator] Skipping socket nav - app not foreground; native UI handles incoming call');
+        return;
+      }
+
       const currentRoute = navigationRef.current.getCurrentRoute?.();
       const alreadyOnCall = currentRoute?.name === 'CallScreen';
       if (alreadyOnCall) {
@@ -802,10 +841,6 @@ const AppNavigator = () => {
       console.log('📞 [AppNavigator] Incoming call detected from socket, navigating to CallScreen...');
       console.log('📞 [AppNavigator] Caller:', call.name, '(', call.from, ')');
       console.log('📞 [AppNavigator] Call type:', call.callType);
-      // If user already pressed Answer on native UI for THIS call, pass notification params so CallScreen auto-answers.
-      // Use getter (ref) so we see cleared value immediately after CallCanceled – no wait for React state.
-      const notificationCallerId = getIncomingCallFromNotificationCallerId?.() ?? null;
-      const fromNotificationAnswer = notificationCallerId != null && notificationCallerId === call.from;
       navigationRef.current.navigate('CallScreen', {
         userName: call.name,
         userId: call.from,
@@ -817,7 +852,8 @@ const AppNavigator = () => {
       });
       // CRITICAL: Set lastNavigateToCallRef so later NavigateToCallScreen events are treated as duplicates.
       // Otherwise they call setIncomingCallFromNotification again and reset processingCallUserRef, isAnsweringRef, etc.
-      if (call.from) lastNavigateToCallRef.current = { callerId: call.from, ts: Date.now() };
+      // Record auto=fromNotificationAnswer so a later push-Answer can upgrade a non-auto socket navigation.
+      if (call.from) lastNavigateToCallRef.current = { callerId: call.from, ts: Date.now(), auto: fromNotificationAnswer };
       console.log('✅ [AppNavigator] Navigated to CallScreen for incoming call (from socket)', { fromNotificationAnswer });
     }
   }, [call.isReceivingCall, call.from, call.name, call.callType, callEnded, pendingCancel, hasPendingCancelFromPrefs, getIncomingCallFromNotificationCallerId]);
@@ -898,7 +934,7 @@ const AppNavigator = () => {
           shouldDecline: data.shouldDecline || false,
           incomingCallKey: Date.now(),
         });
-        if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
+        if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now(), auto: pendingHasAnswer };
         pendingNavigationEvent.current = null;
         console.log('✅ [AppNavigator] Processed pending navigation to CallScreen');
       }
@@ -933,6 +969,15 @@ const AppNavigator = () => {
             return;
           }
           console.log('📞 [AppNavigator] Found pending call in SharedPreferences:', callData);
+          // COLD-START SPEEDUP: set up call state + start the LiveKit token prefetch NOW instead of waiting
+          // for the MainActivity → NavigateToCallScreen round-trip. This lets CallScreen's auto-answer fire
+          // immediately and begins fetching the token / connecting the room at the earliest possible moment
+          // (the slow case is a locked/killed-app Answer). Deduped via lastSetUpForCallerRef.
+          if (answering && setIncomingCallFromNotification && lastSetUpForCallerRef.current !== cid) {
+            const ct = callData.callType === 'video' ? 'video' : 'audio';
+            lastSetUpForCallerRef.current = cid;
+            setIncomingCallFromNotification(cid, callData.callerName || 'Unknown', ct, true);
+          }
           navigationRef.current.navigate('CallScreen', {
             userName: callData.callerName,
             userId: callData.callerId,
@@ -942,7 +987,7 @@ const AppNavigator = () => {
             shouldDecline: callData.shouldDecline === true,
             incomingCallKey: Date.now(),
           });
-          if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now() };
+          if (cid) lastNavigateToCallRef.current = { callerId: cid, ts: Date.now(), auto: callData.shouldAutoAnswer === true };
           clearCallData();
           console.log('✅ [AppNavigator] Navigated to CallScreen from SharedPreferences');
         })
@@ -1053,9 +1098,18 @@ const AppNavigator = () => {
         // signal processing and auto-answer when callUser arrives.
         const nav = lastNavigateToCallRef.current;
         const isDuplicate = callerId && nav && nav.callerId === callerId && Date.now() - nav.ts < 15000;
-        if (isDuplicate) {
+        // Allow a native Answer (shouldAutoAnswer) to UPGRADE a prior NON-auto navigation.
+        // Background calls navigate via the socket effect first with shouldAutoAnswer=false (in-app
+        // Answer/Decline UI). Without this, the authoritative Answer event from the push would be
+        // dropped as a duplicate, leaving that Answer/Decline visible even though the user already
+        // pressed Answer on the notification. Upgrading flips CallScreen to "Connecting…" + auto-answers.
+        const needsAutoAnswerUpgrade = isAnswerFromNative && !!nav && nav.auto !== true;
+        if (isDuplicate && !needsAutoAnswerUpgrade) {
           console.log('📞 [AppNavigator] P0: Skip duplicate NavigateToCallScreen (already set up for this call)');
           return;
+        }
+        if (isDuplicate && needsAutoAnswerUpgrade) {
+          console.log('📞 [AppNavigator] Upgrading existing navigation to auto-answer (user answered from push)');
         }
 
         if (isAnswerFromNative && guard.hasPendingCancelFromPrefs) {
@@ -1103,7 +1157,7 @@ const AppNavigator = () => {
               shouldDecline: data.shouldDecline || false,
               incomingCallKey: Date.now(),
             });
-            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
+            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now(), auto: true };
             console.log('✅ [AppNavigator] Updated CallScreen route params with shouldAutoAnswer=true');
           } else {
             console.log('📞 [AppNavigator] Navigating to CallScreen with params:', {
@@ -1122,7 +1176,7 @@ const AppNavigator = () => {
               shouldDecline: data.shouldDecline || false,
               incomingCallKey: Date.now(),
             });
-            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now() };
+            if (callerId) lastNavigateToCallRef.current = { callerId, ts: Date.now(), auto: data.shouldAutoAnswer === true };
             console.log('✅ [AppNavigator] Navigated to CallScreen - shouldAutoAnswer:', data.shouldAutoAnswer === true);
           }
         } else {
@@ -1155,7 +1209,7 @@ const AppNavigator = () => {
                 shouldDecline: storedData.shouldDecline || false,
                 incomingCallKey: Date.now(),
               });
-              if (sid) lastNavigateToCallRef.current = { callerId: sid, ts: Date.now() };
+              if (sid) lastNavigateToCallRef.current = { callerId: sid, ts: Date.now(), auto: storedData.shouldAutoAnswer === true };
               pendingNavigationEvent.current = null;
               console.log('✅ [AppNavigator] Retry - Navigated to CallScreen');
             }, 500);
@@ -1375,6 +1429,7 @@ const AppNavigator = () => {
             }}
           />
         )}
+        {user && <CallSessionMiniBar />}
       </View>
     </NavigationContainer>
   );

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
+import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
@@ -38,10 +39,29 @@ const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount } = useSocket();
+  const { isLive } = useLiveBroadcast();
   const { t, isRTL } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
   const showToast = useShowToast();
-  
+
+  const myUserId = user?._id != null ? String(user._id) : '';
+
+  /** Host browsing the app while live — never show your own LIVE card (avoids opening viewer by mistake). */
+  const isOwnLivePost = useCallback(
+    (item: any) => {
+      if (!myUserId || !item?.isLive) return false;
+      const authorId = item.postedBy?._id != null ? String(item.postedBy._id) : '';
+      const postId = item._id != null ? String(item._id) : '';
+      return authorId === myUserId || postId === `live_${myUserId}`;
+    },
+    [myUserId],
+  );
+
+  const visiblePosts = useMemo(() => {
+    if (!isLive) return posts;
+    return posts.filter((p) => !isOwnLivePost(p));
+  }, [posts, isLive, isOwnLivePost]);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -210,6 +230,9 @@ const FeedScreen = ({ navigation }: any) => {
             ).trim()
           : '';
       if (!sid) return;
+      const myId = user?._id != null ? String(user._id) : '';
+      // Host is already broadcasting — don't inject a LIVE card they could tap by mistake.
+      if (myId && sid === myId) return;
       const pseudo = {
         _id:          `live_${sid}`,
         isLive:       true,
@@ -621,7 +644,7 @@ const FeedScreen = ({ navigation }: any) => {
 
       <FlatList
         ref={feedListRef}
-        data={loading ? [] : posts}
+        data={loading ? [] : visiblePosts}
         renderItem={renderPost}
         removeClippedSubviews={false}
         ItemSeparatorComponent={() => <View style={styles.postSeparator} />}

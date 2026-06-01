@@ -17,14 +17,18 @@ import {
   Image,
   ActivityIndicator,
   ScrollView,
+  AppState,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
-import { Track, ParticipantEvent } from 'livekit-client';
-import { useNavigation } from '@react-navigation/native';
+import { Track, ParticipantEvent, RoomEvent } from 'livekit-client';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useGroupCall } from '../../context/GroupCallContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
+import { moveAppToBackgroundNative } from '../../services/callData';
+import ScreenShareViewer from '../../components/ScreenShareViewer';
 
 // ── Single participant tile ───────────────────────────────────────────────────
 const ParticipantTile = ({ participant, size }: { participant: any; size: number }) => {
@@ -55,14 +59,43 @@ const ParticipantTile = ({ participant, size }: { participant: any; size: number
 
 // ── Local participant tile ────────────────────────────────────────────────────
 const LocalTile = ({ room, size, userName }: { room: any; size: number; userName: string }) => {
+  const [videoTrack, setVideoTrack] = useState<any>(null);
+  const [renderKey, setRenderKey] = useState(0);
+
+  const refreshTrack = useCallback(() => {
+    const camPub = room?.localParticipant?.getTrackPublication?.(Track.Source.Camera);
+    setVideoTrack(camPub?.track ?? null);
+    setRenderKey((k) => k + 1);
+  }, [room]);
+
+  useEffect(() => {
+    refreshTrack();
+    if (!room) return undefined;
+    const onPub = () => refreshTrack();
+    room.on?.(RoomEvent.LocalTrackPublished, onPub);
+    room.on?.(RoomEvent.LocalTrackUnpublished, onPub);
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshTrack();
+    });
+    return () => {
+      room.off?.(RoomEvent.LocalTrackPublished, onPub);
+      room.off?.(RoomEvent.LocalTrackUnpublished, onPub);
+      sub.remove();
+    };
+  }, [room, refreshTrack]);
+
   if (!room) return null;
-  const camPub = room.localParticipant?.getTrackPublication?.(Track.Source.Camera);
-  const videoTrack = camPub?.track;
 
   return (
     <View style={[styles.tile, { width: size, height: size * 1.2 }]}>
       {videoTrack ? (
-        <VideoView videoTrack={videoTrack} style={StyleSheet.absoluteFill} objectFit="cover" mirror />
+        <VideoView
+          key={`local-${videoTrack.sid ?? 'cam'}-${renderKey}`}
+          videoTrack={videoTrack}
+          style={StyleSheet.absoluteFill}
+          objectFit="cover"
+          mirror
+        />
       ) : (
         <View style={[StyleSheet.absoluteFill, styles.avatarTile]}>
           <View style={styles.avatarCircle}>
@@ -94,6 +127,10 @@ const GroupCallScreen = () => {
     joinGroupCall,
     declineGroupCall,
     leaveGroupCall,
+    isScreenSharing,
+    toggleScreenShare,
+    minimizeGroupCallUI,
+    openGroupCallUI,
   } = useGroupCall();
 
   const resolveGroupRoom = useCallback(
@@ -170,6 +207,22 @@ const GroupCallScreen = () => {
     leaveGroupCall();
     if (navigation.canGoBack()) navigation.goBack();
   }, [leaveGroupCall, navigation]);
+
+  const goAppHomeWhileSharing = useCallback(() => {
+    minimizeGroupCallUI();
+  }, [minimizeGroupCallUI]);
+
+  useFocusEffect(
+    useCallback(() => {
+      openGroupCallUI();
+    }, [openGroupCallUI]),
+  );
+
+  const goPhoneHomeWhileSharing = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      await moveAppToBackgroundNative();
+    }
+  }, []);
 
   const handleJoin = useCallback(async () => {
     if (isJoining) return;
@@ -282,8 +335,22 @@ const GroupCallScreen = () => {
 
   // ── Active call UI ────────────────────────────────────────────────────────
   const allTiles = [{ id: 'local', isLocal: true }, ...participants.map(p => ({ id: p.identity, isLocal: false, participant: p }))];
-  const tileSize = allTiles.length <= 2 ? 160 : allTiles.length <= 4 ? 140 : 110;
-  const numCols  = allTiles.length <= 1 ? 1 : 2;
+
+  // Find an active screen share (remote first, then my own) — Google Meet style: show it big.
+  const screenShare = (() => {
+    for (const p of participants) {
+      const pub = p.getTrackPublication?.(Track.Source.ScreenShare);
+      if (pub?.track) return { track: pub.track, name: p.name || p.identity || 'Someone' };
+    }
+    const lp = room?.localParticipant;
+    const myPub = lp?.getTrackPublication?.(Track.Source.ScreenShare);
+    if (myPub?.track) return { track: myPub.track, name: 'You (presenting)' };
+    return null;
+  })();
+
+  // When someone is presenting, participant tiles shrink to a small row under the screen.
+  const tileSize = screenShare ? 90 : allTiles.length <= 2 ? 160 : allTiles.length <= 4 ? 140 : 110;
+  const numCols  = screenShare ? 3 : allTiles.length <= 1 ? 1 : 2;
 
   return (
     <View style={[styles.container, { backgroundColor: '#111' }]}>
@@ -295,6 +362,15 @@ const GroupCallScreen = () => {
         </Text>
       </View>
 
+      {/* Shared screen (big) */}
+      {screenShare && (
+        <ScreenShareViewer
+          videoTrack={screenShare.track}
+          label={screenShare.name}
+          style={styles.screenStage}
+        />
+      )}
+
       {/* Grid */}
       <FlatList
         data={allTiles}
@@ -302,12 +378,24 @@ const GroupCallScreen = () => {
         numColumns={numCols}
         key={numCols}
         contentContainerStyle={styles.grid}
+        style={screenShare ? styles.gridCompact : undefined}
         renderItem={({ item }) =>
           item.isLocal
             ? <LocalTile room={room} size={tileSize} userName={user?.name || user?.username || 'You'} />
             : <ParticipantTile participant={item.participant} size={tileSize} />
         }
       />
+
+      {isScreenSharing && (
+        <View style={styles.shareLeaveRow}>
+          <TouchableOpacity style={styles.shareLeaveBtn} onPress={goAppHomeWhileSharing}>
+            <Text style={styles.shareLeaveText}>🏠 App home</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.shareLeaveBtn} onPress={goPhoneHomeWhileSharing}>
+            <Text style={styles.shareLeaveText}>↓ Phone</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Controls */}
       <View style={styles.controls}>
@@ -328,6 +416,14 @@ const GroupCallScreen = () => {
             <Text style={styles.ctrlLabel}>{isCamOff ? 'Cam On' : 'Cam Off'}</Text>
           </TouchableOpacity>
         )}
+
+        <TouchableOpacity
+          style={[styles.ctrlBtn, { backgroundColor: isScreenSharing ? colors.primary : 'rgba(255,255,255,0.15)' }]}
+          onPress={toggleScreenShare}
+        >
+          <Text style={styles.ctrlText}>🖥️</Text>
+          <Text style={styles.ctrlLabel}>{isScreenSharing ? 'Stop' : 'Share'}</Text>
+        </TouchableOpacity>
 
         <TouchableOpacity style={[styles.ctrlBtn, { backgroundColor: colors.error }]} onPress={handleLeave}>
           <Text style={styles.ctrlText}>📵</Text>
@@ -413,6 +509,9 @@ const styles = StyleSheet.create({
   headerTitle:     { color: '#fff', fontWeight: 'bold', fontSize: 18 },
   headerSub:       { color: '#aaa', fontSize: 13, marginTop: 2 },
   grid:            { padding: 8, flexGrow: 1, justifyContent: 'center' },
+  gridCompact:     { flexGrow: 0, maxHeight: 150 },
+  screenStage:     { flex: 1, margin: 8, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' },
+  screenStagePill: { position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
   tile:            { margin: 4, borderRadius: 12, overflow: 'hidden', backgroundColor: '#222' },
   avatarTile:      { justifyContent: 'center', alignItems: 'center' },
   avatarCircle:    { width: 72, height: 72, borderRadius: 36, backgroundColor: '#444', justifyContent: 'center', alignItems: 'center' },
@@ -420,6 +519,15 @@ const styles = StyleSheet.create({
   namePill:        { position: 'absolute', bottom: 6, left: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 },
   nameText:        { color: '#fff', fontSize: 11, textAlign: 'center' },
   controls:        { flexDirection: 'row', justifyContent: 'center', gap: 16, paddingVertical: 20, backgroundColor: 'rgba(0,0,0,0.6)' },
+  shareLeaveRow:   {
+    flexDirection: 'row', gap: 10, paddingHorizontal: 12, paddingBottom: 4,
+  },
+  shareLeaveBtn:   {
+    flex: 1, alignItems: 'center', paddingVertical: 9,
+    borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
+  },
+  shareLeaveText:  { color: '#fff', fontSize: 12, fontWeight: '600' },
   ctrlBtn:         { alignItems: 'center', padding: 12, borderRadius: 16, minWidth: 72 },
   ctrlText:        { fontSize: 24 },
   ctrlLabel:       { color: '#fff', fontSize: 11, marginTop: 4 },

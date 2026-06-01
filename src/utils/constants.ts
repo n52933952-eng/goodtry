@@ -135,6 +135,9 @@ export const STORY_STRIP_SHOULD_REFRESH = 'StoryStripShouldRefresh';
 /** DeviceEventEmitter payload `{ roomId: string }` — feed chess cards flip Live → Ended without refresh */
 export const CHESS_GAME_FEED_UI_ENDED = 'chessGameFeedUiEnded';
 
+/** Live mini bar — resign the active chess/card game (same as Resign button). */
+export const LIVE_BAR_RESIGN_GAME = 'liveBarResignGame';
+
 // Socket Events
 export const SOCKET_EVENTS = {
   NEW_POST: 'newPost',

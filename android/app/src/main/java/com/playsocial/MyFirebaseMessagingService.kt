@@ -189,17 +189,53 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            // Do NOT add Answer/Decline notification actions: setFullScreenIntent already opens IncomingCallActivity
-            // with Answer/Decline. Duplicate actions + full-screen UI felt like "two" native call screens.
-            // User answers from IncomingCallActivity, or taps the notification body (contentIntent → same activity).
-            
+            // WhatsApp-style Answer / Decline buttons on the heads-up notification.
+            //
+            // ANSWER: MUST be an Activity PendingIntent (getActivity), NOT a broadcast.
+            // Android 12+ blocks notification "trampolines" (a BroadcastReceiver/Service starting an
+            // Activity in response to a notification), which would make Answer silently fail in a
+            // RELEASE build with the app killed. We launch IncomingCallActivity with the answer
+            // fast-path flag: it calls answerCall() immediately (no UI drawn) → MainActivity
+            // (shouldAutoAnswer → JS opens CallScreen and auto-answers). Activity→Activity is allowed.
+            val answerActionIntent = Intent(this, IncomingCallActivity::class.java).apply {
+                action = "com.playsocial.NOTIFICATION_ANSWER"
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(IncomingCallActivity.EXTRA_ANSWER_FROM_NOTIFICATION_ACTION, true)
+                putExtra("callerId", callerId)
+                putExtra("callerName", callerName)
+                putExtra("callType", callType)
+            }
+            val answerActionPending = PendingIntent.getActivity(
+                this,
+                1003,
+                answerActionIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            // DECLINE: broadcast is safe — CallActionReceiver only stops the ring + cancels the call,
+            // it never starts an Activity, so the trampoline restriction does not apply.
+            val declineActionIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_DECLINE
+                putExtra("callerId", callerId)
+                putExtra("callerName", callerName)
+                putExtra("callType", callType)
+            }
+            val declineActionPending = PendingIntent.getBroadcast(
+                this,
+                1004,
+                declineActionIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
             // Create notification channel if needed
             createNotificationChannel()
             
             // Build notification with full-screen intent, tap target, and Answer/Decline actions
             val notification = NotificationCompat.Builder(this, "call_notifications")
-                .setContentTitle("Incoming Call")
-                .setContentText("$callerName is calling...")
+                .setContentTitle(getString(R.string.call_notification_title))
+                .setContentText(getString(R.string.call_notification_text, callerName))
                 .setSmallIcon(R.drawable.ic_stat_ic_launcher)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
@@ -208,6 +244,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 .setFullScreenIntent(fullScreenIntent, true) // Incoming call UI over lock screen
                 .setOngoing(true) // Keep notification persistent - activity will dismiss it
                 .setAutoCancel(false) // Don't auto-dismiss - let activity handle it
+                .addAction(R.drawable.ic_stat_ic_launcher, getString(R.string.notification_action_decline), declineActionPending)
+                .addAction(R.drawable.ic_stat_ic_launcher, getString(R.string.notification_action_answer), answerActionPending)
                 // Note: No setDefaults() - RingtoneService handles sound/vibration continuously
                 .build()
             

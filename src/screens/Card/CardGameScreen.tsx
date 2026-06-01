@@ -10,13 +10,14 @@ import {
   ScrollView,
   Modal,
   StatusBar,
+  DeviceEventEmitter,
 } from 'react-native';
 import Sound from 'react-native-sound';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { usePost } from '../../context/PostContext';
-import { API_URL, COLORS } from '../../utils/constants';
+import { API_URL, COLORS, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import Card from '../../components/Card';
 
@@ -661,6 +662,20 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     navigation.goBack();
   };
 
+  const resignGameNow = useCallback(() => {
+    if (isSpectator || gameOver) return;
+    if (socket && roomId && opponentId) {
+      socket.emit('resignCard', { roomId, to: opponentId });
+    }
+    removeOwnCardPost();
+    navigation.goBack();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, navigation]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(LIVE_BAR_RESIGN_GAME, resignGameNow);
+    return () => sub.remove();
+  }, [resignGameNow]);
+
   const handleResign = () => {
     Alert.alert(
       'Resign',
@@ -670,13 +685,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         {
           text: 'Resign',
           style: 'destructive',
-          onPress: () => {
-            if (socket && roomId && opponentId) {
-              socket.emit('resignCard', { roomId, to: opponentId });
-            }
-            removeOwnCardPost();
-            navigation.goBack();
-          },
+          onPress: resignGameNow,
         },
       ]
     );
