@@ -17,8 +17,8 @@ import {
 import { VideoView } from '@livekit/react-native';
 
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 3;
-const ZOOM_STEP = 0.25;
+const ZOOM_MAX = 2;
+const ZOOM_STEP = 0.12;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -26,6 +26,8 @@ type Props = {
   videoTrack: any;
   label?: string;
   style?: object;
+  /** Lift controls above chat bars etc. (live viewer). */
+  controlsBottom?: number;
 };
 
 type ViewportProps = {
@@ -33,10 +35,13 @@ type ViewportProps = {
   label?: string;
   full: boolean;
   style?: object;
+  controlsBottom?: number;
   onToggleFullscreen: () => void;
 };
 
-const ZoomScrollViewport = ({ videoTrack, label, full, style, onToggleFullscreen }: ViewportProps) => {
+const ZoomScrollViewport = ({
+  videoTrack, label, full, style, controlsBottom = 10, onToggleFullscreen,
+}: ViewportProps) => {
   const [zoom, setZoom] = useState(1);
   const [vpSize, setVpSize] = useState({ w: 0, h: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -117,32 +122,46 @@ const ZoomScrollViewport = ({ videoTrack, label, full, style, onToggleFullscreen
 
   const canPan = zoom > 1 && vpSize.w > 0;
   const zoomLabel = `${Math.round(zoom * 100)}%`;
+  /** Android WebRTC surfaces go black inside any transform — only zoom/pan when zoom > 1. */
+  const useTransform = zoom > 1;
 
   return (
     <View style={full ? styles.fullRoot : [styles.stage, style]}>
       <View style={styles.viewport} onLayout={onViewportLayout}>
-        {vpSize.w > 0 && (
+        {useTransform ? (
           <View style={styles.panLayer}>
             <View
-              style={{
-                width: vpSize.w,
-                height: vpSize.h,
-                transform: [
-                  { translateX: pan.x },
-                  { translateY: pan.y },
-                  { scale: zoom },
-                ],
-              }}
+              style={[
+                styles.videoFrame,
+                vpSize.w > 0 && vpSize.h > 0
+                  ? { width: vpSize.w, height: vpSize.h }
+                  : StyleSheet.absoluteFillObject,
+                {
+                  transform: [
+                    { translateX: pan.x },
+                    { translateY: pan.y },
+                    { scale: zoom },
+                  ],
+                },
+              ]}
             >
               <VideoView
-                key={`share-${videoTrack?.sid ?? 'screen'}-${full ? 'fs' : 'inline'}`}
+                key={`share-${videoTrack?.sid ?? 'screen'}-${full ? 'fs' : 'inline'}-zoom`}
                 videoTrack={videoTrack}
-                style={{ width: vpSize.w, height: vpSize.h }}
+                style={StyleSheet.absoluteFill}
                 objectFit="contain"
                 zOrder={0}
               />
             </View>
           </View>
+        ) : (
+          <VideoView
+            key={`share-${videoTrack?.sid ?? 'screen'}-${full ? 'fs' : 'inline'}`}
+            videoTrack={videoTrack}
+            style={StyleSheet.absoluteFill}
+            objectFit="contain"
+            zOrder={0}
+          />
         )}
         {canPan && (
           <View style={styles.dragOverlay} {...panResponder.panHandlers} />
@@ -161,7 +180,14 @@ const ZoomScrollViewport = ({ videoTrack, label, full, style, onToggleFullscreen
         </View>
       ) : null}
 
-      <View style={[styles.controls, full && styles.fullControls]} pointerEvents="box-none">
+      <View
+        style={[
+          styles.controls,
+          full && styles.fullControlsTop,
+          !full && styles.controlsTop,
+        ]}
+        pointerEvents="box-none"
+      >
         <TouchableOpacity style={styles.ctrlChip} onPress={zoomOut} disabled={zoom <= ZOOM_MIN}>
           <Text style={[styles.ctrlChipText, zoom <= ZOOM_MIN && styles.ctrlDisabled]}>−</Text>
         </TouchableOpacity>
@@ -179,7 +205,7 @@ const ZoomScrollViewport = ({ videoTrack, label, full, style, onToggleFullscreen
   );
 };
 
-const ScreenShareViewer = ({ videoTrack, label, style }: Props) => {
+const ScreenShareViewer = ({ videoTrack, label, style, controlsBottom }: Props) => {
   const [fullscreen, setFullscreen] = useState(false);
 
   return (
@@ -190,6 +216,7 @@ const ScreenShareViewer = ({ videoTrack, label, style }: Props) => {
           label={label}
           full={false}
           style={style}
+          controlsBottom={controlsBottom}
           onToggleFullscreen={() => setFullscreen(true)}
         />
       ) : (
@@ -211,6 +238,7 @@ const ScreenShareViewer = ({ videoTrack, label, style }: Props) => {
           videoTrack={videoTrack}
           label={label}
           full
+          controlsBottom={controlsBottom}
           onToggleFullscreen={() => setFullscreen(false)}
         />
       </Modal>
@@ -250,6 +278,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  videoFrame: {
+    overflow: 'hidden',
   },
   dragOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -300,7 +331,6 @@ const styles = StyleSheet.create({
   },
   controls: {
     position: 'absolute',
-    bottom: 10,
     right: 10,
     flexDirection: 'row',
     gap: 6,
@@ -310,10 +340,13 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
-    zIndex: 10,
+    zIndex: 30,
   },
-  fullControls: {
-    bottom: 40,
+  controlsTop: {
+    top: 44,
+  },
+  fullControlsTop: {
+    top: 52,
   },
   ctrlChip: {
     minWidth: 34,

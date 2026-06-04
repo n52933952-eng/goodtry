@@ -1475,9 +1475,17 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   }, [isSpectator, gameOver, socket, roomId, opponentId]);
 
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener(LIVE_BAR_RESIGN_GAME, resignGameNow);
+    const sub = DeviceEventEmitter.addListener(
+      LIVE_BAR_RESIGN_GAME,
+      (payload?: { leaveGameScreen?: boolean }) => {
+        resignGameNow();
+        if (payload?.leaveGameScreen && navigation.canGoBack()) {
+          navigation.goBack();
+        }
+      },
+    );
     return () => sub.remove();
-  }, [resignGameNow]);
+  }, [resignGameNow, navigation]);
 
   const handleResign = () => {
     if (gameOver) return; // Already over — nothing to resign.

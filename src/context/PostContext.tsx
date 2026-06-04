@@ -1,6 +1,8 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from './UserContext';
+import { dedupeGamePostsForFeed } from '../utils/dedupeGameFeedPosts';
+import { getGameFeedDedupeKey, mergeGameFeedPostData } from '../utils/gameFeedPostUtils';
 
 const feedHiddenStorageKey = (userId: string) => `feed_hidden_post_ids_${userId}`;
 const feedHiddenSourcesKey = (userId: string) => `feed_hidden_sources_${userId}`;
@@ -170,13 +172,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const filterPostsForFeed = useCallback((list: Post[]) => {
     const hidden = hiddenFeedPostIdsRef.current;
     const sources = hiddenFeedSourcesRef.current;
-    return (Array.isArray(list) ? list : []).filter((p: any) => {
+    const filtered = (Array.isArray(list) ? list : []).filter((p: any) => {
       const idOk = p?._id && !hidden.has(String(p._id));
       if (!idOk) return false;
       const uname = p?.postedBy?.username ? String(p.postedBy.username) : '';
       if (uname && sources.has(uname)) return false;
       return true;
     });
+    return dedupeGamePostsForFeed(filtered);
   }, []);
 
   // When hidden IDs load from storage (or change), drop those posts from the current feed list
@@ -273,6 +276,20 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       const newId = post?._id?.toString?.() ?? String(post?._id);
       if (!newId) return safeArray;
       if (hiddenFeedPostIdsRef.current.has(newId)) return safeArray;
+
+      const newGameKey = getGameFeedDedupeKey(post);
+      if (newGameKey) {
+        const dupIdx = safeArray.findIndex(
+          (p) => getGameFeedDedupeKey(p) === newGameKey,
+        );
+        if (dupIdx >= 0) {
+          const merged = mergeGameFeedPostData(safeArray[dupIdx], post);
+          if (merged === safeArray[dupIdx]) return safeArray;
+          const next = [...safeArray];
+          next[dupIdx] = merged as Post;
+          return sortPostsNewestFirst(next);
+        }
+      }
 
       // Prevent duplicates
       const withoutDup = safeArray.filter((p) => {

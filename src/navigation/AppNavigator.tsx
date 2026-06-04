@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable } from 'react-native';
-import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
+import { NavigationContainer, DarkTheme, DefaultTheme, CommonActions } from '@react-navigation/native';
+import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../context/UserContext';
@@ -45,7 +45,12 @@ import CreateStoryScreen from '../screens/Stories/CreateStoryScreen';
 import StoryViewerScreen from '../screens/Stories/StoryViewerScreen';
 import { useSocket } from '../context/SocketContext';
 import CallSessionMiniBar from '../components/CallSessionMiniBar';
+import LiveStreamMiniBar from '../components/LiveStreamMiniBar';
+import IncomingCallMiniBar from '../components/IncomingCallMiniBar';
+import LiveCameraPip from '../components/LiveCameraPip';
+import { useLiveBroadcast } from '../context/LiveBroadcastContext';
 import { callSessionNav } from '../services/callSessionNav';
+import { liveBroadcastNav } from '../services/liveBroadcastNav';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -604,7 +609,11 @@ const MainStack = () => {
       <Stack.Screen
         name="LiveBroadcast"
         component={LiveBroadcastScreen}
-        options={{ headerShown: false, presentation: 'fullScreenModal' }}
+        options={{
+          headerShown: false,
+          presentation: 'fullScreenModal',
+          ...TransitionPresets.ModalFadeTransition,
+        }}
       />
       <Stack.Screen
         name="LiveViewer"
@@ -632,6 +641,14 @@ const MessagesIcon = ({ color }: { color: string }) => (
   <Text style={{ fontSize: 24, color }}>💬</Text>
 );
 
+function syncRootRoute(navRef: React.MutableRefObject<any>) {
+  const state = navRef.current?.getRootState();
+  const route = state?.routes?.[state.index ?? 0];
+  const name = route?.name ?? null;
+  liveBroadcastNav.setRootRouteName(name);
+  callSessionNav.setRootRouteName(name);
+}
+
 // Main App Navigator
 const AppNavigator = () => {
   const { user, isLoading } = useUser();
@@ -646,6 +663,11 @@ const AppNavigator = () => {
   } = useWebRTC();
   const pendingCancel = false;
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
+  const { isLive } = useLiveBroadcast();
+  const isLiveRef = useRef(isLive);
+  useEffect(() => {
+    isLiveRef.current = isLive;
+  }, [isLive]);
   const callRef = useRef(call);
   const setIncomingCallFromNotificationRef = useRef(setIncomingCallFromNotification);
   callRef.current = call;
@@ -680,11 +702,63 @@ const AppNavigator = () => {
     return () => sub.remove();
   }, []);
 
+  // Live: browse app while broadcasting, return to controls, or profile after end
+  useEffect(() => {
+    if (!navReady) return;
+    const profileUser = user?.username || 'self';
+    liveBroadcastNav.minimize = () => {
+      navigationRef.current?.navigate('MainTabs', {
+        screen: 'Feed',
+        params: { screen: 'FeedScreen' },
+      });
+    };
+    liveBroadcastNav.returnToLive = () => {
+      navigationRef.current?.navigate('LiveBroadcast');
+    };
+    liveBroadcastNav.goToProfile = () => {
+      const nav = navigationRef.current;
+      if (!nav) return;
+      const profileRoute = {
+        name: 'MainTabs' as const,
+        state: {
+          index: 2,
+          routes: [
+            { name: 'Feed' },
+            { name: 'Search' },
+            {
+              name: 'Profile',
+              state: {
+                index: 0,
+                routes: [{ name: 'UserProfile', params: { username: profileUser } }],
+              },
+            },
+            { name: 'Messages' },
+          ],
+        },
+      };
+      // Drop CardGame / LiveBroadcast / LiveViewer from the root stack — profile only.
+      nav.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [profileRoute],
+        }),
+      );
+    };
+    return () => {
+      liveBroadcastNav.minimize = null;
+      liveBroadcastNav.returnToLive = null;
+      liveBroadcastNav.goToProfile = null;
+    };
+  }, [navReady, user?.username]);
+
   // Calls: navigate away while keeping session alive, or return to call UI
   useEffect(() => {
     if (!navReady) return;
     callSessionNav.minimizeToAppHome = () => {
-      navigationRef.current?.navigate('MainTabs', {
+      const nav = navigationRef.current;
+      if (!nav) return;
+      // Do NOT goBack — keeps call session + preview overlay alive (see CallShareCameraOverlay).
+      nav.navigate('MainTabs', {
         screen: 'Feed',
         params: { screen: 'FeedScreen' },
       });
@@ -829,6 +903,12 @@ const AppNavigator = () => {
       // (MainActivity → NavigateToCallScreen, shouldAutoAnswer=true) drives navigation straight to Connecting.
       if (AppState.currentState !== 'active' && !fromNotificationAnswer) {
         console.log('⏸️ [AppNavigator] Skipping socket nav - app not foreground; native UI handles incoming call');
+        return;
+      }
+
+      // While live: incoming call uses IncomingCallMiniBar (Answer ends live, then CallScreen).
+      if (isLiveRef.current && !fromNotificationAnswer) {
+        console.log('⏸️ [AppNavigator] Skipping socket nav - live host uses incoming call mini bar');
         return;
       }
 
@@ -1140,6 +1220,11 @@ const AppNavigator = () => {
         }
         
         if (navigationRef.current && data) {
+          if (isLiveRef.current) {
+            console.log('⏸️ [AppNavigator] NavigateToCallScreen skipped — live uses incoming call mini bar');
+            return;
+          }
+
           // Check if we're already on CallScreen
           const currentRoute = navigationRef.current.getCurrentRoute?.();
           const isAlreadyOnCallScreen = currentRoute?.name === 'CallScreen';
@@ -1328,6 +1413,7 @@ const AppNavigator = () => {
   return (
     <NavigationContainer 
       theme={navTheme}
+      onStateChange={() => syncRootRoute(navigationRef)}
       ref={(ref) => {
         // IMPORTANT: this callback can run multiple times; make it idempotent.
         if (!ref) return;
@@ -1337,6 +1423,7 @@ const AppNavigator = () => {
           navReadyRef.current = true;
           setNavReady(true);
         }
+        syncRootRoute(navigationRef);
         console.log('✅ [AppNavigator] NavigationContainer ref ready');
       }}
     >
@@ -1429,6 +1516,9 @@ const AppNavigator = () => {
             }}
           />
         )}
+        {user && <LiveStreamMiniBar />}
+        {user && <IncomingCallMiniBar />}
+        {user && <LiveCameraPip />}
         {user && <CallSessionMiniBar />}
       </View>
     </NavigationContainer>

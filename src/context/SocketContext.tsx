@@ -12,6 +12,7 @@ import {
   CHESS_GAME_FEED_UI_ENDED,
 } from '../utils/constants';
 import { markChessRoomFeedEnded } from '../utils/chessFeedEndedStore';
+import { isChessFeedPost, isGoFishFeedPost } from '../utils/gameFeedPostUtils';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -561,8 +562,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       }
       
       // Check if it's a chess or card game post - these should always be added (backend only emits to followers)
-      const isChessPost = !!post?.chessGameData;
-      const isCardPost = !!post?.cardGameData;
+      const isChessPost = isChessFeedPost(post);
+      const isCardPost = isGoFishFeedPost(post);
       
       if (isChessPost || isCardPost) {
         // Game posts: Backend already filters to only send to followers, so always add

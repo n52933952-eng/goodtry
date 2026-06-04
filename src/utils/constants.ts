@@ -138,6 +138,9 @@ export const CHESS_GAME_FEED_UI_ENDED = 'chessGameFeedUiEnded';
 /** Live mini bar — resign the active chess/card game (same as Resign button). */
 export const LIVE_BAR_RESIGN_GAME = 'liveBarResignGame';
 
+/** Tear down live stream before joining a 1:1 call (no profile navigation). */
+export const END_LIVE_FOR_CALL = 'endLiveForCall';
+
 // Socket Events
 export const SOCKET_EVENTS = {
   NEW_POST: 'newPost',

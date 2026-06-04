@@ -90,11 +90,18 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       await lk.localParticipant.setScreenShareEnabled(next);
       isScreenSharingRef.current = next;
       setIsScreenSharing(next);
+      try {
+        await lk.localParticipant.setCameraEnabled(true);
+      } catch (_) {}
     } catch (err: any) {
       const msg = err?.message || String(err);
       console.warn('⚠️ [GroupCall] screen share toggle failed:', msg);
       isScreenSharingRef.current = false;
       setIsScreenSharing(false);
+      try {
+        await lk.localParticipant.setScreenShareEnabled(false);
+        await lk.localParticipant.setCameraEnabled(true);
+      } catch (_) {}
       if (next && !/cancel|denied|abort/i.test(msg)) {
         Alert.alert('Screen share', `Could not start screen sharing.\n\n${msg}`);
       }

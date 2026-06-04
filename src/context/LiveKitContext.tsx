@@ -34,6 +34,7 @@ import {
   startOngoingCallNative, stopOngoingCallNative,
 } from '../services/callData';
 import { callSessionNav } from '../services/callSessionNav';
+import { liveBroadcastNav } from '../services/liveBroadcastNav';
 
 // ─── types ───────────────────────────────────────────────────────────────────
 interface Call {
@@ -84,7 +85,9 @@ interface LiveKitContextType {
   /** User left CallScreen but call is still active (app home while sharing). */
   isCallUIMinimized: boolean;
   minimizeCallUI: () => void;
-  openCallUI: () => void;
+  openCallUI: () => Promise<void>;
+  /** Re-attach camera/remote previews after app home or background (keeps minimized state). */
+  refreshCallTracks: () => Promise<void>;
 }
 
 const LiveKitContext = createContext<LiveKitContextType | undefined>(undefined);
@@ -185,9 +188,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const syncLocalVideoFromParticipant = () => {
       try {
         const pub = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
-        const t = pub?.track;
+        const t = pub?.track as LocalTrack | undefined;
         if (t && t.kind === Track.Kind.Video) {
-          setLocalVideoTrack(t as LocalTrack);
+          setLocalVideoTrack(t);
+        } else {
+          setLocalVideoTrack(null);
         }
       } catch (_) {
         /* ignore */
@@ -209,26 +214,47 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     };
 
+    const syncRemoteTracksFromRoom = () => {
+      let cam: RemoteTrack | null = null;
+      let screen: RemoteTrack | null = null;
+      let audio: RemoteTrack | null = null;
+      lkRoom.remoteParticipants.forEach((participant) => {
+        participant.trackPublications.forEach((pub) => {
+          const t = pub.track;
+          if (!t) return;
+          if (t.kind === Track.Kind.Audio) {
+            audio = t as RemoteTrack;
+            return;
+          }
+          if (t.kind !== Track.Kind.Video) return;
+          const isScreen = pub.source === Track.Source.ScreenShare;
+          if (isScreen) screen = t as RemoteTrack;
+          else cam = t as RemoteTrack;
+        });
+      });
+      setRemoteVideoTrack(cam);
+      setRemoteScreenTrack(screen);
+      setRemoteAudioTrack(audio);
+    };
+
     lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: any, participant: RemoteParticipant) => {
       if (!participant.isLocal) {
         setCallAccepted(true);
         setIsCalling(false);
       }
-      const isScreen = _pub?.source === Track.Source.ScreenShare;
-      if (track.kind === Track.Kind.Video) {
-        if (isScreen) setRemoteScreenTrack(track);
-        else setRemoteVideoTrack(track);
-      }
-      if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(track);
+      syncRemoteTracksFromRoom();
     });
 
-    lkRoom.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, _pub: any) => {
-      const isScreen = _pub?.source === Track.Source.ScreenShare;
-      if (track.kind === Track.Kind.Video) {
-        if (isScreen) setRemoteScreenTrack(null);
-        else setRemoteVideoTrack(null);
-      }
-      if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(null);
+    lkRoom.on(RoomEvent.TrackUnsubscribed, () => {
+      syncRemoteTracksFromRoom();
+    });
+
+    lkRoom.on(RoomEvent.TrackPublished, () => {
+      syncRemoteTracksFromRoom();
+    });
+
+    lkRoom.on(RoomEvent.TrackUnpublished, () => {
+      syncRemoteTracksFromRoom();
     });
 
     lkRoom.on(RoomEvent.ParticipantConnected, () => {
@@ -237,6 +263,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     lkRoom.on(RoomEvent.Connected, () => {
       markConnectedIfRemotePresent();
+      syncRemoteTracksFromRoom();
     });
 
     lkRoom.on(RoomEvent.ParticipantDisconnected, () => {
@@ -264,10 +291,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     lkRoom.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication: LocalTrackPublication) => {
       if (publication.source === Track.Source.Camera) {
-        setLocalVideoTrack(null);
-        // During restarts we may get unpublished then immediate republish.
+        syncLocalVideoFromParticipant();
         setTimeout(() => syncLocalVideoFromParticipant(), 120);
         setTimeout(() => syncLocalVideoFromParticipant(), 450);
+      }
+      // Android can terminate MediaProjection without the user tapping "Stop share".
+      // Keep isScreenSharing in sync so the UI shows the correct layout.
+      if (publication.source === Track.Source.ScreenShare) {
+        isScreenSharingRef.current = false;
+        setIsScreenSharing(false);
       }
     });
 
@@ -388,6 +420,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         roomName,
       });
 
+      try { await liveBroadcastNav.endForCall?.(); } catch (_) {}
+
       await connectRoom(token, livekitUrl, type);
     } catch (err: any) {
       console.error('❌ [LiveKit Mobile] callUser error:', err?.message);
@@ -407,6 +441,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (roomRef.current && connectionState === ConnectionState.Connected) return;
     answerCallInFlightRef.current = true;
     try {
+      try { await liveBroadcastNav.endForCall?.(); } catch (_) {}
+
       notificationAnswerCallerIdRef.current = null;
       const type = (call.callType as 'audio' | 'video') || 'video';
       const fromId = idStr(call.from);
@@ -446,6 +482,56 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // ── PUBLIC: toggleScreenShare (Google Meet style) ─────────────────────────
   // Android captures the WHOLE screen (no single-window capture on mobile). The first call
   // triggers the system MediaProjection consent dialog; LiveKit publishes a ScreenShare track.
+  const resyncRemoteVideoFromRoom = useCallback((lk: Room, preserveExisting = false) => {
+    let cam: RemoteTrack | null = null;
+    let screen: RemoteTrack | null = null;
+    let audio: RemoteTrack | null = null;
+    let foundCam = false;
+    let foundScreen = false;
+    lk.remoteParticipants.forEach((participant) => {
+      participant.trackPublications.forEach((pub) => {
+        // Force re-subscribe if LiveKit adaptive-stream paused/unsubscribed the track.
+        if (!pub.isSubscribed && pub.kind === Track.Kind.Video) {
+          try { (pub as any).setSubscribed(true); } catch (_) {}
+        }
+        const t = pub.track;
+        if (!t) return;
+        if (t.kind === Track.Kind.Audio) {
+          audio = t as RemoteTrack;
+          return;
+        }
+        if (t.kind !== Track.Kind.Video) return;
+        if (pub.source === Track.Source.ScreenShare) { screen = t as RemoteTrack; foundScreen = true; }
+        else { cam = t as RemoteTrack; foundCam = true; }
+      });
+    });
+    // When preserveExisting is true (e.g. called during camera restart), don't clear an
+    // existing track to null — that would unmount the VideoView and trigger adaptive-stream
+    // to pause the remote track, creating a loop.
+    if (foundCam || !preserveExisting) setRemoteVideoTrack(cam);
+    if (foundScreen || !preserveExisting) setRemoteScreenTrack(screen);
+    setRemoteAudioTrack(audio);
+  }, []);
+
+  const syncCameraFromRoom = useCallback((lk: Room, preserveRemote = false) => {
+    const pub = lk.localParticipant.getTrackPublication(Track.Source.Camera);
+    const t = pub?.track as LocalTrack | undefined;
+    if (t && t.kind === Track.Kind.Video) setLocalVideoTrack(t);
+    resyncRemoteVideoFromRoom(lk, preserveRemote);
+  }, [resyncRemoteVideoFromRoom]);
+
+  const ensureCameraOn = useCallback(async (lk: Room) => {
+    // Mirror the GROUP CALL behaviour, which works reliably: do NOT restart the
+    // camera (no stop→start). The camera track stays published the whole time;
+    // adaptive-stream is off (plain `new Room()`), so tracks are never dropped.
+    // Just make sure the camera is enabled, then read the live tracks.
+    const camPub = lk.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (!camPub?.track) {
+      try { await lk.localParticipant.setCameraEnabled(true); } catch (_) {}
+    }
+    syncCameraFromRoom(lk, true);
+  }, [syncCameraFromRoom]);
+
   const toggleScreenShare = useCallback(async () => {
     const lk = roomRef.current;
     if (!lk) return;
@@ -454,18 +540,27 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       await lk.localParticipant.setScreenShareEnabled(next);
       isScreenSharingRef.current = next;
       setIsScreenSharing(next);
+      // IDENTICAL to the working group call: Android MediaProjection interrupts
+      // the camera when screen share starts, so re-enable the camera right after.
+      // Without this the local (and the remote's view of you) camera stays dead.
+      try {
+        await lk.localParticipant.setCameraEnabled(true);
+      } catch (_) {}
+      syncCameraFromRoom(lk);
     } catch (err: any) {
-      // User cancelled the capture-permission dialog, or it failed — revert to off.
       const msg = err?.message || String(err);
       console.warn('⚠️ [LiveKit] screen share toggle failed:', msg);
       isScreenSharingRef.current = false;
       setIsScreenSharing(false);
-      // Only surface real failures (not a plain user-cancel of the system dialog).
+      try {
+        await lk.localParticipant.setScreenShareEnabled(false);
+        await lk.localParticipant.setCameraEnabled(true);
+      } catch (_) {}
       if (next && !/cancel|denied|abort/i.test(msg)) {
         Alert.alert('Screen share', `Could not start screen sharing.\n\n${msg}`);
       }
     }
-  }, []);
+  }, [syncCameraFromRoom]);
 
   const minimizeCallUI = useCallback(() => {
     if (!callAcceptedRef.current) return;
@@ -473,9 +568,22 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     callSessionNav.minimizeToAppHome?.();
   }, []);
 
-  const openCallUI = useCallback(() => {
+  const openCallUI = useCallback(async () => {
+    // Mirror openGroupCallUI: just clear the minimized flag and READ the live
+    // tracks. Do NOT re-enable the camera here — republishing on return makes
+    // the preview flash and disappear. The camera was already re-enabled right
+    // after the screen-share toggle, so it is still alive.
     setIsCallUIMinimized(false);
-  }, []);
+    const lk = roomRef.current;
+    if (!lk) return;
+    syncCameraFromRoom(lk, true);
+  }, [syncCameraFromRoom]);
+
+  const refreshCallTracks = useCallback(async () => {
+    const lk = roomRef.current;
+    if (!lk || !callAcceptedRef.current) return;
+    await ensureCameraOn(lk);
+  }, [ensureCameraOn]);
 
   // ── PUBLIC: leaveCall ────────────────────────────────────────────────────
   const leaveCall = useCallback(() => {
@@ -639,7 +747,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isScreenSharing, toggleScreenShare, remoteScreenTrack,
       room, getLiveKitRoom, connectionState,
       busyUsers, isUserBusy,
-      isCallUIMinimized, minimizeCallUI, openCallUI,
+      isCallUIMinimized, minimizeCallUI, openCallUI, refreshCallTracks,
     }}>
       {children}
     </LiveKitContext.Provider>

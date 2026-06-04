@@ -92,6 +92,12 @@ export function navigateFromPushData(
       return false;
     }
 
+    /** Live alert — home feed only (stream may have ended by the time user opens the app). */
+    if (type === 'live_started') {
+      nav.navigate('MainTabs', { screen: 'Feed' });
+      return true;
+    }
+
     return false;
   } catch (e) {
     console.warn('[pushNavigation] navigateFromPushData', e);

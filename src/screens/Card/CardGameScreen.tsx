@@ -16,8 +16,9 @@ import Sound from 'react-native-sound';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { usePost } from '../../context/PostContext';
 import { API_URL, COLORS, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
+import { liveBroadcastNav } from '../../services/liveBroadcastNav';
+import { navigateToHomeFeed } from '../../utils/navigationHelpers';
 import { useShowToast } from '../../hooks/useShowToast';
 import Card from '../../components/Card';
 
@@ -63,7 +64,6 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { socket } = useSocket();
-  const { deletePost, posts } = usePost();
   const showToast = useShowToast();
 
   // Only log on actual roomId changes, not every render
@@ -82,6 +82,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   const [opponent, setOpponent] = useState<any>(null);
   const [gameLive, setGameLive] = useState(false);
   const [gameOver, setGameOver] = useState(false);
+  const [leavingLobby, setLeavingLobby] = useState(false);
   const [gameResult, setGameResult] = useState('');
   const [myHand, setMyHand] = useState<Card[]>([]);
   const handInitializedRef = useRef(false); // Track if we've received a valid hand
@@ -229,6 +230,40 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     });
     return Array.from(ranks).sort((a, b) => a - b);
   };
+
+  useEffect(() => {
+    liveBroadcastNav.setFloatingTouchesBlocked(gameOver && !leavingLobby);
+    return () => {
+      liveBroadcastNav.setFloatingTouchesBlocked(false);
+    };
+  }, [gameOver, leavingLobby]);
+
+  const leavingLobbyRef = useRef(false);
+
+  const handleBackToLobby = useCallback(() => {
+    if (leavingLobbyRef.current) return;
+    leavingLobbyRef.current = true;
+    setLeavingLobby(true);
+    liveBroadcastNav.suppressGameCleanupNav = true;
+    navigateToHomeFeed(navigation);
+    setTimeout(() => {
+      leavingLobbyRef.current = false;
+      liveBroadcastNav.suppressGameCleanupNav = false;
+    }, 600);
+  }, [navigation]);
+
+  const handleBack = useCallback(() => {
+    if (gameOver) {
+      handleBackToLobby();
+      return;
+    }
+    if (!isSpectator && socket && roomId && opponentId) {
+      socket.emit('resignCard', { roomId, to: opponentId });
+    } else if (isSpectator) {
+      console.log('👁️ [CardGameScreen] Spectator leaving - not emitting any game end events');
+    }
+    navigation.goBack();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, navigation, handleBackToLobby]);
 
   useEffect(() => {
     if (!socket || !roomId) {
@@ -503,7 +538,6 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         setGameLive(true);
       } else if (data.gameStatus === 'finished') {
         console.log('🏁 [CardGameScreen] Game finished');
-        setGameLive(false);
         setGameOver(true);
       }
     };
@@ -533,16 +567,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       if (!activeRoomId || (data?.roomId && data.roomId !== activeRoomId)) {
         return;
       }
-      
       if (activeRoomId === roomId) {
         setGameOver(true);
         setGameResult(data.message || 'Game Over');
         showToast('Game Over', data.message, 'info');
-        // Remove own card game post from feed immediately (frontend only)
-        // Backend will also delete and broadcast to followers
-        if (!isSpectator) {
-          removeOwnCardPost();
-        }
       }
     };
 
@@ -550,21 +578,15 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     socket.on('cardGameState', handleGameState);
     socket.on('opponentMove', handleOpponentMove);
     socket.on('cardGameEnded', handleGameOver);
-    socket.on('cardGameCleanup', () => {
+    const handleGameCleanup = () => {
       const activeRoomId = currentRoomIdRef.current;
-      if (activeRoomId === currentRoomId) {
-        setGameOver(true);
-        setGameLive(false);
-        // Remove own card game post from feed immediately (frontend only)
-        if (!isSpectator) {
-          removeOwnCardPost();
-        }
-        showToast('Game Ended', 'Game was canceled or ended', 'info');
-        setTimeout(() => {
-          navigation.goBack();
-        }, 1000);
-      }
-    });
+      if (activeRoomId !== currentRoomId) return;
+      setGameOver(true);
+      setGameResult('Game ended.');
+      showToast('Game Ended', 'Game was canceled or ended', 'info');
+    };
+
+    socket.on('cardGameCleanup', handleGameCleanup);
 
     // Join the room
     socket.emit('joinCardRoom', { roomId: currentRoomId, userId: user?._id });
@@ -585,7 +607,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       socket.off('cardGameState');
       socket.off('opponentMove');
       socket.off('cardGameEnded');
-      socket.off('cardGameCleanup');
+      socket.off('cardGameCleanup', handleGameCleanup);
       socket.off('cardMove');
     };
   }, [socket, roomId]);
@@ -648,33 +670,27 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     socket.emit('cardMove', moveData);
   }, [socket, roomId, opponentId, isMyTurn, gameOver, myHand, showToast]);
 
-  const handleBack = () => {
-    // Only emit resign if user is a player (not a spectator)
-    // Spectators should just leave silently without ending the game
-    if (!isSpectator && socket && roomId && opponentId) {
-      socket.emit('resignCard', { roomId, to: opponentId });
-      // Remove own card game post immediately (frontend only)
-      // Backend will also delete and broadcast to followers
-      removeOwnCardPost();
-    } else if (isSpectator) {
-      console.log('👁️ [CardGameScreen] Spectator leaving - not emitting any game end events');
-    }
-    navigation.goBack();
-  };
-
   const resignGameNow = useCallback(() => {
     if (isSpectator || gameOver) return;
     if (socket && roomId && opponentId) {
       socket.emit('resignCard', { roomId, to: opponentId });
     }
-    removeOwnCardPost();
-    navigation.goBack();
-  }, [isSpectator, gameOver, socket, roomId, opponentId, navigation]);
+    setGameOver(true);
+    setGameResult('You resigned.');
+  }, [isSpectator, gameOver, socket, roomId, opponentId]);
 
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener(LIVE_BAR_RESIGN_GAME, resignGameNow);
+    const sub = DeviceEventEmitter.addListener(
+      LIVE_BAR_RESIGN_GAME,
+      (payload?: { leaveGameScreen?: boolean }) => {
+        resignGameNow();
+        if (payload?.leaveGameScreen && navigation.canGoBack()) {
+          navigation.goBack();
+        }
+      },
+    );
     return () => sub.remove();
-  }, [resignGameNow]);
+  }, [resignGameNow, navigation]);
 
   const handleResign = () => {
     Alert.alert(
@@ -689,42 +705,6 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         },
       ]
     );
-  };
-
-  const removeOwnCardPost = () => {
-    // Remove card game post from feed (frontend only)
-    // Backend will handle actual deletion
-    if (!roomId) {
-      console.log('⚠️ [CardGameScreen] No roomId to remove post');
-      return;
-    }
-    
-    // Find and delete all posts with matching roomId in cardGameData
-    const postsToDelete: string[] = [];
-    posts.forEach((post: any) => {
-      if (post.cardGameData) {
-        try {
-          const cardData = typeof post.cardGameData === 'string' 
-            ? JSON.parse(post.cardGameData) 
-            : post.cardGameData;
-          if (cardData && cardData.roomId === roomId) {
-            postsToDelete.push(post._id);
-          }
-        } catch (error) {
-          console.error('❌ [CardGameScreen] Error parsing cardGameData:', error);
-        }
-      }
-    });
-    
-    // Delete all matching posts
-    postsToDelete.forEach((postId) => {
-      deletePost(postId);
-      console.log(`🗑️ [CardGameScreen] Removed card game post: ${postId}`);
-    });
-    
-    if (postsToDelete.length === 0) {
-      console.log('ℹ️ [CardGameScreen] No card game posts found to remove');
-    }
   };
 
   const topInset = insets.top > 0 ? insets.top : StatusBar.currentHeight || 0;
@@ -999,21 +979,29 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         </View>
       </Modal>
 
-      {/* Game Over Overlay */}
-      {gameOver && (
+      <Modal
+        visible={gameOver && !leavingLobby}
+        transparent
+        animationType="fade"
+        onRequestClose={handleBackToLobby}
+        statusBarTranslucent
+      >
         <View style={styles.gameOverOverlay}>
           <View style={styles.gameOverBox}>
             <Text style={styles.gameOverTitle}>Game Over</Text>
-            <Text style={styles.gameOverMessage}>{gameResult}</Text>
+            {gameResult ? (
+              <Text style={styles.gameOverMessage}>{gameResult}</Text>
+            ) : null}
             <TouchableOpacity
               style={styles.gameOverButton}
-              onPress={() => navigation.goBack()}
+              onPress={handleBackToLobby}
+              activeOpacity={0.85}
             >
               <Text style={styles.gameOverButtonText}>Back to Lobby</Text>
             </TouchableOpacity>
           </View>
         </View>
-      )}
+      </Modal>
     </View>
   );
 };
@@ -1022,6 +1010,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+    position: 'relative',
   },
   loadingContainer: {
     flex: 1,
@@ -1491,7 +1480,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   gameOverOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.8)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1501,7 +1490,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 24,
     alignItems: 'center',
-    minWidth: 280,
+    width: '88%',
+    maxWidth: 360,
   },
   gameOverTitle: {
     fontSize: 24,
@@ -1516,10 +1506,16 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   gameOverButton: {
+    alignSelf: 'stretch',
+    width: '100%',
     backgroundColor: COLORS.primary,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    minHeight: 56,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
   },
   gameOverButtonText: {
     color: '#FFFFFF',

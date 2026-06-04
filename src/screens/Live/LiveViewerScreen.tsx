@@ -1,11 +1,5 @@
 /**
  * LiveViewerScreen — watch a live stream on mobile.
- *
- * Features:
- *  - Full-screen remote video
- *  - Floating animated chat messages (like Instagram Live)
- *  - Bottom chat input (ephemeral — no DB)
- *  - All messages visible to everyone in the room via LiveKit data channel
  */
 
 import React, {
@@ -14,7 +8,7 @@ import React, {
 import {
   View, Text, TouchableOpacity, StyleSheet, TextInput,
   KeyboardAvoidingView, Platform, Image, Animated,
-  FlatList, useWindowDimensions,
+  FlatList,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
 import { Room, RoomEvent } from 'livekit-client';
@@ -24,8 +18,13 @@ import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import InCallManager from 'react-native-incall-manager';
 import { API_URL } from '../../utils/constants';
+import ScreenShareViewer from '../../components/ScreenShareViewer';
+import {
+  isScreenSharePublication,
+  isVideoPublication,
+  collectRemoteVideoTracks,
+} from '../../utils/liveKitTracks';
 
-// ── Floating message (animates up then fades) ─────────────────────────────────
 interface FloatMsg { id: string; sender: string; text: string; anim: Animated.Value; opacity: Animated.Value }
 
 const FloatingBubble = ({ msg }: { msg: FloatMsg }) => (
@@ -34,7 +33,7 @@ const FloatingBubble = ({ msg }: { msg: FloatMsg }) => (
       styles.floatBubble,
       {
         transform: [{ translateY: msg.anim }],
-        opacity:   msg.opacity,
+        opacity: msg.opacity,
       },
     ]}
     pointerEvents="none"
@@ -44,99 +43,114 @@ const FloatingBubble = ({ msg }: { msg: FloatMsg }) => (
   </Animated.View>
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
 const LiveViewerScreen = () => {
   const navigation = useNavigation<any>();
-  const route      = useRoute<any>();
-  const { user }   = useUser();
-  const socketCtx  = useSocket();
-  const socket     = socketCtx?.socket;
+  const route = useRoute<any>();
+  const { user } = useUser();
+  const socketCtx = useSocket();
+  const socket = socketCtx?.socket;
   const { colors } = useTheme();
-  const { width: winW, height: winH } = useWindowDimensions();
 
   const { streamerId, streamerName, streamerProfilePic } = route.params || {};
 
-  const [remoteVideoTrack, setRemoteVideoTrack] = useState<any>(null);
-  const [isConnected,      setIsConnected]      = useState(false);
-  const [chatInput,        setChatInput]        = useState('');
-  // permanent log (scrollable)
-  const [chatLog,          setChatLog]          = useState<{ id: string; sender: string; text: string }[]>([]);
-  // floating animations
-  const [floatMsgs,        setFloatMsgs]        = useState<FloatMsg[]>([]);
-  const [showLog,          setShowLog]          = useState(false);
+  const [remoteScreenTrack, setRemoteScreenTrack] = useState<any>(null);
+  const [remoteCameraTrack, setRemoteCameraTrack] = useState<any>(null);
+  const [screenRenderKey, setScreenRenderKey] = useState(0);
+  const [isConnected, setIsConnected] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLog, setChatLog] = useState<{ id: string; sender: string; text: string }[]>([]);
+  const [floatMsgs, setFloatMsgs] = useState<FloatMsg[]>([]);
+  const [showLog, setShowLog] = useState(false);
 
-  const roomRef    = useRef<Room | null>(null);
-  const flatRef    = useRef<FlatList>(null);
-  let msgCounter   = useRef(0);
+  const roomRef = useRef<Room | null>(null);
+  const flatRef = useRef<FlatList>(null);
+  const msgCounter = useRef(0);
   const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  // ── add message ─────────────────────────────────────────────────────────
+  const applyRemoteTracks = useCallback(async () => {
+    const lkRoom = roomRef.current;
+    if (!lkRoom) return;
+    const { screen, camera } = await collectRemoteVideoTracks(lkRoom);
+    if (screen) {
+      setRemoteScreenTrack((prev: any) => {
+        if (prev?.sid !== screen.sid) setScreenRenderKey((k) => k + 1);
+        return screen;
+      });
+    }
+    if (camera) {
+      setRemoteCameraTrack((prev: any) => (prev?.sid === camera.sid ? prev : camera));
+    }
+  }, []);
+
   const addMessage = useCallback((sender: string, text: string) => {
-    const id  = `msg_${++msgCounter.current}_${Date.now()}`;
-    const anim    = new Animated.Value(0);
+    const id = `msg_${++msgCounter.current}_${Date.now()}`;
+    const anim = new Animated.Value(0);
     const opacity = new Animated.Value(1);
 
     const floatMsg: FloatMsg = { id, sender, text, anim, opacity };
-    setFloatMsgs(prev => [...prev.slice(-6), floatMsg]);
-    setChatLog(prev => [...prev.slice(-100), { id, sender, text }]);
+    setFloatMsgs((prev) => [...prev.slice(-6), floatMsg]);
+    setChatLog((prev) => [...prev.slice(-100), { id, sender, text }]);
 
-    // Float up animation
     Animated.parallel([
-      Animated.timing(anim, {
-        toValue:         -120,
-        duration:        4000,
-        useNativeDriver: true,
-      }),
+      Animated.timing(anim, { toValue: -120, duration: 4000, useNativeDriver: true }),
       Animated.sequence([
         Animated.delay(2500),
-        Animated.timing(opacity, {
-          toValue:         0,
-          duration:        1500,
-          useNativeDriver: true,
-        }),
+        Animated.timing(opacity, { toValue: 0, duration: 1500, useNativeDriver: true }),
       ]),
     ]).start();
 
     const timer = setTimeout(() => {
-      setFloatMsgs(prev => prev.filter(m => m.id !== id));
-      removeTimersRef.current = removeTimersRef.current.filter(t => t !== timer);
+      setFloatMsgs((prev) => prev.filter((m) => m.id !== id));
+      removeTimersRef.current = removeTimersRef.current.filter((t) => t !== timer);
     }, 4200);
     removeTimersRef.current.push(timer);
   }, []);
 
-  // ── connect room ─────────────────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
     const join = async () => {
       try {
-        const statusRes = await fetch(`${API_URL}/api/call/livestream/${encodeURIComponent(String(streamerId))}/status`, {
-          credentials: 'include',
-        });
+        const statusRes = await fetch(
+          `${API_URL}/api/call/livestream/${encodeURIComponent(String(streamerId))}/status`,
+          { credentials: 'include' },
+        );
         if (statusRes.ok && mounted) {
           const st = await statusRes.json().catch(() => ({}));
-          if (st && st.active === false) {
+          if (st?.active === false) {
             if (mounted) navigation.goBack();
             return;
           }
         }
         const res = await fetch(`${API_URL}/api/call/token`, {
-          method:      'POST',
-          headers:     { 'Content-Type': 'application/json' },
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body:        JSON.stringify({ type: 'viewer', targetId: streamerId }),
+          body: JSON.stringify({ type: 'viewer', targetId: streamerId }),
         });
         if (!res.ok || !mounted) return;
         const { token, livekitUrl } = await res.json();
 
+        // Plain Room — same as group calls (adaptiveStream off for reliable screen decode).
         const lkRoom = new Room();
         roomRef.current = lkRoom;
 
-        lkRoom.on(RoomEvent.TrackSubscribed, (track: any) => {
-          if (!mounted) return;
-          if (track.kind === 'video') setRemoteVideoTrack(track);
-        });
-        lkRoom.on(RoomEvent.TrackUnsubscribed, (track: any) => {
-          if (track.kind === 'video') setRemoteVideoTrack(null);
+        const onVideo = (track: any, pub: any) => {
+          if (!mounted || track?.kind !== 'video' || !isVideoPublication(pub)) return;
+          if (isScreenSharePublication(pub, track)) {
+            setRemoteScreenTrack(track);
+            setScreenRenderKey((k) => k + 1);
+          } else {
+            setRemoteCameraTrack(track);
+          }
+        };
+
+        lkRoom.on(RoomEvent.TrackSubscribed, (track, pub) => onVideo(track, pub));
+        lkRoom.on(RoomEvent.TrackPublished, (pub) => { void applyRemoteTracks(); });
+        lkRoom.on(RoomEvent.ParticipantConnected, () => { void applyRemoteTracks(); });
+        lkRoom.on(RoomEvent.TrackUnsubscribed, (track, pub) => {
+          if (track.kind !== 'video') return;
+          if (isScreenSharePublication(pub, track)) setRemoteScreenTrack(null);
+          else setRemoteCameraTrack(null);
         });
         lkRoom.on(RoomEvent.Disconnected, () => {
           if (mounted) navigation.goBack();
@@ -149,17 +163,8 @@ const LiveViewerScreen = () => {
         });
 
         await lkRoom.connect(livekitUrl, token);
-        if (mounted) {
-          for (const participant of lkRoom.remoteParticipants.values()) {
-            for (const pub of participant.trackPublications.values()) {
-              if (!pub.isSubscribed) {
-                try { await pub.setSubscribed(true); } catch (_) {}
-              }
-              if (!pub.track || pub.kind !== 'video') continue;
-              setRemoteVideoTrack(pub.track);
-            }
-          }
-        }
+        if (mounted) await applyRemoteTracks();
+
         try {
           InCallManager.start({ media: 'video', auto: false, ringback: '' });
           InCallManager.setForceSpeakerphoneOn(true);
@@ -177,9 +182,8 @@ const LiveViewerScreen = () => {
       try { InCallManager.stop(); } catch (_) {}
       roomRef.current?.disconnect().catch(() => {});
     };
-  }, [streamerId, navigation]);
+  }, [streamerId, navigation, addMessage, applyRemoteTracks]);
 
-  // ── stream ended (socket) ─────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
     const onEnded = (payload: any) => {
@@ -193,7 +197,6 @@ const LiveViewerScreen = () => {
     return () => socket.off('livekit:streamEnded', onEnded);
   }, [socket, streamerId, navigation]);
 
-  // ── send chat ─────────────────────────────────────────────────────────────
   const sendChat = useCallback(async () => {
     const text = chatInput.trim();
     if (!text || !roomRef.current) return;
@@ -204,44 +207,44 @@ const LiveViewerScreen = () => {
     setChatInput('');
   }, [chatInput, user, addMessage]);
 
+  const screenSid = remoteScreenTrack?.sid || 'none';
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.container}>
-        {/* Full-screen video: shared screen takes priority, with the host's camera as a thumbnail */}
-        {remoteVideoTrack ? (
-          <View style={[styles.videoRoot, { width: winW, height: winH }]} pointerEvents="none">
-            <VideoView
-              key={remoteVideoTrack?.sid || 'cam'}
-              videoTrack={remoteVideoTrack}
-              style={{ width: winW, height: winH }}
-              objectFit="cover"
-              zOrder={0}
+        <View style={styles.mediaWrap} pointerEvents="box-none">
+          {remoteScreenTrack ? (
+            <ScreenShareViewer
+              key={`live-screen-${screenSid}-${screenRenderKey}`}
+              videoTrack={remoteScreenTrack}
+              label={streamerName || 'Live'}
+              style={styles.screenStage}
+              controlsBottom={76}
             />
-          </View>
-        ) : (
-          <View style={[StyleSheet.absoluteFill, styles.placeholder]}>
-            {streamerProfilePic
-              ? <Image source={{ uri: streamerProfilePic }} style={styles.placeholderAvatar} />
-              : <View style={[styles.placeholderAvatar, styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
-                  <Text style={{ color: colors.textGray, fontSize: 36, fontWeight: 'bold' }}>
-                    {(streamerName || '?').charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-            }
-            <Text style={{ color: '#888', marginTop: 12 }}>
-              {isConnected ? 'Waiting for video…' : 'Connecting…'}
-            </Text>
-          </View>
-        )}
+          ) : remoteCameraTrack ? (
+            <View style={styles.cameraFill} pointerEvents="none">
+              <VideoView
+                key={remoteCameraTrack?.sid || 'cam'}
+                videoTrack={remoteCameraTrack}
+                style={StyleSheet.absoluteFill}
+                objectFit="contain"
+                zOrder={0}
+              />
+            </View>
+          ) : (
+            <View style={styles.placeholder}>
+              <Text style={{ color: '#888', fontSize: 15, textAlign: 'center', paddingHorizontal: 24 }}>
+                {isConnected ? 'Waiting for video…' : 'Connecting…'}
+              </Text>
+            </View>
+          )}
+        </View>
 
-        {/* Top bar */}
         <View style={styles.topBar}>
-          {streamerProfilePic
-            ? <Image source={{ uri: streamerProfilePic }} style={styles.topAvatar} />
-            : null}
+          {streamerProfilePic ? <Image source={{ uri: streamerProfilePic }} style={styles.topAvatar} /> : null}
           <Text style={styles.topName}>{streamerName}</Text>
           <View style={styles.livePill}><Text style={styles.livePillText}>🔴 LIVE</Text></View>
           <TouchableOpacity style={[styles.topBtn, { backgroundColor: colors.error }]} onPress={() => navigation.goBack()}>
@@ -249,40 +252,34 @@ const LiveViewerScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Floating messages */}
         <View style={styles.floatArea} pointerEvents="none">
-          {floatMsgs.map(m => <FloatingBubble key={m.id} msg={m} />)}
+          {floatMsgs.map((m) => <FloatingBubble key={m.id} msg={m} />)}
         </View>
 
-        {/* Chat log toggle button */}
         <TouchableOpacity
           style={[styles.logToggle, { backgroundColor: 'rgba(0,0,0,0.5)' }]}
-          onPress={() => setShowLog(v => !v)}
+          onPress={() => setShowLog((v) => !v)}
         >
           <Text style={{ color: '#fff', fontSize: 18 }}>💬</Text>
         </TouchableOpacity>
 
-        {/* Chat log panel */}
         {showLog && (
           <View style={[styles.logPanel, { backgroundColor: 'rgba(0,0,0,0.7)' }]}>
             <FlatList
               ref={flatRef}
               data={chatLog}
-              keyExtractor={item => item.id}
+              keyExtractor={(item) => item.id}
               onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: true })}
               renderItem={({ item }) => (
-                <View style={{ marginBottom: 4 }}>
-                  <Text style={{ color: '#fff', fontSize: 13 }}>
-                    <Text style={{ color: '#FFD700', fontWeight: 'bold' }}>{item.sender}: </Text>
-                    {item.text}
-                  </Text>
-                </View>
+                <Text style={{ color: '#fff', fontSize: 13, marginBottom: 4 }}>
+                  <Text style={{ color: '#FFD700', fontWeight: 'bold' }}>{item.sender}: </Text>
+                  {item.text}
+                </Text>
               )}
             />
           </View>
         )}
 
-        {/* Chat input */}
         <View style={styles.inputRow}>
           <TextInput
             style={[styles.textInput, { color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }]}
@@ -293,10 +290,7 @@ const LiveViewerScreen = () => {
             onSubmitEditing={sendChat}
             returnKeyType="send"
           />
-          <TouchableOpacity
-            style={[styles.sendBtn, { backgroundColor: colors.primary }]}
-            onPress={sendChat}
-          >
+          <TouchableOpacity style={[styles.sendBtn, { backgroundColor: colors.primary }]} onPress={sendChat}>
             <Text style={{ color: '#fff', fontWeight: 'bold' }}>Send</Text>
           </TouchableOpacity>
         </View>
@@ -307,30 +301,41 @@ const LiveViewerScreen = () => {
 
 const styles = StyleSheet.create({
   container:        { flex: 1, backgroundColor: '#000' },
-  videoRoot:        {
-    position: 'absolute',
-    top: 0,
-    left: 0,
+  mediaWrap:        {
+    flex: 1,
+    marginTop: 88,
+    marginBottom: 58,
+    backgroundColor: '#000',
+  },
+  screenStage:      {
+    flex: 1,
+    marginHorizontal: 4,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  placeholder:      { justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
+  cameraFill:       { flex: 1, backgroundColor: '#000' },
+  placeholder:      {
+    flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111',
+  },
   placeholderAvatar:{ width: 100, height: 100, borderRadius: 50 },
+  camPip:           {
+    position: 'absolute', top: 90, right: 12,
+    width: 96, height: 128, borderRadius: 12, overflow: 'hidden',
+    backgroundColor: '#000', borderWidth: 2, borderColor: 'rgba(255,255,255,0.5)',
+    zIndex: 5,
+  },
   avatarPlaceholder:{ justifyContent: 'center', alignItems: 'center' },
   topBar:           {
     position: 'absolute', top: 44, left: 12, right: 12,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 8, zIndex: 10,
   },
   topAvatar:        { width: 32, height: 32, borderRadius: 16 },
   topName:          { color: '#fff', fontWeight: 'bold', fontSize: 14, flex: 1 },
   livePill:         { backgroundColor: 'red', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
   livePillText:     { color: '#fff', fontWeight: 'bold', fontSize: 12 },
   topBtn:           { paddingVertical: 5, paddingHorizontal: 14, borderRadius: 16 },
-  floatArea:        {
-    position: 'absolute', bottom: 80, left: 12, right: 12,
-  },
+  floatArea:        { position: 'absolute', bottom: 80, left: 12, right: 12 },
   floatBubble:      {
     flexDirection: 'row', flexWrap: 'wrap',
     backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 20,
@@ -342,16 +347,16 @@ const styles = StyleSheet.create({
   logToggle:        {
     position: 'absolute', bottom: 72, right: 12,
     width: 38, height: 38, borderRadius: 19,
-    justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center', zIndex: 10,
   },
   logPanel:         {
     position: 'absolute', bottom: 72, right: 60, left: 12,
-    height: 180, borderRadius: 12, padding: 10,
+    height: 180, borderRadius: 12, padding: 10, zIndex: 10,
   },
   inputRow:         {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     flexDirection: 'row', gap: 8, paddingHorizontal: 12,
-    paddingVertical: 10, backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingVertical: 10, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 10,
   },
   textInput:        {
     flex: 1, borderWidth: 1, borderRadius: 20,

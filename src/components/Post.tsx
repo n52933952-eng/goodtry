@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, CommonActions } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { usePost } from '../context/PostContext';
 import { useTheme } from '../context/ThemeContext';
@@ -40,6 +40,12 @@ import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
 import SafeImage from './SafeImage';
 import { navigateToMainStack } from '../utils/navigationHelpers';
+import {
+  isGoFishFeedPost,
+  isChessFeedPost,
+  getCardGameDataForPost,
+  getChessGameDataForPost,
+} from '../utils/gameFeedPostUtils';
 
 interface PostProps {
   post: any;
@@ -82,13 +88,19 @@ const Post: React.FC<PostProps> = ({
   };
 
   const navigation = useNavigation<any>();
-  
-  // Helper function to navigate to PostDetail (ensures tab bar is visible)
-  const navigateToPostDetail = (postId: string, extra?: Record<string, unknown>) => {
-    // Stop feed video immediately before navigating to PostDetail so audio/video
-    // doesn't continue underneath the detail screen.
+
+  // Helper function to navigate to PostDetail (feed stack, profile stack, or tab fallback)
+  const navigateToPostDetail = useCallback((postId: string, extra?: Record<string, unknown>) => {
+    const id = String(postId || '').trim();
+    if (!id) return;
+
+    const postImg = String(post?.img || '');
+    const isPostVideo =
+      !!postImg &&
+      (/\.(mp4|webm|ogg|mov)$/i.test(postImg) || postImg.includes('/video/upload/'));
+
     try {
-      if (!disableNavigation && isVideoPost) {
+      if (!disableNavigation && isPostVideo) {
         setIsFeedVideoPausedByUser(true);
         setIsFeedVideoPlaying(false);
         setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
@@ -104,34 +116,47 @@ const Post: React.FC<PostProps> = ({
     } catch (_) {}
 
     const params = {
-      postId,
+      postId: id,
       fromScreen,
       userProfileParams,
       ...extra,
     };
-    if (fromScreen === 'UserProfile') {
-      navigation.navigate('PostDetail', params);
-      return;
-    }
-    // Feed tab: Post lives in FeedStack (FeedScreen + PostDetail). Navigating via
-    // navigate('Feed', { screen: 'PostDetail', params }) from inside that stack can
-    // drop nested params (e.g. footballMatchId). Push PostDetail on the current stack when possible.
+
+    const tryOpenOnNavigator = (nav: any): boolean => {
+      if (!nav) return false;
+      try {
+        const state = nav.getState?.() as { routeNames?: string[]; routes?: { name: string }[] } | undefined;
+        const names = state?.routeNames ?? state?.routes?.map((r) => r.name) ?? [];
+        if (names.includes('PostDetail')) {
+          if (typeof nav.push === 'function') {
+            nav.push('PostDetail', params);
+          } else {
+            nav.navigate('PostDetail', params);
+          }
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    };
+
+    if (tryOpenOnNavigator(navigation)) return;
+    if (tryOpenOnNavigator(navigation.getParent?.())) return;
+
     try {
-      const state = navigation.getState?.() as { routeNames?: string[]; routes?: { name: string }[] } | undefined;
-      const names =
-        state?.routeNames ?? state?.routes?.map((r) => r.name) ?? [];
-      if (names.includes('PostDetail')) {
-        navigation.navigate('PostDetail', params);
-        return;
-      }
-    } catch (_) {
-      /* fall through */
+      navigation.dispatch(
+        CommonActions.navigate({
+          name: 'PostDetail',
+          params,
+        }),
+      );
+      return;
+    } catch (_) {}
+
+    const tabNav = navigation.getParent?.()?.getParent?.() ?? navigation.getParent?.();
+    if (tabNav?.navigate) {
+      tabNav.navigate('Feed', { screen: 'PostDetail', params });
     }
-    navigation.navigate('Feed', {
-      screen: 'PostDetail',
-      params,
-    });
-  };
+  }, [navigation, disableNavigation, fromScreen, userProfileParams, post?.img]);
 
   /** Football feed card: header/avatar open the Football tab; 💬 still opens this post for comments. */
   const navigateToFootballTab = () => {
@@ -312,9 +337,11 @@ const Post: React.FC<PostProps> = ({
   // Football post detection
   const isFootballPost = post.isFootballPost || post.postedBy?.username === 'Football';
 
-  // Chess game post state
-  const isChessPost = !!post?.chessGameData;
+  // Chess / card game post state
+  const isChessPost = isChessFeedPost(post);
+  const isCardPost = isGoFishFeedPost(post);
   const [chessGameData, setChessGameData] = useState<any>(null);
+  const [cardGameData, setCardGameData] = useState<any>(null);
   /** When socket says this room ended, flip Live → Ended without waiting for a feed refresh */
   const [chessFeedEndedLocally, setChessFeedEndedLocally] = useState(false);
 
@@ -322,22 +349,13 @@ const Post: React.FC<PostProps> = ({
   const [footballMatches, setFootballMatches] = useState<any[]>([]);
   const [footballLoading, setFootballLoading] = useState(false);
   
-  // Parse chess game data
   useEffect(() => {
-    if (isChessPost && post.chessGameData) {
-      try {
-        const parsed = typeof post.chessGameData === 'string' 
-          ? JSON.parse(post.chessGameData) 
-          : post.chessGameData;
-        setChessGameData(parsed);
-      } catch (e) {
-        console.error('❌ [Post] Error parsing chessGameData:', e);
-        setChessGameData(null);
-      }
-    } else {
-      setChessGameData(null);
-    }
-  }, [isChessPost, post?.chessGameData]);
+    setChessGameData(isChessPost ? getChessGameDataForPost(post) : null);
+  }, [isChessPost, post?.chessGameData, post?.text, post?.postedBy?._id, post?.postedBy?.name]);
+
+  useEffect(() => {
+    setCardGameData(isCardPost ? getCardGameDataForPost(post) : null);
+  }, [isCardPost, post?.cardGameData, post?.text, post?.postedBy?._id, post?.postedBy?.name]);
 
   /** Room id from props (immediate) — avoids one frame of stale `chessGameData` state so feed listeners match the second game. */
   const chessRoomIdForFeed = useMemo(() => {
@@ -526,34 +544,41 @@ const Post: React.FC<PostProps> = ({
     return counts;
   }, [isFootballPost, post.replies]);
 
-  // Handle chess post click - navigate to watch game
-  const handleChessPostClick = () => {
-    if (!chessGameData || !chessGameData.roomId) {
+  const openGamePostDetails = useCallback(() => {
+    if (disableNavigation || !post?._id) return;
+    navigateToPostDetail(String(post._id));
+  }, [disableNavigation, post?._id, navigateToPostDetail]);
+
+  const resolveGameOpponentId = useCallback(
+    (player1Id?: string, player2Id?: string) => {
+      const p1 = player1Id != null ? String(player1Id) : '';
+      const p2 = player2Id != null ? String(player2Id) : '';
+      const me = user?._id?.toString?.() ?? (user?._id ? String(user._id) : '');
+      if (!p1 && !p2) return '';
+      if (me && me === p1) return p2 || p1;
+      if (me && me === p2) return p1 || p2;
+      return p1 || p2;
+    },
+    [user?._id],
+  );
+
+  /** Game card tap — watch live match (not post details). */
+  const watchChessGame = useCallback(() => {
+    if (!chessGameData?.roomId) {
       showToast('Error', 'Invalid chess game data', 'error');
       return;
     }
-
-    const currentUserId = user?._id?.toString();
-    const player1Id = chessGameData.player1?._id?.toString();
-    const player2Id = chessGameData.player2?._id?.toString();
-    const roomId = chessGameData.roomId;
-
-    // Determine opponent ID for navigation
-    let opponentId = player1Id;
-    if (currentUserId === player1Id) {
-      opponentId = player2Id || player1Id;
-    } else if (currentUserId === player2Id) {
-      opponentId = player1Id || player2Id;
-    }
-
-    // Navigate to ChessGame screen as spectator
-    navigation.navigate('ChessGame', {
-      roomId,
-      opponentId: opponentId || player1Id,
-      color: 'white', // Spectators view as white by default
+    const opponentId = resolveGameOpponentId(
+      chessGameData.player1?._id,
+      chessGameData.player2?._id,
+    );
+    navigateToMainStack(navigation, 'ChessGame', {
+      roomId: chessGameData.roomId,
+      opponentId: opponentId || chessGameData.player1?._id,
+      color: 'white',
       isSpectator: true,
     });
-  };
+  }, [chessGameData, resolveGameOpponentId, navigation, showToast]);
 
   // Update local state when post prop changes
   useEffect(() => {
@@ -705,8 +730,8 @@ const Post: React.FC<PostProps> = ({
     return !(
       post?.footballData ||
       post?.weatherData ||
-      post?.chessGameData ||
-      post?.cardGameData ||
+      isChessFeedPost(post) ||
+      isGoFishFeedPost(post) ||
       post?.raceGameData ||
       post?.isMatchReaction ||
       postId.startsWith('live_')
@@ -988,7 +1013,8 @@ const Post: React.FC<PostProps> = ({
   const isChannelPost = isYouTubePost || !!post?.channelAddedBy || 
     channelUsernames.includes(post.postedBy?.username);
 
-  const isCardPost = !!post?.cardGameData;
+  /** Chess/card posts are removed when the game ends — hide feed actions to avoid broken like/comment/remind. */
+  const hideGamePostFooter = isChessPost || isCardPost;
 
   const isMyChannelFeedCard =
     !!post?.channelAddedBy && String(post.channelAddedBy) === String(user?._id);
@@ -1411,12 +1437,15 @@ const Post: React.FC<PostProps> = ({
       {!(isFootballPost && (footballMatches.length > 0 || post.liveMatches?.length > 0 || post.matches?.length > 0 || post.todayMatches?.length > 0)) && (
         disableNavigation ? (
           <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+        ) : isCardPost ? (
+          <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+        ) : isChessPost ? (
+          <Pressable onPress={openGamePostDetails} style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}>
+            <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+          </Pressable>
         ) : (
-          <TouchableOpacity 
-            onPress={() => {
-              // Navigate to PostDetail
-              navigateToPostDetail(post._id);
-            }}
+          <TouchableOpacity
+            onPress={() => navigateToPostDetail(String(post._id))}
             activeOpacity={0.9}
           >
             <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
@@ -1991,11 +2020,67 @@ const Post: React.FC<PostProps> = ({
         </View>
       )}
 
+      {/* Card Game Card Display */}
+      {isCardPost && cardGameData && (
+        <View
+          style={[styles.chessCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+        >
+          <View style={styles.chessCardHeader}>
+            <View style={styles.chessCardTitle}>
+              <Text style={styles.chessIcon}>🃏</Text>
+              <View>
+                <Text style={[styles.chessTitle, { color: colors.cardText }]}>Playing Go Fish</Text>
+              </View>
+            </View>
+            {cardGameData.gameStatus === 'active' || cardGameData.gameStatus == null ? (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
+                <Text style={styles.chessLiveText}>Live</Text>
+              </View>
+            ) : (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.textGray }]}>
+                <Text style={styles.chessLiveText}>Ended</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.chessPlayers}>
+            <View style={styles.chessPlayer}>
+              {cardGameData.player1?.profilePic ? (
+                <SafeImage source={{ uri: cardGameData.player1.profilePic }} style={styles.chessPlayerAvatar} />
+              ) : (
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                  <Text style={styles.chessPlayerAvatarText}>
+                    {cardGameData.player1?.name?.[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.chessPlayerName, { color: colors.cardText }]} numberOfLines={1}>
+                {cardGameData.player1?.name || 'Player 1'}
+              </Text>
+            </View>
+            <Text style={[styles.chessVs, { color: colors.cardText }]}>vs</Text>
+            <View style={styles.chessPlayer}>
+              {cardGameData.player2?.profilePic ? (
+                <SafeImage source={{ uri: cardGameData.player2.profilePic }} style={styles.chessPlayerAvatar} />
+              ) : (
+                <View style={[styles.chessPlayerAvatar, styles.chessPlayerAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                  <Text style={styles.chessPlayerAvatarText}>
+                    {cardGameData.player2?.name?.[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.chessPlayerName, { color: colors.cardText }]} numberOfLines={1}>
+                {cardGameData.player2?.name || 'Player 2'}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* Chess Game Card Display */}
       {isChessPost && chessGameData && (
         <TouchableOpacity
           style={[styles.chessCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
-          onPress={handleChessPostClick}
+          onPress={watchChessGame}
           activeOpacity={0.8}
         >
           <View style={styles.chessCardHeader}>
@@ -2003,7 +2088,9 @@ const Post: React.FC<PostProps> = ({
               <Text style={styles.chessIcon}>♟️</Text>
               <View>
                 <Text style={[styles.chessTitle, { color: colors.cardText }]}>Playing Chess</Text>
-                <Text style={[styles.chessSubtitle, { color: colors.cardText, opacity: 0.6 }]}>Tap to watch</Text>
+                <Text style={[styles.chessSubtitle, { color: colors.cardText, opacity: 0.6 }]}>
+                  Tap to watch
+                </Text>
               </View>
             </View>
             {(chessFeedEndedLocally ||
@@ -2070,7 +2157,8 @@ const Post: React.FC<PostProps> = ({
 
       {!showStackedFootballMatchActions &&
         !hidePostFooterForFootballDetail &&
-        !hideFootballFooterWhenNoMatchEmpty && (
+        !hideFootballFooterWhenNoMatchEmpty &&
+        !hideGamePostFooter && (
         <View style={styles.footer} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.actionButton}

@@ -23,7 +23,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
 import { Track, ParticipantEvent, RoomEvent } from 'livekit-client';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useGroupCall } from '../../context/GroupCallContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
@@ -60,29 +60,53 @@ const ParticipantTile = ({ participant, size }: { participant: any; size: number
 // ── Local participant tile ────────────────────────────────────────────────────
 const LocalTile = ({ room, size, userName }: { room: any; size: number; userName: string }) => {
   const [videoTrack, setVideoTrack] = useState<any>(null);
+  // renderKey forces the VideoView to remount so the native surface re-attaches.
+  // Bump it ONLY when we actually need to re-attach (focus / app-foreground /
+  // track change) — NOT on every periodic read, which caused constant flashing.
   const [renderKey, setRenderKey] = useState(0);
+  const isFocused = useIsFocused();
 
-  const refreshTrack = useCallback(() => {
+  // Read the current camera track; only update state when it actually changes
+  // (avoids re-render churn). Returns true if the track identity changed.
+  const readTrack = useCallback(() => {
     const camPub = room?.localParticipant?.getTrackPublication?.(Track.Source.Camera);
-    setVideoTrack(camPub?.track ?? null);
-    setRenderKey((k) => k + 1);
+    const t = camPub?.track ?? null;
+    let changed = false;
+    setVideoTrack((prev: any) => {
+      if (prev === t) return prev;
+      changed = true;
+      return t;
+    });
+    return changed;
   }, [room]);
 
   useEffect(() => {
-    refreshTrack();
+    readTrack();
     if (!room) return undefined;
-    const onPub = () => refreshTrack();
+    const onPub = () => { if (readTrack()) setRenderKey((k) => k + 1); };
     room.on?.(RoomEvent.LocalTrackPublished, onPub);
     room.on?.(RoomEvent.LocalTrackUnpublished, onPub);
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refreshTrack();
+      if (state === 'active') { readTrack(); setRenderKey((k) => k + 1); }
     });
+    // Periodic read keeps the track fresh, but only remounts the VideoView if the
+    // track changed — so a steady camera no longer flashes every 800ms.
+    const periodic = setInterval(() => { if (readTrack()) setRenderKey((k) => k + 1); }, 800);
     return () => {
       room.off?.(RoomEvent.LocalTrackPublished, onPub);
       room.off?.(RoomEvent.LocalTrackUnpublished, onPub);
       sub.remove();
+      clearInterval(periodic);
     };
-  }, [room, refreshTrack]);
+  }, [room, readTrack]);
+
+  // Re-attach the surface when this screen regains focus (e.g. return from app home).
+  useEffect(() => {
+    if (isFocused) {
+      readTrack();
+      setRenderKey((k) => k + 1);
+    }
+  }, [isFocused, readTrack]);
 
   if (!room) return null;
 
@@ -336,21 +360,20 @@ const GroupCallScreen = () => {
   // ── Active call UI ────────────────────────────────────────────────────────
   const allTiles = [{ id: 'local', isLocal: true }, ...participants.map(p => ({ id: p.identity, isLocal: false, participant: p }))];
 
-  // Find an active screen share (remote first, then my own) — Google Meet style: show it big.
-  const screenShare = (() => {
+  // Remote screen only in the viewer — never preview your own share (infinite mirror on mobile).
+  const remoteScreenShare = (() => {
     for (const p of participants) {
       const pub = p.getTrackPublication?.(Track.Source.ScreenShare);
       if (pub?.track) return { track: pub.track, name: p.name || p.identity || 'Someone' };
     }
-    const lp = room?.localParticipant;
-    const myPub = lp?.getTrackPublication?.(Track.Source.ScreenShare);
-    if (myPub?.track) return { track: myPub.track, name: 'You (presenting)' };
     return null;
   })();
 
-  // When someone is presenting, participant tiles shrink to a small row under the screen.
-  const tileSize = screenShare ? 90 : allTiles.length <= 2 ? 160 : allTiles.length <= 4 ? 140 : 110;
-  const numCols  = screenShare ? 3 : allTiles.length <= 1 ? 1 : 2;
+  const showPresentingPlaceholder = isScreenSharing && !remoteScreenShare;
+  const hasStage = !!remoteScreenShare || showPresentingPlaceholder;
+
+  const tileSize = hasStage ? 90 : allTiles.length <= 2 ? 160 : allTiles.length <= 4 ? 140 : 110;
+  const numCols  = hasStage ? 3 : allTiles.length <= 1 ? 1 : 2;
 
   return (
     <View style={[styles.container, { backgroundColor: '#111' }]}>
@@ -362,13 +385,19 @@ const GroupCallScreen = () => {
         </Text>
       </View>
 
-      {/* Shared screen (big) */}
-      {screenShare && (
+      {remoteScreenShare && (
         <ScreenShareViewer
-          videoTrack={screenShare.track}
-          label={screenShare.name}
+          videoTrack={remoteScreenShare.track}
+          label={remoteScreenShare.name}
           style={styles.screenStage}
         />
+      )}
+
+      {showPresentingPlaceholder && (
+        <View style={[styles.screenStage, styles.presentingStage]}>
+          <Text style={styles.presentingTitle}>You are sharing your screen</Text>
+          <Text style={styles.presentingHint}>Others in the group can see your screen</Text>
+        </View>
       )}
 
       {/* Grid */}
@@ -378,7 +407,7 @@ const GroupCallScreen = () => {
         numColumns={numCols}
         key={numCols}
         contentContainerStyle={styles.grid}
-        style={screenShare ? styles.gridCompact : undefined}
+        style={hasStage ? styles.gridCompact : undefined}
         renderItem={({ item }) =>
           item.isLocal
             ? <LocalTile room={room} size={tileSize} userName={user?.name || user?.username || 'You'} />
@@ -511,6 +540,13 @@ const styles = StyleSheet.create({
   grid:            { padding: 8, flexGrow: 1, justifyContent: 'center' },
   gridCompact:     { flexGrow: 0, maxHeight: 150 },
   screenStage:     { flex: 1, margin: 8, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' },
+  presentingStage: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  presentingTitle: { color: '#fff', fontSize: 18, fontWeight: '700', textAlign: 'center' },
+  presentingHint:  { color: 'rgba(255,255,255,0.65)', fontSize: 14, marginTop: 8, textAlign: 'center' },
   screenStagePill: { position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
   tile:            { margin: 4, borderRadius: 12, overflow: 'hidden', backgroundColor: '#222' },
   avatarTile:      { justifyContent: 'center', alignItems: 'center' },
@@ -520,7 +556,7 @@ const styles = StyleSheet.create({
   nameText:        { color: '#fff', fontSize: 11, textAlign: 'center' },
   controls:        { flexDirection: 'row', justifyContent: 'center', gap: 16, paddingVertical: 20, backgroundColor: 'rgba(0,0,0,0.6)' },
   shareLeaveRow:   {
-    flexDirection: 'row', gap: 10, paddingHorizontal: 12, paddingBottom: 4,
+    flexDirection: 'row', gap: 12, paddingHorizontal: 12, paddingBottom: 10,
   },
   shareLeaveBtn:   {
     flex: 1, alignItems: 'center', paddingVertical: 9,
