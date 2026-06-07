@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,8 @@ import { useLanguage } from '../../context/LanguageContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import UserListSearchBar from '../../components/UserListSearchBar';
+import { filterUsersByQuery } from '../../utils/filterUsersByQuery';
 
 const PAGE_SIZE = 12;
 
@@ -75,6 +77,12 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
   const [hasMore, setHasMore] = useState(true);
   const nextSkipRef = useRef(0);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredUsers = useMemo(
+    () => filterUsersByQuery(users, searchQuery),
+    [users, searchQuery],
+  );
 
   const listPath =
     listType === 'following' ? ENDPOINTS.GET_FOLLOWING_USERS : ENDPOINTS.GET_FOLLOWERS_USERS;
@@ -131,6 +139,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
       nextSkipRef.current = 0;
       setHasMore(true);
       setUsers([]);
+      setSearchQuery('');
       setLoading(true);
       (async () => {
         try {
@@ -325,11 +334,17 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
   };
 
   const listFooter =
-    loadingMore && users.length > 0 ? (
+    loadingMore && users.length > 0 && !searchQuery.trim() ? (
       <View style={styles.footerLoading}>
         <ActivityIndicator size="small" color={colors.primary} />
       </View>
     ) : null;
+
+  const emptyMessage = searchQuery.trim()
+    ? t('noUsersFound') || 'No users found'
+    : listType === 'following'
+      ? t('noFollowingYet')
+      : t('noFollowersYet');
 
   if (loading) {
     return (
@@ -342,22 +357,28 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
   return (
     <View style={[styles.container, styles.rowLtr, { backgroundColor: colors.background }]}>
       <FlatList
-        data={users}
+        data={filteredUsers}
         keyExtractor={(item) => item._id?.toString() || String(item.username)}
         renderItem={renderItem}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={
+          <UserListSearchBar
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            containerStyle={styles.searchBar}
+          />
+        }
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
-        onEndReached={loadMore}
+        onEndReached={searchQuery.trim() ? undefined : loadMore}
         onEndReachedThreshold={0.35}
         ListFooterComponent={listFooter}
         ListEmptyComponent={
-          <Text style={[styles.empty, { color: colors.textGray }]}>
-            {listType === 'following' ? t('noFollowingYet') : t('noFollowersYet')}
-          </Text>
+          <Text style={[styles.empty, { color: colors.textGray }]}>{emptyMessage}</Text>
         }
         contentContainerStyle={
-          users.length === 0
+          filteredUsers.length === 0
             ? styles.emptyContainer
-            : [styles.listContent, { paddingTop: 14, backgroundColor: colors.background }]
+            : [styles.listContent, { paddingTop: 4, backgroundColor: colors.background }]
         }
       />
     </View>
@@ -373,6 +394,9 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 16,
     paddingBottom: 20,
+  },
+  searchBar: {
+    marginBottom: 10,
   },
   row: {
     flexDirection: 'row',

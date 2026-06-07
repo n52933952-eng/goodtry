@@ -24,6 +24,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import StoryOrProfileSheet from '../../components/StoryOrProfileSheet';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
+import { liveSharePreviewText } from '../../utils/liveShareMessage';
 
 const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
@@ -128,7 +129,10 @@ const MessagesScreen = ({ navigation }: any) => {
 
       if (existingIndex >= 0) {
         // Update existing conversation
-        const lastMessageText = messageData.text || (messageData.img ? '📷 Image' : '');
+        const lastMessageText =
+          liveSharePreviewText(messageData.text)
+          || messageData.text
+          || (messageData.img ? '📷 Image' : '');
         
         const updatedConversation = {
           ...prevConvos[existingIndex],
@@ -159,6 +163,11 @@ const MessagesScreen = ({ navigation }: any) => {
 
   const handleUnreadCountUpdate = React.useCallback((_data: any) => {
     // Optionally update total unread count if needed
+  }, []);
+
+  /** Live ended — refresh list so "🔴 is live" preview disappears (cards already purged on server). */
+  const handleLiveShareCleanup = React.useCallback(() => {
+    fetchConversationsRef.current?.(false, { silent: true });
   }, []);
 
   const handleMessagesSeen = React.useCallback((data: any) => {
@@ -196,9 +205,13 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
       socket.off('conversationMarkedRead', handleMessagesSeen);
+      socket.off('liveShareExpired', handleLiveShareCleanup);
+      socket.off('livekit:streamEnded', handleLiveShareCleanup);
       socket.on('newMessage', handleNewMessage);
       socket.on('unreadCountUpdate', handleUnreadCountUpdate);
       socket.on('conversationMarkedRead', handleMessagesSeen);
+      socket.on('liveShareExpired', handleLiveShareCleanup);
+      socket.on('livekit:streamEnded', handleLiveShareCleanup);
     };
 
     bindConversationListeners();
@@ -211,8 +224,10 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
       socket.off('conversationMarkedRead', handleMessagesSeen);
+      socket.off('liveShareExpired', handleLiveShareCleanup);
+      socket.off('livekit:streamEnded', handleLiveShareCleanup);
     };
-  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen]);
+  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen, handleLiveShareCleanup]);
 
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;

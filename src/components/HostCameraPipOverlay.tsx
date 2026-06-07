@@ -11,9 +11,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
 import type { LocalTrack } from 'livekit-client';
 import { useLiveBroadcast } from '../context/LiveBroadcastContext';
-import {
-  PIP_SIZE_STEPS, PIP_DEFAULT_SIZE_INDEX, clampPipPosition,
-} from '../utils/liveCameraPipLayout';
+import { PIP_DEFAULT_SIZE_INDEX, clampPipPosition } from '../utils/liveCameraPipLayout';
+import { getScaledPipSizeSteps, s, useLiveScreenMetrics } from '../utils/liveScreenLayout';
 
 type Props = {
   track: LocalTrack;
@@ -30,11 +29,13 @@ const HostCameraPipOverlay = ({
   const { flipCamera } = useLiveBroadcast();
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
+  const metrics = useLiveScreenMetrics();
+  const pipSteps = useMemo(() => getScaledPipSizeSteps(metrics.scale), [metrics.scale]);
   const [sizeIndex, setSizeIndex] = useState(PIP_DEFAULT_SIZE_INDEX);
 
-  const { w: pipW, h: pipH } = PIP_SIZE_STEPS[sizeIndex];
-  const defaultX = winW - pipW - 12;
-  const defaultY = Math.max(insets.top, 12) + 52 + topInsetExtra;
+  const { w: pipW, h: pipH } = pipSteps[sizeIndex] ?? pipSteps[PIP_DEFAULT_SIZE_INDEX];
+  const defaultX = winW - pipW - s(12, metrics.scale);
+  const defaultY = Math.max(insets.top, 12) + s(52, metrics.scale) + topInsetExtra;
 
   const pan = useRef(new Animated.ValueXY({ x: defaultX, y: defaultY })).current;
   const sizeRef = useRef({ pipW, pipH });
@@ -42,9 +43,9 @@ const HostCameraPipOverlay = ({
 
   const clampAndSet = useCallback((x: number, y: number) => {
     const { pipW: w, pipH: h } = sizeRef.current;
-    const p = clampPipPosition(x, y, w, h, winW, winH, insets.top);
+    const p = clampPipPosition(x, y, w, h, winW, winH, insets.top, metrics.pipBottomPad);
     pan.setValue(p);
-  }, [pan, winW, winH, insets.top]);
+  }, [pan, winW, winH, insets.top, metrics.pipBottomPad]);
 
   useEffect(() => {
     if (!visible) return;
@@ -79,7 +80,7 @@ const HostCameraPipOverlay = ({
   );
 
   const shrink = () => setSizeIndex((i) => Math.max(0, i - 1));
-  const grow = () => setSizeIndex((i) => Math.min(PIP_SIZE_STEPS.length - 1, i + 1));
+  const grow = () => setSizeIndex((i) => Math.min(pipSteps.length - 1, i + 1));
 
   if (!visible || !track) return null;
 
@@ -114,7 +115,7 @@ const HostCameraPipOverlay = ({
           <Text style={styles.closeBtnText}>×</Text>
         </TouchableOpacity>
       ) : null}
-      <View style={styles.dragArea} {...panResponder.panHandlers}>
+      <View style={styles.dragArea} collapsable={false} {...panResponder.panHandlers}>
         <VideoView
           key={track.sid || 'host-pip'}
           videoTrack={track}
@@ -122,6 +123,7 @@ const HostCameraPipOverlay = ({
           objectFit="cover"
           mirror
           zOrder={10}
+          pointerEvents="none"
         />
       </View>
       <View style={styles.sizeBar} pointerEvents="box-none">
@@ -134,9 +136,9 @@ const HostCameraPipOverlay = ({
           <Text style={styles.sizeBtnText}>−</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.sizeBtn, sizeIndex === PIP_SIZE_STEPS.length - 1 && styles.sizeBtnDisabled]}
+          style={[styles.sizeBtn, sizeIndex === pipSteps.length - 1 && styles.sizeBtnDisabled]}
           onPress={grow}
-          disabled={sizeIndex === PIP_SIZE_STEPS.length - 1}
+          disabled={sizeIndex === pipSteps.length - 1}
           hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
         >
           <Text style={styles.sizeBtnText}>+</Text>

@@ -12,12 +12,12 @@ import React, {
 
 } from 'react';
 
-import { Alert, DeviceEventEmitter } from 'react-native';
+import { Alert, AppState, DeviceEventEmitter } from 'react-native';
 
 import {
 
   Room, RoomEvent, Track, LocalTrack, LocalVideoTrack, VideoPresets,
-  facingModeFromLocalTrack,
+  facingModeFromLocalTrack, ConnectionState,
 
 } from 'livekit-client';
 
@@ -36,9 +36,11 @@ import { restoreCameraForViewers } from '../utils/liveBroadcastCamera';
 
 
 
-const LIVESTREAM_MAX_MS = 25 * 60 * 1000;
+/** 0 = no client-side max length (broadcaster ends manually). */
+const LIVESTREAM_MAX_MS = 0;
 
-const LIVESTREAM_AUTO_END_BEFORE_MS = 90 * 1000;
+/** End live if broadcaster leaves the app (home / swipe away) without Share app/phone minimize. */
+const BROADCASTER_BACKGROUND_END_MS = 15000;
 
 
 
@@ -62,7 +64,7 @@ const LIVE_ROOM_OPTIONS = {
 
     videoEncoding: { maxBitrate: 480_000, maxFramerate: 18 },
 
-    screenShareEncoding: { maxBitrate: 750_000, maxFramerate: 10 },
+    screenShareEncoding: { maxBitrate: 420_000, maxFramerate: 8 },
 
   },
 
@@ -70,13 +72,13 @@ const LIVE_ROOM_OPTIONS = {
 
 
 
-/** 480p @ 10fps — enough for feed/chess; much lighter than 720p15. */
+/** Lighter screen share — keeps mobile uplink stable with multiple viewers. */
 
 const SCREEN_SHARE_CAPTURE = {
 
   audio: false,
 
-  resolution: { width: 854, height: 480, frameRate: 10 },
+  resolution: { width: 640, height: 360, frameRate: 8 },
 
 };
 
@@ -145,6 +147,12 @@ interface LiveBroadcastContextType {
 
   sendChat: (text: string, senderName: string) => Promise<void>;
 
+  liveRoomName: string;
+
+  isMicMuted: boolean;
+
+  toggleMicMute: () => Promise<void>;
+
 }
 
 
@@ -164,6 +172,10 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
   const [isLive, setIsLive] = useState(false);
+
+  const [liveRoomName, setLiveRoomName] = useState('');
+
+  const [isMicMuted, setIsMicMuted] = useState(false);
 
   const [viewerCount, setViewerCount] = useState(0);
 
@@ -187,7 +199,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const roomNameRef = useRef('');
 
+  const liveEndedRef = useRef(false);
+
   const endLiveRef = useRef<() => Promise<void>>(async () => {});
+  const teardownLiveRef = useRef<() => Promise<void>>(async () => {});
+  const isMinimizedRef = useRef(false);
 
   const ongoingCallNativeStartedRef = useRef(false);
 
@@ -424,6 +440,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   const minimizeLive = useCallback(() => {
 
     setIsMinimized(true);
+    isMinimizedRef.current = true;
 
     setIsLiveControlsFocused(false);
 
@@ -436,8 +453,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   const returnToLiveControls = useCallback(() => {
 
     setIsMinimized(false);
+    isMinimizedRef.current = false;
 
     setIsLiveControlsFocused(true);
+
+    liveBroadcastNav.setFloatingTouchesBlocked(false);
 
     void restoreLivePreview();
 
@@ -452,6 +472,9 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     if (focused) {
 
       setIsMinimized(false);
+      isMinimizedRef.current = false;
+
+      liveBroadcastNav.setFloatingTouchesBlocked(false);
 
       void restoreLivePreview();
 
@@ -486,6 +509,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     if (!ok) return;
 
     setIsMinimized(true);
+    isMinimizedRef.current = true;
 
     setIsLiveControlsFocused(false);
 
@@ -615,17 +639,24 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     liveBroadcastNav.suppressGameCleanupNav = true;
     setIsLive(false);
     setIsMinimized(false);
+    isMinimizedRef.current = false;
     setIsLiveControlsFocused(false);
     DeviceEventEmitter.emit(LIVE_BAR_RESIGN_GAME, { leaveGameScreen: false });
 
-    if (socket && user?._id && roomNameRef.current) {
-      socket.emit('livekit:endLive', {
-        streamerId: String(user._id),
-        roomName: roomNameRef.current,
-      });
+    if (socket && user?._id) {
+      socket.emit('livekit:leaveLiveWatch', { streamerId: String(user._id) });
+      if (roomNameRef.current && !liveEndedRef.current) {
+        liveEndedRef.current = true;
+        socket.emit('livekit:endLive', {
+          streamerId: String(user._id),
+          roomName: roomNameRef.current,
+        });
+      }
     }
 
     roomNameRef.current = '';
+    setLiveRoomName('');
+    setIsMicMuted(false);
     await disconnect();
 
     setTimeout(() => {
@@ -655,8 +686,52 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [endLiveForCall]);
 
   endLiveRef.current = endLive;
+  teardownLiveRef.current = teardownLiveSession;
 
+  useEffect(() => {
+    isMinimizedRef.current = isMinimized;
+  }, [isMinimized]);
 
+  /** Home / swipe-away without intentional minimize — end live after 15s so feed does not stay "Live now". */
+  useEffect(() => {
+    if (!isLive) return undefined;
+
+    let backgroundTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearBackgroundTimer = () => {
+      if (backgroundTimer) {
+        clearTimeout(backgroundTimer);
+        backgroundTimer = null;
+      }
+    };
+
+    const scheduleBackgroundEnd = () => {
+      clearBackgroundTimer();
+      if (isMinimizedRef.current || isSharingRef.current) return;
+      backgroundTimer = setTimeout(() => {
+        backgroundTimer = null;
+        if (liveEndedRef.current) return;
+        if (isMinimizedRef.current || isSharingRef.current) return;
+        console.warn('[LiveBroadcast] App left >15s without minimize — ending live');
+        void teardownLiveRef.current?.();
+      }, BROADCASTER_BACKGROUND_END_MS);
+    };
+
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        clearBackgroundTimer();
+        return;
+      }
+      if (next === 'background' || next === 'inactive') {
+        scheduleBackgroundEnd();
+      }
+    });
+
+    return () => {
+      sub.remove();
+      clearBackgroundTimer();
+    };
+  }, [isLive]);
 
   const goLive = useCallback(async () => {
 
@@ -700,6 +775,12 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       roomNameRef.current = roomName;
 
+      setLiveRoomName(roomName || '');
+
+      setIsMicMuted(false);
+
+      liveEndedRef.current = false;
+
 
 
       const lkRoom = new Room(LIVE_ROOM_OPTIONS);
@@ -712,7 +793,21 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       lkRoom.on(RoomEvent.ParticipantDisconnected, () => setViewerCount(c => Math.max(0, c - 1)));
 
+      lkRoom.on(RoomEvent.Reconnecting, () => {
+        console.warn('[LiveBroadcast] LiveKit reconnecting…');
+      });
+
+      lkRoom.on(RoomEvent.Reconnected, () => {
+        syncLocalTrack();
+      });
+
       lkRoom.on(RoomEvent.Disconnected, () => {
+
+        if (!liveEndedRef.current) {
+          console.warn('[LiveBroadcast] LiveKit disconnected — cleaning up live session');
+          void teardownLiveRef.current?.();
+          return;
+        }
 
         roomRef.current = null;
 
@@ -774,6 +869,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       setIsLive(true);
 
+      socket.emit('livekit:joinLiveWatch', { streamerId: String(user._id) });
+
       socket.emit('livekit:goLive', {
 
         streamerId: String(user._id),
@@ -816,24 +913,25 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   }, []);
 
+  const toggleMicMute = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room || !isLive) return;
+    const next = !isMicMuted;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!next);
+      setIsMicMuted(next);
+    } catch (_) {}
+  }, [isLive, isMicMuted]);
+
 
 
   useEffect(() => {
-
-    if (!isLive) return;
-
-    const ms = Math.max(60_000, LIVESTREAM_MAX_MS - LIVESTREAM_AUTO_END_BEFORE_MS);
-
+    if (!isLive || LIVESTREAM_MAX_MS <= 0) return undefined;
     const t = setTimeout(() => {
-
       Alert.alert('Live session limit', 'Your broadcast reached the maximum session length.');
-
       void endLiveRef.current?.();
-
-    }, ms);
-
+    }, LIVESTREAM_MAX_MS);
     return () => clearTimeout(t);
-
   }, [isLive]);
 
 
@@ -845,6 +943,18 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     const onStreamEnded = async (payload: any) => {
 
       if (String(payload?.streamerId || '') !== String(user._id)) return;
+
+      const room = roomRef.current;
+
+      if (
+        room
+        && (room.state === ConnectionState.Connected || room.state === ConnectionState.Reconnecting)
+      ) {
+        console.warn('[LiveBroadcast] Ignoring streamEnded — LiveKit session still active');
+        return;
+      }
+
+      if (liveEndedRef.current) return;
 
       await endLiveRef.current?.();
 
@@ -920,6 +1030,12 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     sendChat,
 
+    liveRoomName,
+
+    isMicMuted,
+
+    toggleMicMute,
+
   }), [
 
     isLive, viewerCount, startingLive, localTrack, localScreenTrack, isSharing,
@@ -932,7 +1048,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     minimizeLive, returnToLiveControls, restoreLivePreview, setLiveControlsFocused,
 
-    syncLocalTrack, getRoom, sendChat,
+    syncLocalTrack, getRoom, sendChat, liveRoomName, isMicMuted, toggleMicMute,
 
   ]);
 

@@ -17,17 +17,28 @@ import {
 import { VideoView } from '@livekit/react-native';
 
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 2;
+const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.12;
+const DEFAULT_CONTROLS_TOP = 52;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+type ZoomState = {
+  zoom: number;
+  setZoom: React.Dispatch<React.SetStateAction<number>>;
+  pan: { x: number; y: number };
+  setPan: React.Dispatch<React.SetStateAction<{ x: number; y: number }>>;
+  vpSize: { w: number; h: number };
+  setVpSize: React.Dispatch<React.SetStateAction<{ w: number; h: number }>>;
+};
 
 type Props = {
   videoTrack: any;
   label?: string;
   style?: object;
-  /** Lift controls above chat bars etc. (live viewer). */
-  controlsBottom?: number;
+  /** Fixed distance from top for zoom bar — same in inline + fullscreen. */
+  controlsTop?: number;
+  showLabel?: boolean;
 };
 
 type ViewportProps = {
@@ -35,16 +46,23 @@ type ViewportProps = {
   label?: string;
   full: boolean;
   style?: object;
-  controlsBottom?: number;
+  controlsTop: number;
+  showLabel?: boolean;
+  zoomState: ZoomState;
   onToggleFullscreen: () => void;
 };
 
 const ZoomScrollViewport = ({
-  videoTrack, label, full, style, controlsBottom = 10, onToggleFullscreen,
+  videoTrack,
+  label,
+  full,
+  style,
+  controlsTop,
+  showLabel = true,
+  zoomState,
+  onToggleFullscreen,
 }: ViewportProps) => {
-  const [zoom, setZoom] = useState(1);
-  const [vpSize, setVpSize] = useState({ w: 0, h: 0 });
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const { zoom, setZoom, pan, setPan, vpSize, setVpSize } = zoomState;
 
   const zoomRef = useRef(1);
   const vpRef = useRef({ w: 0, h: 0 });
@@ -70,7 +88,7 @@ const ZoomScrollViewport = ({
     if (width > 0 && height > 0) {
       setVpSize({ w: width, h: height });
     }
-  }, []);
+  }, [setVpSize]);
 
   useEffect(() => {
     if (zoom <= 1) {
@@ -78,7 +96,7 @@ const ZoomScrollViewport = ({
     } else {
       setPan((p) => clampPan(p.x, p.y, zoom, vpSize.w, vpSize.h));
     }
-  }, [zoom, vpSize.w, vpSize.h, clampPan]);
+  }, [zoom, vpSize.w, vpSize.h, clampPan, setPan]);
 
   const panResponder = useMemo(
     () =>
@@ -104,26 +122,26 @@ const ZoomScrollViewport = ({
           setPan(next);
         },
       }),
-    [clampPan],
+    [clampPan, setPan],
   );
 
   const zoomIn = useCallback(() => {
     setZoom((z) => clamp(Number((z + ZOOM_STEP).toFixed(2)), ZOOM_MIN, ZOOM_MAX));
-  }, []);
+  }, [setZoom]);
 
   const zoomOut = useCallback(() => {
     setZoom((z) => clamp(Number((z - ZOOM_STEP).toFixed(2)), ZOOM_MIN, ZOOM_MAX));
-  }, []);
+  }, [setZoom]);
 
   const resetZoom = useCallback(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
-  }, []);
+  }, [setZoom, setPan]);
 
   const canPan = zoom > 1 && vpSize.w > 0;
   const zoomLabel = `${Math.round(zoom * 100)}%`;
-  /** Android WebRTC surfaces go black inside any transform — only zoom/pan when zoom > 1. */
   const useTransform = zoom > 1;
+  const controlsTopFixed = controlsTop;
 
   return (
     <View style={full ? styles.fullRoot : [styles.stage, style]}>
@@ -168,26 +186,19 @@ const ZoomScrollViewport = ({
         )}
       </View>
 
-      {label ? (
-        <View style={[styles.labelPill, full && styles.fullLabel]} pointerEvents="none">
+      {showLabel && label ? (
+        <View style={[styles.labelPill, { top: controlsTopFixed + 4 }]} pointerEvents="none">
           <Text style={styles.labelText} numberOfLines={1}>{label}</Text>
         </View>
       ) : null}
 
       {canPan ? (
-        <View style={[styles.panHint, full && styles.fullPanHint]} pointerEvents="none">
+        <View style={[styles.panHint, { top: controlsTopFixed + 40 }]} pointerEvents="none">
           <Text style={styles.panHintText}>Drag side to side to see hidden parts</Text>
         </View>
       ) : null}
 
-      <View
-        style={[
-          styles.controls,
-          full && styles.fullControlsTop,
-          !full && styles.controlsTop,
-        ]}
-        pointerEvents="box-none"
-      >
+      <View style={[styles.controls, { top: controlsTopFixed }]} pointerEvents="box-none">
         <TouchableOpacity style={styles.ctrlChip} onPress={zoomOut} disabled={zoom <= ZOOM_MIN}>
           <Text style={[styles.ctrlChipText, zoom <= ZOOM_MIN && styles.ctrlDisabled]}>−</Text>
         </TouchableOpacity>
@@ -205,40 +216,49 @@ const ZoomScrollViewport = ({
   );
 };
 
-const ScreenShareViewer = ({ videoTrack, label, style, controlsBottom }: Props) => {
+const ScreenShareViewer = ({
+  videoTrack,
+  label,
+  style,
+  controlsTop = DEFAULT_CONTROLS_TOP,
+  showLabel,
+}: Props) => {
   const [fullscreen, setFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [vpSize, setVpSize] = useState({ w: 0, h: 0 });
+
+  const zoomState: ZoomState = useMemo(
+    () => ({ zoom, setZoom, pan, setPan, vpSize, setVpSize }),
+    [zoom, pan, vpSize],
+  );
+
+  const viewportProps = {
+    videoTrack,
+    label,
+    controlsTop,
+    showLabel,
+    zoomState,
+  };
 
   return (
     <>
-      {!fullscreen ? (
+      <View
+        style={[style, { flex: 1, opacity: fullscreen ? 0 : 1 }]}
+        pointerEvents={fullscreen ? 'none' : 'auto'}
+      >
         <ZoomScrollViewport
-          videoTrack={videoTrack}
-          label={label}
+          {...viewportProps}
           full={false}
-          style={style}
-          controlsBottom={controlsBottom}
           onToggleFullscreen={() => setFullscreen(true)}
         />
-      ) : (
-        <View style={[styles.stage, style, styles.placeholder]}>
-          {label ? (
-            <View style={styles.labelPill}>
-              <Text style={styles.labelText} numberOfLines={1}>{label}</Text>
-            </View>
-          ) : null}
-          <TouchableOpacity style={styles.expandHint} onPress={() => setFullscreen(true)}>
-            <Text style={styles.expandHintText}>⛶ Fullscreen — tap to reopen</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      </View>
 
       <Modal visible={fullscreen} animationType="fade" onRequestClose={() => setFullscreen(false)}>
         <StatusBar hidden />
         <ZoomScrollViewport
-          videoTrack={videoTrack}
-          label={label}
+          {...viewportProps}
           full
-          controlsBottom={controlsBottom}
           onToggleFullscreen={() => setFullscreen(false)}
         />
       </Modal>
@@ -254,21 +274,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     overflow: 'hidden',
     borderRadius: 12,
-  },
-  placeholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  expandHint: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-  },
-  expandHintText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
   },
   viewport: {
     flex: 1,
@@ -294,16 +299,13 @@ const styles = StyleSheet.create({
   },
   labelPill: {
     position: 'absolute',
-    top: 8,
     left: 8,
     backgroundColor: 'rgba(0,0,0,0.65)',
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 4,
     maxWidth: '70%',
-  },
-  fullLabel: {
-    top: 48,
+    zIndex: 20,
   },
   labelText: {
     color: '#fff',
@@ -312,13 +314,10 @@ const styles = StyleSheet.create({
   },
   panHint: {
     position: 'absolute',
-    top: 36,
     left: 8,
     right: 8,
     alignItems: 'center',
-  },
-  fullPanHint: {
-    top: 76,
+    zIndex: 20,
   },
   panHintText: {
     color: 'rgba(255,255,255,0.9)',
@@ -341,12 +340,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
     zIndex: 30,
-  },
-  controlsTop: {
-    top: 44,
-  },
-  fullControlsTop: {
-    top: 52,
   },
   ctrlChip: {
     minWidth: 34,

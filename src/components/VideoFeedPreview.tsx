@@ -80,6 +80,7 @@ type Props = {
   preferredTimeMs?: number;
   placeholderColor: string;
   spinnerColor: string;
+  resizeMode?: 'cover' | 'contain' | 'stretch' | 'repeat' | 'center';
 };
 
 /**
@@ -91,6 +92,7 @@ const VideoFeedPreview: React.FC<Props> = ({
   preferredTimeMs = 1000,
   placeholderColor,
   spinnerColor,
+  resizeMode = 'contain',
 }) => {
   const server = serverThumbnail?.trim() || '';
   const [uri, setUri] = useState<string | null>(server || null);
@@ -125,7 +127,7 @@ const VideoFeedPreview: React.FC<Props> = ({
         <SafeImage
           source={{ uri }}
           style={StyleSheet.absoluteFillObject}
-          resizeMode="cover"
+          resizeMode={resizeMode}
           fallback={
             <View
               style={[StyleSheet.absoluteFillObject, { backgroundColor: placeholderColor }]}

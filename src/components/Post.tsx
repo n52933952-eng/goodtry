@@ -39,6 +39,7 @@ import StoryAvatarRing from './StoryAvatarRing';
 import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
 import SafeImage from './SafeImage';
+import PinchZoomImageModal from './PinchZoomImageModal';
 import { navigateToMainStack } from '../utils/navigationHelpers';
 import {
   isGoFishFeedPost,
@@ -46,6 +47,23 @@ import {
   getCardGameDataForPost,
   getChessGameDataForPost,
 } from '../utils/gameFeedPostUtils';
+import { useFeedCardMetrics } from '../utils/feedCardLayout';
+
+const INLINE_VIDEO_CONTAIN_CSS = `
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+  }
+`;
 
 interface PostProps {
   post: any;
@@ -63,6 +81,8 @@ interface PostProps {
   footballFocusMatchId?: string;
   /** Full-bleed: no side margins (e.g. Post detail). Feed uses default card width like other posts. */
   fullWidthCard?: boolean;
+  /** Home feed: match LivePostCard width + full-bleed media (keeps avatar/name/date). */
+  feedWideCard?: boolean;
   /** Fired after a successful delete (own post or own channel card) so parent lists with their own state can drop it immediately. */
   onPostDeleted?: (postId: string) => void;
 }
@@ -78,6 +98,7 @@ const Post: React.FC<PostProps> = ({
   storyRingReplayKey = 0,
   footballFocusMatchId,
   fullWidthCard = false,
+  feedWideCard = false,
   onPostDeleted,
 }) => {
   const isAnimatedImageUrl = (url: string) => {
@@ -1104,21 +1125,7 @@ const Post: React.FC<PostProps> = ({
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-            <style>
-              * { margin: 0; padding: 0; box-sizing: border-box; }
-              html, body {
-                width: 100%;
-                height: 100%;
-                background: #000;
-                overflow: hidden;
-              }
-              video {
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                background: #000;
-              }
-            </style>
+            <style>${INLINE_VIDEO_CONTAIN_CSS}</style>
           </head>
           <body>
             <video id="v"
@@ -1156,7 +1163,6 @@ const Post: React.FC<PostProps> = ({
   );
 
   const { width } = Dimensions.get('window');
-  const videoHeight = (width - 30) * 0.5625; // 16:9 aspect ratio
 
   const showStoryRing =
     !!storyRing?.storyId &&
@@ -1169,6 +1175,44 @@ const Post: React.FC<PostProps> = ({
 
   /** Feed-only: hide avatar / name / @Football row so cards match Football tab; Post detail keeps header. */
   const hideFootballFeedHeader = isFootballPost && !disableNavigation;
+
+  const feedCard = useFeedCardMetrics();
+  const useFeedWideLayout = !!(feedWideCard && !fullWidthCard && !hideFootballFeedHeader);
+  const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
+  const feedWideContainerStyle = useFeedWideLayout
+    ? {
+        marginHorizontal: 0,
+        marginVertical: feedCard.cardMarginV,
+        padding: feedCard.cardPadding,
+        borderRadius: feedCard.cardRadius,
+        overflow: 'hidden' as const,
+        borderWidth: 1,
+      }
+    : null;
+  const feedAvatarStyle = useFeedWideLayout
+    ? {
+        width: feedCard.headerAvatar,
+        height: feedCard.headerAvatar,
+        borderRadius: feedCard.headerAvatar / 2,
+        marginRight: Math.round(10 * feedCard.scale),
+      }
+    : null;
+  /** Full card width like live — contain inside (no zoom/crop). */
+  const feedMediaBleedStyle = useFeedWideLayout
+    ? {
+        width: feedCard.screenWidth,
+        marginHorizontal: feedCard.bleedMargin,
+        height: feedMediaHeight,
+        borderRadius: 0,
+        overflow: 'hidden' as const,
+      }
+    : null;
+  const postImageStyle = useFeedWideLayout
+    ? [styles.postImage, feedMediaBleedStyle]
+    : styles.postImage;
+  const videoContainerStyle = useFeedWideLayout
+    ? [styles.videoContainer, feedMediaBleedStyle]
+    : [styles.videoContainer, { height: feedMediaHeight }];
 
   const onAvatarPress = (e: any) => {
     e.stopPropagation();
@@ -1205,6 +1249,8 @@ const Post: React.FC<PostProps> = ({
       style={[
         styles.container,
         fullWidthCard && styles.containerFullWidth,
+        useFeedWideLayout && feedWideContainerStyle,
+        useFeedWideLayout && { borderColor: colors.border },
         /* Football channel on feed: same as Football Live — card on `background`, not a second grey plate. */
         {
           backgroundColor:
@@ -1222,8 +1268,8 @@ const Post: React.FC<PostProps> = ({
           visible={showStoryRing}
           showAnimatedRedFill={!!storyRing?.storyId && !!storyRing?.hasUnviewed}
           replayKey={storyRingReplayKey}
-          ringOuterSize={50}
-          avatarSize={45}
+          ringOuterSize={useFeedWideLayout ? feedCard.storyRingOuter : 50}
+          avatarSize={useFeedWideLayout ? feedCard.headerAvatar : 45}
           strokeWidth={2}
         >
           <TouchableOpacity
@@ -1240,10 +1286,10 @@ const Post: React.FC<PostProps> = ({
             return avatarPic ? (
               <SafeImage 
                 source={{ uri: avatarPic }} 
-                style={styles.avatar}
+                style={[styles.avatar, feedAvatarStyle]}
               />
             ) : (
-              <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+              <View style={[styles.avatar, feedAvatarStyle, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
                 <Text style={styles.avatarText}>
                   {(() => {
                     // For channels, use first two letters of username or name
@@ -1456,9 +1502,9 @@ const Post: React.FC<PostProps> = ({
       {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
           autoPlayMedia ? (
-          <View style={styles.videoContainer}>
+          <View style={videoContainerStyle}>
             <YoutubePlayer
-            height={styles.videoContainer.height}
+            height={feedMediaHeight}
             videoId={youtubeVideoId}
             play={youtubePlaying}
             mute={false}
@@ -1490,7 +1536,7 @@ const Post: React.FC<PostProps> = ({
           />
           </View>
           ) : (
-            <View style={styles.videoContainer}>
+            <View style={videoContainerStyle}>
               <SafeImage
                 source={{ uri: `https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg` }}
                 style={styles.youtubeThumbnail}
@@ -1509,7 +1555,7 @@ const Post: React.FC<PostProps> = ({
             onPress={() => navigateToPostDetail(post._id)}
             activeOpacity={0.9}
           >
-            <View style={styles.videoContainer}>
+            <View style={videoContainerStyle}>
               <SafeImage
                 source={{ uri: `https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg` }}
                 style={styles.youtubeThumbnail}
@@ -1527,7 +1573,7 @@ const Post: React.FC<PostProps> = ({
       ) : post.img && isVideoPost ? (
         disableNavigation ? (
           autoPlayMedia ? (
-          <View style={styles.videoContainer}>
+          <View style={videoContainerStyle}>
             <WebView
             ref={detailVideoWebViewRef}
             source={{
@@ -1537,32 +1583,8 @@ const Post: React.FC<PostProps> = ({
                   <head>
                     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
                     <style>
-                      * {
-                        margin: 0;
-                        padding: 0;
-                        box-sizing: border-box;
-                        -webkit-tap-highlight-color: transparent;
-                      }
-                      html, body {
-                        width: 100%;
-                        height: 100%;
-                        background: #000;
-                        overflow: hidden;
-                      }
-                      body {
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        width: 100%;
-                        height: 100%;
-                        touch-action: manipulation;
-                      }
-                      video {
-                        width: 100%;
-                        height: 100%;
-                        object-fit: cover;
-                        background: #000;
-                      }
+                      ${INLINE_VIDEO_CONTAIN_CSS}
+                      body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
                     </style>
                   </head>
                   <body>
@@ -1637,7 +1659,7 @@ const Post: React.FC<PostProps> = ({
           />
           </View>
           ) : (
-            <View style={styles.videoContainer}>
+            <View style={videoContainerStyle}>
               <VideoFeedPreview
                 videoUrl={thumbnailVideoUrl}
                 serverThumbnail={serverVideoThumbnail}
@@ -1654,7 +1676,7 @@ const Post: React.FC<PostProps> = ({
           )
         ) : (
           autoPlayMedia && !feedVideoErrored ? (
-            <View style={styles.videoContainer}>
+            <View style={videoContainerStyle}>
               {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
                 <View style={styles.feedVideoPreviewOverlay}>
                   <VideoFeedPreview
@@ -1790,7 +1812,7 @@ const Post: React.FC<PostProps> = ({
           ) : (
             // Keep lightweight preview for off-screen posts.
             <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
-              <View style={styles.videoContainer}>
+              <View style={videoContainerStyle}>
                 <VideoFeedPreview
                   videoUrl={thumbnailVideoUrl}
                   serverThumbnail={serverVideoThumbnail}
@@ -1819,7 +1841,7 @@ const Post: React.FC<PostProps> = ({
             >
               <SafeImage
                 source={{ uri: optimizedImageUrl }}
-                style={styles.postImage}
+                style={postImageStyle}
                 resizeMode="contain"
               />
               {canPreviewPostImage ? (
@@ -1828,43 +1850,12 @@ const Post: React.FC<PostProps> = ({
                 </View>
               ) : null}
             </TouchableOpacity>
-            <Modal
+            <PinchZoomImageModal
               visible={postImagePreviewOpen && !!postImagePreviewUrl}
-              transparent
-              animationType="fade"
-              onRequestClose={() => setPostImagePreviewOpen(false)}
-            >
-              <View style={styles.postImagePreviewRoot}>
-                <Pressable
-                  style={StyleSheet.absoluteFill}
-                  onPress={() => setPostImagePreviewOpen(false)}
-                  accessibilityRole="button"
-                  accessibilityLabel={t('close')}
-                />
-                <View style={styles.postImagePreviewImageWrap} pointerEvents="box-none">
-                  <Image
-                    source={{ uri: postImagePreviewUrl }}
-                    style={[
-                      styles.postImagePreviewImage,
-                      {
-                        width: Dimensions.get('window').width,
-                        height: Dimensions.get('window').height * 0.82,
-                      },
-                    ]}
-                    resizeMode="contain"
-                  />
-                </View>
-                <TouchableOpacity
-                  style={styles.postImagePreviewClose}
-                  onPress={() => setPostImagePreviewOpen(false)}
-                  hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-                  accessibilityRole="button"
-                  accessibilityLabel={t('close')}
-                >
-                  <Text style={styles.postImagePreviewCloseText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            </Modal>
+              uri={postImagePreviewUrl}
+              onClose={() => setPostImagePreviewOpen(false)}
+              closeAccessibilityLabel={t('close')}
+            />
           </>
         ) : (
           <TouchableOpacity 
@@ -1876,7 +1867,7 @@ const Post: React.FC<PostProps> = ({
           >
             <SafeImage 
               source={{ uri: optimizedImageUrl }} 
-              style={styles.postImage}
+              style={postImageStyle}
               resizeMode="contain"
             />
           </TouchableOpacity>
@@ -2511,37 +2502,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 20,
   },
-  postImagePreviewRoot: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.94)',
-    justifyContent: 'center',
-  },
-  postImagePreviewImageWrap: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  postImagePreviewImage: {
-    maxWidth: '100%',
-  },
-  postImagePreviewClose: {
-    position: 'absolute',
-    top: 48,
-    right: 16,
-    zIndex: 10,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  postImagePreviewCloseText: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '600',
-    lineHeight: 24,
-  },
   videoContainer: {
     width: '100%',
     height: (Dimensions.get('window').width - 30) * 0.5625, // 16:9 aspect ratio
@@ -2549,10 +2509,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     overflow: 'hidden',
     backgroundColor: '#000',
+    position: 'relative',
   },
   videoWebView: {
-    width: '100%',
-    height: '100%',
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: '#000',
   },
   youtubeThumbnail: {

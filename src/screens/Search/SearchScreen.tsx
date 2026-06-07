@@ -352,6 +352,20 @@ const SearchScreen = ({ navigation }: any) => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Search</Text>
+        <TouchableOpacity
+          style={[styles.refreshBtn, refreshing && styles.refreshBtnDisabled]}
+          onPress={handleRefresh}
+          disabled={refreshing}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Refresh users"
+        >
+          {refreshing ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <Text style={[styles.refreshIcon, { color: colors.primary }]}>↻</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       <View
@@ -459,6 +473,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
@@ -467,6 +484,21 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: COLORS.text,
+    flex: 1,
+  },
+  refreshBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refreshBtnDisabled: {
+    opacity: 0.6,
+  },
+  refreshIcon: {
+    fontSize: 26,
+    fontWeight: '700',
   },
   searchInputRow: {
     position: 'relative',

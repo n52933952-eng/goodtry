@@ -30,6 +30,9 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
+import LiveShareChatCard from '../../components/LiveShareChatCard';
+import { parseLiveShareMessage } from '../../utils/liveShareMessage';
+
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
 
@@ -386,6 +389,30 @@ const ChatScreen = ({ route, navigation }: any) => {
     setMessages((prev) => prev.filter((m) => (m._id?.toString?.() ?? String(m._id)) !== messageId));
   }, []);
 
+  const removeLiveShareCards = useCallback((streamerId: string, conversationId?: string) => {
+    const sid = String(streamerId || '');
+    if (!sid) return;
+    const myConv =
+      (currentConversationIdRef.current ?? conversationId) != null
+        ? String(currentConversationIdRef.current ?? conversationId)
+        : '';
+    if (conversationId && myConv && String(conversationId) !== myConv) return;
+    setMessages((prev) => prev.filter((m) => {
+      const live = parseLiveShareMessage(m?.text);
+      return !live || String(live.streamerId) !== sid;
+    }));
+  }, []);
+
+  const handleLiveStreamEnded = useCallback((data: { streamerId?: string }) => {
+    if (data?.streamerId != null) removeLiveShareCards(String(data.streamerId));
+  }, [removeLiveShareCards]);
+
+  const handleLiveShareExpired = useCallback((data: { streamerId?: string; conversationId?: string }) => {
+    if (data?.streamerId != null) {
+      removeLiveShareCards(String(data.streamerId), data.conversationId);
+    }
+  }, [removeLiveShareCards]);
+
   const handleMessageDelivered = useCallback(
     (data: { messageId?: string; conversationId?: string }) => {
       const cid = data?.conversationId != null ? String(data.conversationId) : '';
@@ -429,6 +456,8 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('newMessage', handleNewMessage);
       socket.off('messageReactionUpdated', handleMessageReactionUpdated);
       socket.off('messageDeleted', handleMessageDeleted);
+      socket.off('livekit:streamEnded', handleLiveStreamEnded);
+      socket.off('liveShareExpired', handleLiveShareExpired);
       socket.off('messagesSeen', handleMessagesSeen);
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
@@ -436,6 +465,8 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.on('newMessage', handleNewMessage);
       socket.on('messageReactionUpdated', handleMessageReactionUpdated);
       socket.on('messageDeleted', handleMessageDeleted);
+      socket.on('livekit:streamEnded', handleLiveStreamEnded);
+      socket.on('liveShareExpired', handleLiveShareExpired);
       socket.on('messagesSeen', handleMessagesSeen);
       socket.on('userTyping', handleUserTyping);
       socket.on('messageDelivered', handleMessageDelivered);
@@ -454,6 +485,8 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('newMessage', handleNewMessage);
       socket.off('messageReactionUpdated', handleMessageReactionUpdated);
       socket.off('messageDeleted', handleMessageDeleted);
+      socket.off('livekit:streamEnded', handleLiveStreamEnded);
+      socket.off('liveShareExpired', handleLiveShareExpired);
       socket.off('messagesSeen', handleMessagesSeen);
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
@@ -465,6 +498,8 @@ const ChatScreen = ({ route, navigation }: any) => {
     handleNewMessage,
     handleMessageReactionUpdated,
     handleMessageDeleted,
+    handleLiveStreamEnded,
+    handleLiveShareExpired,
     handleMessagesSeen,
     handleUserTyping,
     handleMessageDelivered,
@@ -527,14 +562,21 @@ const ChatScreen = ({ route, navigation }: any) => {
     [socket, user?._id, otherUser?._id, userId, routeConversationIdStr, routeGroupConversationIdStr, isGroup, groupConversation?.isGroup, emitTypingStop, toIdString]
   );
 
-  // Emit joinConversationRoom for groups so the user is always in the Socket.IO room,
-  // even when they were added to the group after their initial connection.
+  // Join conversation socket room so messageDeleted / live card removal arrives in real time.
   useEffect(() => {
-    const isGroupConv = !!(isGroup || groupConversation?.isGroup);
-    const groupConvId = routeConversationIdStr || routeGroupConversationIdStr;
-    if (!isGroupConv || !groupConvId || !socket || !user?._id) return;
-    socket.emit('joinConversationRoom', { conversationId: String(groupConvId) });
-  }, [isGroup, groupConversation?.isGroup, routeConversationIdStr, routeGroupConversationIdStr, socket, user?._id]);
+    const convId =
+      routeConversationIdStr
+      || routeGroupConversationIdStr
+      || (currentConversationIdRef.current != null ? String(currentConversationIdRef.current) : '');
+    if (!convId || !socket || !user?._id) return;
+    socket.emit('joinConversationRoom', { conversationId: String(convId) });
+  }, [
+    routeConversationIdStr,
+    routeGroupConversationIdStr,
+    currentConversationId,
+    socket,
+    user?._id,
+  ]);
 
   useEffect(() => {
     hasMarkedSeenRef.current = false;
@@ -1121,6 +1163,31 @@ const ChatScreen = ({ route, navigation }: any) => {
     if (u) setChatImagePreviewUri(u);
   }, []);
 
+  const returnToChatParams = useMemo(
+    () => ({
+      conversationId: currentConversationId,
+      userId,
+      otherUser,
+      isGroup,
+      groupName,
+      conversation: groupConversation,
+    }),
+    [currentConversationId, userId, otherUser, isGroup, groupName, groupConversation]
+  );
+
+  const openLiveViewer = useCallback(
+    (live: { streamerId: string; streamerName: string; streamerProfilePic?: string; roomName?: string }) => {
+      navigation.navigate('LiveViewer', {
+        streamerId: live.streamerId,
+        streamerName: live.streamerName,
+        streamerProfilePic: live.streamerProfilePic,
+        roomName: live.roomName,
+        returnToChat: returnToChatParams,
+      });
+    },
+    [navigation, returnToChatParams]
+  );
+
   const openSharedPostDetail = useCallback(
     (postId: string) => {
       setSharedPostVideoPlaying({});
@@ -1216,11 +1283,14 @@ const ChatScreen = ({ route, navigation }: any) => {
       : (item.sender?.name || item.sender?.username || otherUser?.name || otherUser?.username);
 
     const outgoingDelivered = isOutgoingDeliveredForTicks(item);
-    const sharedPostId = extractSharedPostId(item?.text);
+    const liveShare = parseLiveShareMessage(item?.text);
+    const sharedPostId = liveShare ? null : extractSharedPostId(item?.text);
     const sharedPost = sharedPostId ? (sharedPostMap[sharedPostId] ?? sharedPostCache.get(sharedPostId) ?? undefined) : undefined;
-    const textWithoutSharedLink = sharedPostId
-      ? String(item?.text || '').replace(SHARED_POST_LINK_REGEX, '').trim()
-      : String(item?.text || '');
+    const textWithoutSharedLink = liveShare
+      ? ''
+      : sharedPostId
+        ? String(item?.text || '').replace(SHARED_POST_LINK_REGEX, '').trim()
+        : String(item?.text || '');
     const sharedPostImage = String(sharedPost?.img || '');
     const sharedPostHasVideo = !!sharedPostImage && isVideoUrl(sharedPostImage);
     const sharedVideoMsgKey = String(item._id || item._clientMsgId || '');
@@ -1259,6 +1329,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           }}
           style={[
             styles.messageContainer,
+            liveShare ? styles.messageContainerLiveShare : null,
             isSenderLeft ? styles.senderMessage : styles.receiverMessage,
             isSenderLeft ? { backgroundColor: WA.outgoingBg } : incomingBubbleStyle,
           ]}
@@ -1306,6 +1377,17 @@ const ChatScreen = ({ route, navigation }: any) => {
               {textWithoutSharedLink}
             </Text>
           )}
+
+          {liveShare ? (
+            <LiveShareChatCard
+              live={liveShare}
+              onPress={() => openLiveViewer(liveShare)}
+              textColor={isSenderLeft ? WA.outgoingText : incomingMainTextColor}
+              subColor={colors.textGray}
+              borderColor={colors.border}
+              backgroundColor={isSenderLeft ? 'rgba(0,0,0,0.08)' : colors.backgroundLight}
+            />
+          ) : null}
 
           {sharedPostId ? (
             <View
@@ -1996,6 +2078,11 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 12,
     backgroundColor: WA.incomingBg,
+  },
+  messageContainerLiveShare: {
+    minWidth: 220,
+    width: '75%',
+    maxWidth: 280,
   },
   senderMessage: {
     backgroundColor: WA.outgoingBg,

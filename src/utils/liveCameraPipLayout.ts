@@ -16,9 +16,9 @@ export function clampPipPosition(
   winW: number,
   winH: number,
   topInset = 0,
+  bottomPad = 88,
 ) {
   const edge = 8;
-  const bottomPad = 88;
   return {
     x: Math.min(Math.max(edge, x), winW - pipW - edge),
     y: Math.min(Math.max(topInset + edge, y), winH - pipH - bottomPad),

@@ -1,7 +1,5 @@
 import { Track } from 'livekit-client';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 export function isScreenSharePublication(pub: any, track?: any): boolean {
   const src = pub?.source ?? track?.source;
   if (
@@ -19,19 +17,7 @@ export function isVideoPublication(pub: any): boolean {
   return pub?.kind === Track.Kind.Video || pub?.kind === 'video';
 }
 
-async function subscribeAndWaitTrack(pub: any, attempts = 40): Promise<any> {
-  if (!pub) return null;
-  if (!pub.isSubscribed) {
-    try { await pub.setSubscribed(true); } catch (_) {}
-  }
-  for (let i = 0; i < attempts; i += 1) {
-    if (pub.track) return pub.track;
-    await sleep(50);
-  }
-  return pub.track ?? null;
-}
-
-/** Prefer explicit camera / screen-share publications (same as group calls). */
+/** Subscribe if needed and return tracks already available — no blocking poll (same as web). */
 export async function collectRemoteVideoTracks(room: any) {
   let screen: any = null;
   let camera: any = null;
@@ -40,10 +26,15 @@ export async function collectRemoteVideoTracks(room: any) {
     const screenPub = participant.getTrackPublication?.(Track.Source.ScreenShare);
     const camPub = participant.getTrackPublication?.(Track.Source.Camera);
 
-    const screenTrack = await subscribeAndWaitTrack(screenPub);
-    const camTrack = await subscribeAndWaitTrack(camPub);
-    if (screenTrack) screen = screenTrack;
-    if (camTrack) camera = camTrack;
+    if (screenPub && !screenPub.isSubscribed) {
+      try { await screenPub.setSubscribed(true); } catch (_) {}
+    }
+    if (camPub && !camPub.isSubscribed) {
+      try { await camPub.setSubscribed(true); } catch (_) {}
+    }
+
+    if (screenPub?.track) screen = screenPub.track;
+    if (camPub?.track) camera = camPub.track;
   }
 
   if (screen && camera) return { screen, camera };
@@ -62,4 +53,15 @@ export async function collectRemoteVideoTracks(room: any) {
   }
 
   return { screen, camera };
+}
+
+export function applyRemoteVideoTrack(
+  track: any,
+  pub: any,
+  setScreen: (t: any) => void,
+  setCamera: (t: any) => void,
+) {
+  if (!track || !isVideoPublication(pub)) return;
+  if (isScreenSharePublication(pub, track)) setScreen(track);
+  else setCamera(track);
 }

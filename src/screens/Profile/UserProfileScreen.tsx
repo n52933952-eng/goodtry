@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -25,15 +25,25 @@ import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import { apiService } from '../../services/api';
-import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
+import { API_URL, ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
 import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
+import { useSocket } from '../../context/SocketContext';
+import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
+import LivePostCard from '../../components/LivePostCard';
+import {
+  buildLivePseudoPost,
+  isLivePseudoPostId,
+  normalizeStreamerId,
+} from '../../utils/liveFeedPost';
 import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam } = route.params || {};
   const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
+  const { socket, liveStreams } = useSocket();
+  const { isLive: isSelfBroadcasting } = useLiveBroadcast();
   const { colors } = useTheme();
   const username =
     usernameParam === 'self' ? currentUser?.username : usernameParam;
@@ -68,6 +78,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const POSTS_PER_PAGE = 9;
   const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
   const activeVideoPostIdRef = useRef<string | null>(null);
+  /** Live status for this profile (API + socket); drives top LIVE card. */
+  const [profileLiveMeta, setProfileLiveMeta] = useState<{ roomName: string } | null>(null);
+
+  const profileUserId = profileUser?._id != null ? String(profileUser._id) : '';
 
   const followingSet = React.useMemo(() => {
     const ids = (currentUser?.following || []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
@@ -122,6 +136,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
     setProfileUser(null);
     setPosts([]);
+    setProfileLiveMeta(null);
     setFollowing(false);
     setLoading(true);
     setSkip(0);
@@ -299,8 +314,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         });
         setSkip(prev => prev + POSTS_PER_PAGE);
       } else {
-        // Replace posts for initial load
-        setPosts(newPosts);
+        // Replace posts for initial load (never keep stale live pseudo-posts from API)
+        setPosts(newPosts.filter((p: any) => !isLivePseudoPostId(p?._id)));
         setSkip(POSTS_PER_PAGE);
       }
       
@@ -385,6 +400,105 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   };
 
   const isOwnProfile = profileUser?._id === currentUser?._id;
+
+  const checkProfileLiveStatus = useCallback(async () => {
+    if (!profileUserId) {
+      setProfileLiveMeta(null);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_URL}/api/call/livestream/${encodeURIComponent(profileUserId)}/status`,
+        { credentials: 'include' },
+      );
+      if (!res.ok) return;
+      const st = await res.json().catch(() => ({}));
+      if (st?.active === true) {
+        setProfileLiveMeta({ roomName: st.roomName || `live_${profileUserId}` });
+      } else {
+        setProfileLiveMeta(null);
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }, [profileUserId]);
+
+  useEffect(() => {
+    if (!profileUserId) {
+      setProfileLiveMeta(null);
+      return;
+    }
+    void checkProfileLiveStatus();
+  }, [profileUserId, checkProfileLiveStatus]);
+
+  useEffect(() => {
+    const sk = socket as { on?: Function; off?: Function } | null;
+    if (!sk?.on || !profileUserId) return;
+
+    const onStarted = (data: { streamerId?: string; roomName?: string }) => {
+      const sid = normalizeStreamerId(data?.streamerId);
+      if (!sid || sid !== profileUserId) return;
+      setProfileLiveMeta({ roomName: data.roomName || `live_${sid}` });
+    };
+    const onEnded = (data: { streamerId?: string }) => {
+      const sid = normalizeStreamerId(data?.streamerId);
+      if (!sid || sid !== profileUserId) return;
+      setProfileLiveMeta(null);
+    };
+
+    sk.on('livekit:streamStarted', onStarted);
+    sk.on('livekit:streamEnded', onEnded);
+    return () => {
+      sk.off?.('livekit:streamStarted', onStarted);
+      sk.off?.('livekit:streamEnded', onEnded);
+    };
+  }, [socket, profileUserId]);
+
+  const activeLiveForProfile = useMemo(() => {
+    if (!profileUserId) return null;
+    const fromSocket = liveStreams.find((s) => String(s.streamerId) === profileUserId);
+    if (fromSocket) return fromSocket;
+    if (profileLiveMeta) {
+      return {
+        streamerId: profileUserId,
+        streamerName: profileUser?.name,
+        streamerProfilePic: profileUser?.profilePic,
+        roomName: profileLiveMeta.roomName,
+        username: profileUser?.username,
+      };
+    }
+    return null;
+  }, [
+    profileUserId,
+    liveStreams,
+    profileLiveMeta,
+    profileUser?.name,
+    profileUser?.profilePic,
+    profileUser?.username,
+  ]);
+
+  const displayPosts = useMemo(() => {
+    const base = posts.filter((p) => !isLivePseudoPostId(p?._id));
+    if (!profileUser || !activeLiveForProfile) return base;
+    // Same as feed: don't show your own LIVE card while you are broadcasting.
+    if (isOwnProfile && isSelfBroadcasting) return base;
+
+    const pseudo = buildLivePseudoPost({
+      streamerId: profileUserId,
+      streamerName: activeLiveForProfile.streamerName || profileUser.name,
+      streamerProfilePic: activeLiveForProfile.streamerProfilePic || profileUser.profilePic,
+      username: profileUser.username,
+      roomName: activeLiveForProfile.roomName,
+    });
+    if (!pseudo) return base;
+    return [pseudo, ...base];
+  }, [posts, profileUser, profileUserId, activeLiveForProfile, isOwnProfile, isSelfBroadcasting]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void checkProfileLiveStatus();
+    }, [checkProfileLiveStatus])
+  );
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -574,7 +688,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
-        data={posts}
+        data={displayPosts}
         keyExtractor={(item, index) => {
           // Ensure unique keys by using both _id and index as fallback
           const id = item._id?.toString?.() ?? String(item._id);
@@ -589,6 +703,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
+              void checkProfileLiveStatus();
               void refetchSessionUser?.().then((me) => {
                 fetchUserProfile(me?.following);
                 fetchUserPosts(false);
@@ -766,12 +881,14 @@ const UserProfileScreen = ({ route, navigation }: any) => {
             </View>
           ) : null
         }
-        renderItem={({ item }) => (
-          <View
-            style={[styles.profilePostCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
-          >
+        renderItem={({ item }) => {
+          if (item.isLive) {
+            return <LivePostCard post={item} />;
+          }
+          return (
             <Post
               post={item}
+              feedWideCard
               fromScreen="UserProfile"
               userProfileParams={{ username }}
               autoPlayMedia={String(item?._id || '') === activeVideoPostId}
@@ -788,8 +905,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 setPosts((prev) => prev.filter((p) => String(p._id) !== String(deletedId)));
               }}
             />
-          </View>
-        )}
+          );
+        }}
       />
 
       <Modal
@@ -1074,13 +1191,7 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
   },
   postSeparator: {
-    height: 10,
-  },
-  profilePostCard: {
-    marginHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    overflow: 'hidden',
+    height: 8,
   },
   postsSection: {
     paddingHorizontal: 16,

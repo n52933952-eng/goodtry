@@ -22,6 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
 import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
+import { pruneStaleLiveFeedPosts } from '../../utils/pruneStaleLiveFeedPosts';
 import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
@@ -303,13 +304,15 @@ const FeedScreen = ({ navigation }: any) => {
         }) === index;
       });
 
+      const prunedPosts = loadMore ? uniquePosts : await pruneStaleLiveFeedPosts(uniquePosts);
+
       if (loadMore) {
         // Append without re-sorting existing rows (pagination)
-        appendPosts(uniquePosts);
+        appendPosts(prunedPosts);
         setLoadingMore(false);
       } else {
         // Replace all posts (initial load or refresh)
-        setPosts(filterPostsForFeed(uniquePosts));
+        setPosts(filterPostsForFeed(prunedPosts));
         setLoading(false);
         setRefreshing(false);
       }
@@ -334,6 +337,7 @@ const FeedScreen = ({ navigation }: any) => {
     setRefreshing(true);
     setHasMore(true);
     setStoryRingReplayKey((k) => k + 1);
+    feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
     fetchStoryStrip();
     fetchFeed(false); // Reset and fetch from beginning
   };
@@ -496,6 +500,7 @@ const FeedScreen = ({ navigation }: any) => {
     return (
       <Post
         post={item}
+        feedWideCard
         storyRing={ring}
         storyRingReplayKey={storyRingReplayKey}
         autoPlayMedia={!!postId && activeVideoPostId === postId}
@@ -623,6 +628,20 @@ const FeedScreen = ({ navigation }: any) => {
             <View style={styles.logoutButtonInner}>
               <Text style={styles.logoutButtonText}>↩</Text>
             </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.refreshBtn, refreshing && styles.refreshBtnDisabled]}
+            onPress={handleRefresh}
+            disabled={refreshing}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={t('refreshFeed') || 'Refresh feed'}
+          >
+            {refreshing ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text style={[styles.refreshIcon, { color: colors.primary }]}>↻</Text>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.themeButton}
@@ -883,12 +902,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 12,
+    gap: 10,
   },
   logoutButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#D93543',
     justifyContent: 'center',
     alignItems: 'center',
@@ -899,16 +918,16 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   logoutButtonInner: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   logoutButtonText: {
-    fontSize: 24,
-    lineHeight: 24,
+    fontSize: 20,
+    lineHeight: 20,
     fontWeight: '700',
     color: '#FFFFFF',
     includeFontPadding: false,
@@ -916,22 +935,36 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
   createButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
   createButtonText: {
     color: '#FFFFFF',
-    fontSize: 24,
+    fontSize: 21,
     fontWeight: 'bold',
   },
+  refreshBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refreshBtnDisabled: {
+    opacity: 0.6,
+  },
+  refreshIcon: {
+    fontSize: 23,
+    fontWeight: '700',
+  },
   themeButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.08)',
@@ -944,7 +977,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   themeButtonText: {
-    fontSize: 21,
+    fontSize: 18,
     includeFontPadding: false,
   },
   loadingContainer: {

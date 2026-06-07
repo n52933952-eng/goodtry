@@ -2,21 +2,24 @@
  * LiveBroadcastScreen — start and manage a mobile live stream (camera + chat).
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, TextInput,
   KeyboardAvoidingView, Platform, Animated,
   FlatList, useWindowDimensions, ActivityIndicator,
-  NativeModules, BackHandler, AppState,
+  NativeModules, BackHandler, AppState, Alert,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
 import { RoomEvent } from 'livekit-client';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
+import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import HostCameraPipHost from '../../components/HostCameraPipHost';
+import LiveShareModal from '../../components/LiveShareModal';
+import { liveActionStyles, s, useLiveScreenMetrics } from '../../utils/liveScreenLayout';
 
 const getDeviceLanguage = (): string => {
   try {
@@ -35,39 +38,40 @@ const getDeviceLanguage = (): string => {
 
 const isArabicPhone = () => getDeviceLanguage().startsWith('ar');
 
-/** Chat bar height — full pill radius */
-const PILL_H = 46;
-const CHAT_LOG_H = 180;
-/** Floating chat stack: anchored above input, grows upward this far. */
-const FLOAT_CHAT_STACK_H = 200;
-const FLOAT_CHAT_MAX_H = 400;
 /** How far each bubble drifts up before fading (px). */
 const FLOAT_DRIFT_UP = 220;
 const FLOAT_DRIFT_MS = 5500;
 const FLOAT_FADE_DELAY_MS = 4200;
 const FLOAT_FADE_MS = 1600;
 const FLOAT_MSG_VISIBLE = 8;
-const ACTION_CIRCLE = 50;
-/** Vertical action rail — always 5 slots so icons never shift when Stop appears. */
-const ACTION_SLOT_H = 82;
-const ACTION_RAIL_SLOTS = 5;
+/** Fixed 7 slots — icons keep the same Y when sharing toggles. */
+const ACTION_RAIL_SLOTS = 7;
 
 const LiveActionButton = ({
   icon,
   label,
   onPress,
   circleStyle,
+  disabled,
+  ui,
 }: {
   icon: string;
   label: string;
   onPress: () => void;
   circleStyle?: object;
+  disabled?: boolean;
+  ui?: ReturnType<typeof liveActionStyles>;
 }) => (
-  <TouchableOpacity style={styles.actionItem} onPress={onPress} activeOpacity={0.85}>
-    <View style={[styles.actionCircle, circleStyle]}>
-      <Text style={styles.actionIcon}>{icon}</Text>
+  <TouchableOpacity
+    style={[styles.actionItem, disabled && styles.actionItemDisabled]}
+    onPress={onPress}
+    activeOpacity={0.85}
+    disabled={disabled}
+  >
+    <View style={[styles.actionCircle, ui?.actionCircle, circleStyle, disabled && styles.actionCircleDisabled]}>
+      <Text style={[styles.actionIcon, ui?.actionIcon]}>{icon}</Text>
     </View>
-    <Text style={styles.actionLabel}>{label}</Text>
+    <Text style={[styles.actionLabel, ui?.actionLabel, disabled && styles.actionLabelDisabled]}>{label}</Text>
   </TouchableOpacity>
 );
 
@@ -75,6 +79,37 @@ interface FloatMsg {
   id: string; sender: string; text: string;
   anim: Animated.Value; opacity: Animated.Value;
 }
+interface FloatReaction {
+  id: string; emoji: string; driftX: number;
+  anim: Animated.Value; opacity: Animated.Value; scale: Animated.Value;
+}
+const EMOJI_FLOAT_UP = 300;
+const EMOJI_FLOAT_MS = 2800;
+
+const FloatingReaction = ({
+  reaction,
+  emojiStyle,
+}: {
+  reaction: FloatReaction;
+  emojiStyle?: object;
+}) => (
+  <Animated.View
+    style={[
+      styles.floatReaction,
+      {
+        transform: [
+          { translateY: reaction.anim },
+          { translateX: reaction.driftX },
+          { scale: reaction.scale },
+        ],
+        opacity: reaction.opacity,
+      },
+    ]}
+    pointerEvents="none"
+  >
+    <Text style={[styles.floatReactionEmoji, emojiStyle]}>{reaction.emoji}</Text>
+  </Animated.View>
+);
 
 const FloatingBubble = ({ msg }: { msg: FloatMsg }) => (
   <Animated.View
@@ -90,9 +125,13 @@ const LiveBroadcastScreen = () => {
   const navigation = useNavigation<any>();
   const isScreenFocused = useIsFocused();
   const { user } = useUser();
+  const socketCtx = useSocket();
+  const socket = socketCtx?.socket;
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
+  const metrics = useLiveScreenMetrics();
+  const ui = useMemo(() => liveActionStyles(metrics, ACTION_RAIL_SLOTS), [metrics]);
 
   const bottomPad = Math.max(insets.bottom, 10);
 
@@ -101,13 +140,11 @@ const LiveBroadcastScreen = () => {
     isLiveControlsFocused,
     goLive, endLive: endLiveCtx, stopScreenShareOnly, shareAndGoAppHome, shareAndGoPhoneHome,
     setLiveControlsFocused, syncLocalTrack, getRoom, sendChat, flipCamera,
+    liveRoomName, isMicMuted, toggleMicMute,
   } = useLiveBroadcast();
 
-  /** Vertical action rail on the right — above chat bar */
-  const actionRailBottom = bottomPad + PILL_H + 150;
-  /** Chat bubbles + log sit directly above the “Say something…” bar */
-  const INPUT_ROW_PAD_TOP = 10;
-  const chatAboveInputBottom = bottomPad + PILL_H + INPUT_ROW_PAD_TOP + 8;
+  const actionRailBottom = bottomPad + metrics.broadcasterRailBottomExtra;
+  const chatAboveInputBottom = bottomPad + metrics.pillH + s(18, metrics.scale);
 
   /** Decoding full-screen preview while browsing feed doubles GPU/CPU load — only preview on live screen. */
   const showVideoPreview = isLiveControlsFocused;
@@ -115,18 +152,41 @@ const LiveBroadcastScreen = () => {
   const [chatInput, setChatInput] = useState('');
   const [chatLog, setChatLog] = useState<{ id: string; sender: string; text: string }[]>([]);
   const [floatMsgs, setFloatMsgs] = useState<FloatMsg[]>([]);
+  const [floatReactions, setFloatReactions] = useState<FloatReaction[]>([]);
   const [showLog, setShowLog] = useState(false);
+  const [shareLiveOpen, setShareLiveOpen] = useState(false);
 
-  const floatCoreH = Math.min(FLOAT_CHAT_MAX_H, Math.round(winH * 0.45));
-  /** Bottom = just above send bar; height reaches same top as before (stack grows up). */
-  const floatAreaBottom = chatAboveInputBottom + (showLog ? CHAT_LOG_H + 12 : 0);
-  const floatAreaHeight = FLOAT_CHAT_STACK_H + floatCoreH;
+  const floatCoreH = Math.min(metrics.floatChatMaxH, Math.round(winH * 0.45));
+  const floatAreaBottom = chatAboveInputBottom + (showLog ? metrics.chatLogH + s(12, metrics.scale) : 0);
+  const floatAreaHeight = metrics.floatChatStackH + floatCoreH;
 
   const flatRef = useRef<FlatList>(null);
   const ctr = useRef(0);
   const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const ar = isArabicPhone();
+
+  const addEmojiFloat = useCallback((emoji: string) => {
+    const id = `rx_${++ctr.current}_${Date.now()}`;
+    const anim = new Animated.Value(0);
+    const opacity = new Animated.Value(1);
+    const scale = new Animated.Value(0.35);
+    const driftX = Math.round((Math.random() - 0.5) * 48);
+    setFloatReactions((prev) => [...prev.slice(-10), { id, emoji, driftX, anim, opacity, scale }]);
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 1, friction: 6, tension: 120, useNativeDriver: true }),
+      Animated.timing(anim, { toValue: -EMOJI_FLOAT_UP, duration: EMOJI_FLOAT_MS, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(900),
+        Animated.timing(opacity, { toValue: 0, duration: 1600, useNativeDriver: true }),
+      ]),
+    ]).start();
+    const timer = setTimeout(() => {
+      setFloatReactions((prev) => prev.filter((r) => r.id !== id));
+      removeTimersRef.current = removeTimersRef.current.filter((t) => t !== timer);
+    }, EMOJI_FLOAT_MS + 200);
+    removeTimersRef.current.push(timer);
+  }, []);
 
   const addMessage = useCallback((sender: string, text: string) => {
     const id = `msg_${++ctr.current}_${Date.now()}`;
@@ -169,10 +229,20 @@ const LiveBroadcastScreen = () => {
         room.off(RoomEvent.DataReceived, onData);
         setLiveControlsFocused(false);
       };
-    }, [syncLocalTrack, getRoom, addMessage, setLiveControlsFocused]),
+    }, [syncLocalTrack, getRoom, addMessage, addEmojiFloat, setLiveControlsFocused]),
   );
 
   /** After "Share phone" the app may resume on this screen while isMinimized stayed true. */
+  useEffect(() => {
+    if (!socket || !isLive || !user?._id) return undefined;
+    const onReaction = (payload: { streamerId?: string; emoji?: string }) => {
+      if (String(payload?.streamerId || '') !== String(user._id)) return;
+      if (payload?.emoji) addEmojiFloat(payload.emoji);
+    };
+    socket.on('livekit:liveReaction', onReaction);
+    return () => { socket.off('livekit:liveReaction', onReaction); };
+  }, [socket, isLive, user?._id, addEmojiFloat]);
+
   useEffect(() => {
     if (!isScreenFocused || !isLive) return undefined;
     const sub = AppState.addEventListener('change', (next) => {
@@ -188,10 +258,22 @@ const LiveBroadcastScreen = () => {
         void stopScreenShareOnly();
         return true;
       }
-      return false;
+      Alert.alert(
+        ar ? 'إنهاء البث؟' : 'End live?',
+        ar ? 'سيتوقف البث المباشر للجميع.' : 'Your live stream will stop for everyone.',
+        [
+          { text: ar ? 'إلغاء' : 'Cancel', style: 'cancel' },
+          {
+            text: ar ? 'إنهاء' : 'End',
+            style: 'destructive',
+            onPress: () => { void endLive(); },
+          },
+        ],
+      );
+      return true;
     });
     return () => sub.remove();
-  }, [isLive, isSharing, isScreenFocused, stopScreenShareOnly]);
+  }, [isLive, isSharing, isScreenFocused, stopScreenShareOnly, endLive, ar]);
 
   useEffect(() => () => {
     removeTimersRef.current.forEach(clearTimeout);
@@ -260,11 +342,17 @@ const LiveBroadcastScreen = () => {
           </View>
         )}
 
-        {isSharing && localTrack ? (
-          <HostCameraPipHost track={localTrack} active topInsetExtra={44} />
+        {isSharing && localTrack && isLiveControlsFocused ? (
+          <HostCameraPipHost
+            key={`host-pip-${localTrack.sid || 'cam'}-${isLiveControlsFocused}`}
+            track={localTrack}
+            active
+            topInsetExtra={metrics.pipTopInsetExtra}
+            zIndex={10010}
+          />
         ) : null}
 
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, ui.topBar]}>
           <Text style={styles.topName}>{user?.name || user?.username}</Text>
           {isLive && (
             <>
@@ -301,14 +389,20 @@ const LiveBroadcastScreen = () => {
         )}
 
         <View
-          style={[styles.floatArea, { bottom: floatAreaBottom, height: floatAreaHeight }]}
+          style={[styles.floatArea, ui.floatArea, { bottom: floatAreaBottom, height: floatAreaHeight }]}
           pointerEvents="none"
         >
           {floatMsgs.map(m => <FloatingBubble key={m.id} msg={m} />)}
         </View>
 
+        <View style={[styles.reactionArea, ui.reactionArea]} pointerEvents="none">
+          {floatReactions.map((r) => (
+            <FloatingReaction key={r.id} reaction={r} emojiStyle={ui.floatReactionEmoji} />
+          ))}
+        </View>
+
         {showLog && (
-          <View style={[styles.logPanel, { bottom: chatAboveInputBottom, backgroundColor: 'rgba(0,0,0,0.7)' }]}>
+          <View style={[styles.logPanel, ui.logPanel, { bottom: chatAboveInputBottom, backgroundColor: 'rgba(0,0,0,0.7)' }]}>
             <FlatList
               ref={flatRef}
               data={chatLog}
@@ -325,67 +419,104 @@ const LiveBroadcastScreen = () => {
         )}
 
         {isLive && (
-          <View style={[styles.actionRail, { bottom: actionRailBottom }, isSharing && styles.actionRailSharing]}>
-            <View style={[styles.actionSlot, { bottom: ACTION_SLOT_H * 4 }]}>
-              {!isSharing ? (
-                <LiveActionButton
-                  icon="🏠"
-                  label={ar ? 'مشاركة' : 'Share app'}
-                  onPress={shareAndGoAppHome}
-                  circleStyle={{ backgroundColor: colors.primary, borderColor: 'transparent' }}
-                />
-              ) : (
-                <View style={styles.actionSlotReserved} pointerEvents="none" />
-              )}
-            </View>
-            <View style={[styles.actionSlot, { bottom: ACTION_SLOT_H * 3 }]}>
-              {!isSharing ? (
-                <LiveActionButton
-                  icon="📱"
-                  label={ar ? 'الهاتف' : 'Share phone'}
-                  onPress={shareAndGoPhoneHome}
-                />
-              ) : (
-                <View style={styles.actionSlotReserved} pointerEvents="none" />
-              )}
-            </View>
-            <View style={[styles.actionSlot, { bottom: ACTION_SLOT_H * 2 }]}>
+          <View
+            style={[
+              styles.actionRail,
+              ui.actionRail,
+              { bottom: actionRailBottom },
+            ]}
+          >
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH * 6 }]}>
               <LiveActionButton
+                ui={ui}
+                icon={isMicMuted ? '🔇' : '🔊'}
+                label={ar ? 'كتم' : (isMicMuted ? 'Unmute' : 'Mute')}
+                onPress={() => { void toggleMicMute(); }}
+              />
+            </View>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH * 5 }]}>
+              <LiveActionButton
+                ui={ui}
+                icon="📤"
+                label={ar ? 'مشاركة' : 'Share live'}
+                onPress={() => setShareLiveOpen(true)}
+                circleStyle={{ backgroundColor: colors.primary, borderColor: 'transparent' }}
+              />
+            </View>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH * 4 }]}>
+              <LiveActionButton
+                ui={ui}
+                icon="🏠"
+                label={ar ? 'مشاركة' : 'Share app'}
+                onPress={shareAndGoAppHome}
+                disabled={isSharing}
+                circleStyle={
+                  isSharing
+                    ? undefined
+                    : { backgroundColor: colors.primary, borderColor: 'transparent' }
+                }
+              />
+            </View>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH * 3 }]}>
+              <LiveActionButton
+                ui={ui}
+                icon="📱"
+                label={ar ? 'الهاتف' : 'Share phone'}
+                onPress={shareAndGoPhoneHome}
+                disabled={isSharing}
+              />
+            </View>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH * 2 }]}>
+              <LiveActionButton
+                ui={ui}
                 icon="💬"
                 label={ar ? 'دردشة' : 'Chat'}
                 onPress={() => setShowLog(v => !v)}
               />
             </View>
-            <View style={[styles.actionSlot, { bottom: ACTION_SLOT_H }]}>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: metrics.actionSlotH }]}>
               {(localTrack || isSharing) ? (
                 <LiveActionButton
+                  ui={ui}
                   icon="🔄"
                   label={ar ? 'قلب' : 'Flip'}
                   onPress={() => { void flipCamera(); }}
                 />
               ) : (
-                <View style={styles.actionSlotReserved} pointerEvents="none" />
+                <View style={[styles.actionSlotReserved, ui.actionSlotReserved]} pointerEvents="none" />
               )}
             </View>
-            <View style={[styles.actionSlot, { bottom: 0 }]}>
+            <View style={[styles.actionSlot, ui.actionSlot, { bottom: 0 }]}>
               {isSharing ? (
                 <LiveActionButton
+                  ui={ui}
                   icon="🛑"
                   label={ar ? 'إيقاف' : 'Stop'}
                   onPress={() => { void stopScreenShareOnly(); }}
                   circleStyle={{ borderColor: colors.error, borderWidth: 2 }}
                 />
               ) : (
-                <View style={styles.actionSlotReserved} pointerEvents="none" />
+                <View style={[styles.actionSlotReserved, ui.actionSlotReserved]} pointerEvents="none" />
               )}
             </View>
           </View>
         )}
 
+        <LiveShareModal
+          visible={shareLiveOpen}
+          onClose={() => setShareLiveOpen(false)}
+          live={{
+            streamerId: String(user?._id || ''),
+            streamerName: user?.name || user?.username || 'User',
+            streamerProfilePic: user?.profilePic || '',
+            roomName: liveRoomName,
+          }}
+        />
+
         {isLive && (
           <View style={[styles.inputRow, { paddingBottom: bottomPad }]}>
             <TextInput
-              style={[styles.textInput, { color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }]}
+              style={[styles.textInput, ui.textInput, { color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }]}
               placeholder={ar ? 'اكتب شيئاً…' : 'Say something…'}
               placeholderTextColor="#888"
               value={chatInput}
@@ -394,7 +525,7 @@ const LiveBroadcastScreen = () => {
               returnKeyType="send"
             />
             <TouchableOpacity
-              style={[styles.sendBtn, { backgroundColor: colors.primary }]}
+              style={[styles.sendBtn, ui.sendBtn, { backgroundColor: colors.primary }]}
               onPress={sendChatMessage}
               activeOpacity={0.85}
             >
@@ -420,32 +551,20 @@ const styles = StyleSheet.create({
   placeholderText:  { color: '#aaa', fontSize: 15, textAlign: 'center', lineHeight: 22 },
   actionRail: {
     position: 'absolute',
-    right: 10,
-    width: 76,
-    height: ACTION_SLOT_H * ACTION_RAIL_SLOTS,
     zIndex: 25,
-  },
-  actionRailSharing: {
-    zIndex: 10002,
-    elevation: 10002,
   },
   actionSlot: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: ACTION_SLOT_H,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 4,
   },
-  actionSlotReserved: {
-    width: ACTION_CIRCLE,
-    height: ACTION_CIRCLE + 18,
-  },
+  actionSlotReserved: {},
   actionItem: { alignItems: 'center' },
+  actionItemDisabled: { opacity: 0.38 },
   actionCircle: {
-    width: ACTION_CIRCLE,
-    height: ACTION_CIRCLE,
     borderRadius: 9999,
     backgroundColor: 'rgba(0,0,0,0.48)',
     borderWidth: 1,
@@ -454,20 +573,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  actionIcon: { fontSize: 22 },
+  actionCircleDisabled: {
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  actionIcon: {},
   actionLabel: {
     color: '#fff',
-    fontSize: 11,
     fontWeight: '600',
     marginTop: 5,
     textAlign: 'center',
-    maxWidth: 72,
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
+  actionLabelDisabled: { opacity: 0.65 },
   topBar:           {
-    position: 'absolute', top: 44, left: 12, right: 12,
+    position: 'absolute', left: 12, right: 12,
     flexDirection: 'row', alignItems: 'center', gap: 8,
   },
   topName:          { color: '#fff', fontWeight: 'bold', fontSize: 14, flex: 1 },
@@ -475,15 +597,25 @@ const styles = StyleSheet.create({
   livePillText:     { color: '#fff', fontWeight: 'bold', fontSize: 12 },
   viewerPill:       { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 },
   endBtn:           { paddingVertical: 5, paddingHorizontal: 14, borderRadius: 16 },
-  goLiveWrap:       { position: 'absolute', bottom: 100, left: 0, right: 0, alignItems: 'center' },
+  goLiveWrap:       { position: 'absolute', bottom: '12%', left: 0, right: 0, alignItems: 'center' },
   goLiveBtn:        { backgroundColor: '#E53E3E', borderRadius: 30, paddingHorizontal: 32, paddingVertical: 14 },
   goLiveBtnText:    { color: '#fff', fontWeight: 'bold', fontSize: 18 },
   floatArea: {
     position: 'absolute',
     left: 12,
-    right: 88,
     justifyContent: 'flex-end',
   },
+  reactionArea: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: '40%',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    zIndex: 8,
+  },
+  floatReaction: { position: 'absolute', bottom: 0, alignItems: 'center' },
+  floatReactionEmoji: {},
   floatBubble:      {
     flexDirection: 'row', flexWrap: 'wrap', backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6,
@@ -492,8 +624,8 @@ const styles = StyleSheet.create({
   floatSender:      { color: '#FFD700', fontWeight: 'bold', fontSize: 13 },
   floatText:        { color: '#fff', fontSize: 13 },
   logPanel:         {
-    position: 'absolute', right: 88, left: 12,
-    height: CHAT_LOG_H, borderRadius: 16, padding: 10,
+    position: 'absolute', left: 12,
+    borderRadius: 16, padding: 10,
   },
   inputRow:         {
     position: 'absolute', bottom: 0, left: 0, right: 0,
@@ -503,7 +635,6 @@ const styles = StyleSheet.create({
   },
   textInput:        {
     flex: 1,
-    height: PILL_H,
     borderWidth: 1,
     borderRadius: 9999,
     paddingHorizontal: 16,
@@ -511,8 +642,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
   sendBtn:          {
-    height: PILL_H,
-    minWidth: PILL_H,
     paddingHorizontal: 18,
     borderRadius: 9999,
     overflow: 'hidden',
