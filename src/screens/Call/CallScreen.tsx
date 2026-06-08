@@ -10,6 +10,7 @@ import {
   Platform,
   AppState,
   Dimensions,
+  I18nManager,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
 import { Track, ConnectionState, RoomEvent, LocalVideoTrack, facingModeFromLocalTrack, ParticipantEvent } from 'livekit-client';
@@ -17,6 +18,7 @@ import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
+import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
 import { moveAppToBackgroundNative } from '../../services/callData';
@@ -32,20 +34,26 @@ const idEq = (a: unknown, b: unknown) =>
  */
 const getDeviceLanguage = (): string => {
   try {
-    let locale = '';
+    const intlLocale = Intl?.DateTimeFormat?.().resolvedOptions?.().locale;
+    if (intlLocale) return String(intlLocale).toLowerCase();
+
     if (Platform.OS === 'ios') {
       const s = NativeModules.SettingsManager?.settings;
-      locale = s?.AppleLocale || s?.AppleLanguages?.[0] || '';
-    } else {
-      locale = NativeModules.I18nManager?.localeIdentifier || '';
+      const locale = s?.AppleLocale || s?.AppleLanguages?.[0] || '';
+      return String(locale).toLowerCase();
     }
-    return String(locale).toLowerCase();
-  } catch {
+
+    const locale = NativeModules.I18nManager?.localeIdentifier || '';
+    if (locale) return String(locale).toLowerCase();
+    if (I18nManager.isRTL) return 'ar';
     return '';
+  } catch {
+    return I18nManager.isRTL ? 'ar' : '';
   }
 };
 
-const IS_ARABIC_DEVICE = getDeviceLanguage().startsWith('ar');
+const isArabicLocale = (locale: string) =>
+  locale.startsWith('ar') || locale.includes('_ar') || locale.includes('-ar');
 
 const CALL_TEXT = {
   en: {
@@ -59,6 +67,7 @@ const CALL_TEXT = {
     startingVoiceCall: 'Starting voice call',
     cancel: 'Cancel',
     ringing: 'Ringing…',
+    userOffline: 'User offline',
     end: 'End',
     mute: 'Mute',
     unmute: 'Unmute',
@@ -85,6 +94,7 @@ const CALL_TEXT = {
     startingVoiceCall: 'بدء مكالمة صوتية',
     cancel: 'إلغاء',
     ringing: 'يرن…',
+    userOffline: 'غير متصل',
     end: 'إنهاء',
     mute: 'كتم',
     unmute: 'إلغاء الكتم',
@@ -102,8 +112,12 @@ const CALL_TEXT = {
   },
 } as const;
 
-const CT = IS_ARABIC_DEVICE ? CALL_TEXT.ar : CALL_TEXT.en;
 const { width: SW } = Dimensions.get('window');
+
+/** WhatsApp-style: brief ringing, then offline message, then auto-dismiss. */
+const OFFLINE_RING_GRACE_MS = 2500;
+const OFFLINE_POLL_MS = 1200;
+const OFFLINE_AUTO_DISMISS_MS = 5000;
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
@@ -111,6 +125,15 @@ const CallScreen = () => {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
+  const CT = React.useMemo(
+    () => (isArabicLocale(getDeviceLanguage()) ? CALL_TEXT.ar : CALL_TEXT.en),
+    [],
+  );
+  const {
+    isUserOnline,
+    refreshPresenceSubscription,
+    setSelectedConversationPartnerId,
+  } = useSocket();
 
   const {
     call,
@@ -167,6 +190,7 @@ const CallScreen = () => {
   /** Default to speaker for both voice/video calls for louder output (toggle still available). */
   const [isSpeaker, setIsSpeaker]  = useState(true);
   const [durationSeconds, setDurationSeconds] = useState(0);
+  const [partnerOfflinePhase, setPartnerOfflinePhase] = useState(false);
   const callStartRef   = useRef<number>(0);
   const durationRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const callWasActive  = useRef(false);
@@ -356,24 +380,112 @@ const CallScreen = () => {
   }, [isCalling, callAccepted]);
 
   useEffect(() => {
-    if (callEnded && callWasActive.current && navigation.canGoBack()) {
+    // Do not pop CallScreen while still ringing — transient callEnded pulses / LiveKit flaps.
+    if (
+      callEnded
+      && callWasActive.current
+      && !isCalling
+      && !callAccepted
+      && navigation.canGoBack()
+    ) {
       callWasActive.current = false;
       navigation.goBack();
     }
-  }, [callEnded, navigation]);
+  }, [callEnded, isCalling, callAccepted, navigation]);
 
-  // ── auto-cancel: outgoing ring timeout 35s ────────────────────────────────
+  const partnerIdForPresence = userId || call.from;
+  const offlineCheckGenRef = useRef(0);
+
+  // Fresh presence for call partner (stale cache caused false "offline" right after they reconnect).
+  useEffect(() => {
+    if (!partnerIdForPresence) return;
+    setSelectedConversationPartnerId(String(partnerIdForPresence));
+    refreshPresenceSubscription();
+    const t1 = setTimeout(() => refreshPresenceSubscription(), 800);
+    const t2 = setTimeout(() => refreshPresenceSubscription(), 2000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [partnerIdForPresence, setSelectedConversationPartnerId, refreshPresenceSubscription]);
+
+  // Reset offline phase when a new outgoing ring starts.
+  useEffect(() => {
+    if ((isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall) {
+      setPartnerOfflinePhase(false);
+      offlineCheckGenRef.current += 1;
+    }
+  }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, partnerIdForPresence]);
+
+  // Ringing first, then offline after grace if still not online. Keep polling so a stale
+  // offline flag clears as soon as presence catches up (user back on internet).
+  useEffect(() => {
+    const isOutgoingRing =
+      (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
+    if (!isOutgoingRing || !partnerIdForPresence) return;
+
+    const gen = offlineCheckGenRef.current;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const evaluatePresence = () => {
+      if (offlineCheckGenRef.current !== gen) return;
+      refreshPresenceSubscription();
+      if (isUserOnline(partnerIdForPresence)) {
+        setPartnerOfflinePhase(false);
+      } else {
+        setPartnerOfflinePhase(true);
+      }
+    };
+
+    const graceTimer = setTimeout(() => {
+      if (offlineCheckGenRef.current !== gen) return;
+      evaluatePresence();
+      intervalId = setInterval(evaluatePresence, OFFLINE_POLL_MS);
+    }, OFFLINE_RING_GRACE_MS);
+
+    return () => {
+      clearTimeout(graceTimer);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [
+    isCalling,
+    isOutgoingCall,
+    callAccepted,
+    call.isReceivingCall,
+    partnerIdForPresence,
+    isUserOnline,
+    refreshPresenceSubscription,
+  ]);
+
+  // Partner came online while ringing — stay on normal ring UI.
+  useEffect(() => {
+    if (partnerOfflinePhase && partnerIdForPresence && isUserOnline(partnerIdForPresence)) {
+      setPartnerOfflinePhase(false);
+    }
+  }, [partnerOfflinePhase, partnerIdForPresence, isUserOnline, callAccepted]);
+
+  // Auto-dismiss after showing offline (user can also tap Cancel).
+  useEffect(() => {
+    if (!partnerOfflinePhase) return;
+    const t = setTimeout(() => {
+      leaveCall();
+      if (navigation.canGoBack()) navigation.goBack();
+    }, OFFLINE_AUTO_DISMISS_MS);
+    return () => clearTimeout(t);
+  }, [partnerOfflinePhase, leaveCall, navigation]);
+
+  // ── auto-cancel: outgoing ring timeout (online users — long ring like WhatsApp) ──
   const ringingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const isRinging = (isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall;
-    if (isRinging) {
+    if (isRinging && !partnerOfflinePhase) {
       ringingTimeoutRef.current = setTimeout(() => {
         leaveCall();
         if (navigation.canGoBack()) navigation.goBack();
       }, 60000);
     }
     return () => { if (ringingTimeoutRef.current) clearTimeout(ringingTimeoutRef.current); };
-  }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, leaveCall, navigation]);
+  }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, partnerOfflinePhase, leaveCall, navigation]);
 
   // ── controls ──────────────────────────────────────────────────────────────
   const handleMute = useCallback(async () => {
@@ -558,7 +670,14 @@ const CallScreen = () => {
           </View>
         )}
         <Text style={[styles.callerName, { color: colors.text }]}>{callerName}</Text>
-        <Text style={[styles.ringingText, { color: colors.primary }]}>{CT.ringing}</Text>
+        <Text
+          style={[
+            styles.ringingText,
+            { color: partnerOfflinePhase ? colors.textGray : colors.primary },
+          ]}
+        >
+          {partnerOfflinePhase ? CT.userOffline : CT.ringing}
+        </Text>
         <TouchableOpacity style={[styles.btn, { backgroundColor: colors.error, marginTop: 32 }]} onPress={handleLeave}>
           <Text style={styles.btnLabel}>{CT.cancel}</Text>
         </TouchableOpacity>

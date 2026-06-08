@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, ReactNode, useRe
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
+import { apiService } from '../services/api';
 import { useUser } from './UserContext';
 import { usePost } from './PostContext';
 import {
@@ -383,6 +384,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off('cancleCall');
     socketService.off('presenceSnapshot');
     socketService.off('presenceUpdate');
+    socketService.off('messageDelivered');
     socketService.off(SOCKET_EVENTS.NEW_POST);
     socketService.off(SOCKET_EVENTS.POST_UPDATED);
     socketService.off(SOCKET_EVENTS.POST_DELETED);
@@ -468,6 +470,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         });
         return online ? [{ userId: id }, ...filtered] : filtered;
       });
+    });
+
+    socketService.on('messageDelivered', (payload: any) => {
+      DeviceEventEmitter.emit('messageDelivered', payload);
     });
 
     // Legacy: global online list — filter out explicit clientPresence-offline (see server `getOnlineUser` + ref)
@@ -837,18 +843,38 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       subscribeToPresence();
 
-      // Flush pending delivery acks queued from FCM (push arrived while socket was disconnected).
+      // Ack undelivered incoming (internet back) + FCM queue so sender gets ✓✓.
       (async () => {
+        const ackIds = new Set<string>();
+        try {
+          const data = await apiService.get('/api/message/undelivered-ids');
+          const fromApi = Array.isArray(data?.messageIds) ? data.messageIds : [];
+          fromApi.forEach((id: unknown) => {
+            const s = String(id ?? '').trim();
+            if (s) ackIds.add(s);
+          });
+        } catch {
+          /* ignore */
+        }
         try {
           const raw = await AsyncStorage.getItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
-          if (!raw) return;
-          const ids = (JSON.parse(raw) as any) as string[];
-          const uniqueIds = Array.from(new Set((Array.isArray(ids) ? ids : []).map((x) => String(x).trim()).filter(Boolean))).slice(0, 50);
-          if (!uniqueIds.length) return;
+          if (raw) {
+            const ids = (JSON.parse(raw) as any) as string[];
+            (Array.isArray(ids) ? ids : []).forEach((x) => {
+              const s = String(x).trim();
+              if (s) ackIds.add(s);
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+        const uniqueIds = Array.from(ackIds).slice(0, 50);
+        if (!uniqueIds.length) return;
+        try {
           socketService.emit('ackMessageDelivered', { messageIds: uniqueIds });
           await AsyncStorage.removeItem(STORAGE_KEYS.PENDING_DELIVERY_ACKS);
-        } catch (e) {
-          // keep for next connect
+        } catch {
+          /* keep for next connect */
         }
       })();
     });
@@ -884,6 +910,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off('cancleCall');
       socketService.off('presenceSnapshot');
       socketService.off('presenceUpdate');
+      socketService.off('messageDelivered');
       socketService.off(SOCKET_EVENTS.NEW_POST);
       socketService.off(SOCKET_EVENTS.POST_UPDATED);
       socketService.off(SOCKET_EVENTS.POST_DELETED);

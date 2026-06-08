@@ -438,7 +438,7 @@ const LiveBroadcastScreen = () => {
               <LiveActionButton
                 ui={ui}
                 icon="📤"
-                label={ar ? 'مشاركة' : 'Share live'}
+                label={ar ? 'مشاركة البث' : 'Share live'}
                 onPress={() => setShareLiveOpen(true)}
                 circleStyle={{ backgroundColor: colors.primary, borderColor: 'transparent' }}
               />
@@ -447,7 +447,7 @@ const LiveBroadcastScreen = () => {
               <LiveActionButton
                 ui={ui}
                 icon="🏠"
-                label={ar ? 'مشاركة' : 'Share app'}
+                label={ar ? 'تصفح التطبيق' : 'Share app'}
                 onPress={shareAndGoAppHome}
                 disabled={isSharing}
                 circleStyle={

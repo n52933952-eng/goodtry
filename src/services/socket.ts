@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { AppState } from 'react-native';
 import { SOCKET_URL } from '../utils/constants';
 
 class SocketService {
@@ -76,7 +77,7 @@ class SocketService {
     
     this.socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'], // Polling fallback when websocket times out (e.g. slow network / cold start)
-      query: { userId },
+      query: { userId, clientType: 'mobile' },
       reconnection: true,
       reconnectionDelay: 500,
       reconnectionDelayMax: 5000,
@@ -104,12 +105,20 @@ class SocketService {
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket?.id);
       this.isConnected = true;
-      // UserContext often calls emit('clientPresence', online) right after connect(); emit() no-ops until
-      // the socket is connected, so this guarantees the server (and friends) see online immediately.
-      try {
-        this.socket?.emit('clientPresence', { status: 'online' });
-      } catch (_) {
-        /* ignore */
+      // Only mark online when the app is in the foreground — background/killed must stay offline
+      // so friends see the correct status and incoming calls use FCM push.
+      if (AppState.currentState === 'active') {
+        try {
+          this.socket?.emit('clientPresence', { status: 'online' });
+        } catch (_) {
+          /* ignore */
+        }
+      } else {
+        try {
+          this.socket?.emit('clientPresence', { status: 'offline' });
+        } catch (_) {
+          /* ignore */
+        }
       }
       this.connectListeners.forEach((f) => {
         try {

@@ -78,8 +78,19 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [isGroupCallUIMinimized, setIsGroupCallUIMinimized] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const isScreenSharingRef = useRef(false);
+  const activeConvIdRef = useRef('');
+  const incomingGroupCallRef = useRef<IncomingGroupCall | null>(null);
+  const groupCallStartedAtRef = useRef(0);
 
   const getGroupCallRoom = useCallback(() => roomRef.current, []);
+
+  useEffect(() => {
+    activeConvIdRef.current = activeConvId;
+  }, [activeConvId]);
+
+  useEffect(() => {
+    incomingGroupCallRef.current = incomingGroupCall;
+  }, [incomingGroupCall]);
 
   // ── screen sharing (Google Meet style) ──────────────────────────────────────
   const toggleScreenShare = useCallback(async () => {
@@ -176,6 +187,7 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
         callType:         type,
       });
 
+      groupCallStartedAtRef.current = Date.now();
       await connectGroupRoom(token, livekitUrl, type);
       setGroupCallActive(true);
       setGroupCallType(type);
@@ -192,6 +204,7 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     const { conversationId, callType } = incomingGroupCall;
     try {
       const { token, livekitUrl } = await fetchToken(conversationId);
+      groupCallStartedAtRef.current = Date.now();
       await connectGroupRoom(token, livekitUrl, callType);
       setGroupCallActive(true);
       setGroupCallType(callType);
@@ -242,18 +255,23 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     const onGroupEnded = (payload: any) => {
       const endedConvId = String(payload?.conversationId || '');
       if (!endedConvId) return;
-      const isRelevantIncoming = incomingGroupCall?.conversationId === endedConvId;
-      const isRelevantActive = activeConvId === endedConvId;
+      const isRelevantIncoming = incomingGroupCallRef.current?.conversationId === endedConvId;
+      const isRelevantActive = activeConvIdRef.current === endedConvId;
       if (!isRelevantIncoming && !isRelevantActive) return;
+
+      // Ignore stale timeout events (old server bug: LIVEKIT_MAX_SESSION_MS=0 → setTimeout(0)).
+      if (payload?.reason === 'timeout') {
+        const elapsed = Date.now() - groupCallStartedAtRef.current;
+        if (elapsed < 60_000) {
+          console.log('⏸️ [GroupCall] Ignoring bogus instant timeout ended event');
+          return;
+        }
+      }
 
       setIncomingGroupCall(null);
       setGroupCallActive(false);
       setActiveConvId('');
       void disconnectRoom();
-
-      if (payload?.reason === 'timeout') {
-        Alert.alert('Group call ended', 'This group call reached the 25-minute limit.');
-      }
     };
 
     const onMembersBusy = ({ busyCount, totalOther }: { busyCount: number; totalOther: number }) => {
@@ -296,7 +314,7 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
       socket.off('livekit:groupCallEnded',     onGroupEnded);
       socket.off('livekit:groupMembersBusy',   onMembersBusy);
     };
-  }, [socket, incomingGroupCall?.conversationId, activeConvId, disconnectRoom]);
+  }, [socket, disconnectRoom]);
 
   useEffect(() => () => { disconnectRoom(); }, []);
 

@@ -18,6 +18,7 @@ import {
   ScrollView,
   Modal,
   Dimensions,
+  DeviceEventEmitter,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
@@ -44,7 +45,6 @@ const extractSharedPostId = (text?: string) => {
 
 /** `delivered` only after recipient app acks (WhatsApp-style). Missing field should stay conservative (sent). */
 function isOutgoingDeliveredForTicks(item: any) {
-  if (item.seen === true) return true;
   if (item.delivered === true) return true;
   if (item.delivered === false) return false;
   return false;
@@ -57,7 +57,7 @@ function collectUndeliveredIncomingIds(
 ): string[] {
   const ids: string[] = [];
   for (const m of messagesData) {
-    if (!m?._id || m.delivered !== false) continue;
+    if (!m?._id || m.delivered === true) continue;
     const sid = getSenderId(m.sender);
     if (sid && sid !== currentUserIdStr) ids.push(String(m._id));
   }
@@ -268,8 +268,15 @@ const ChatScreen = ({ route, navigation }: any) => {
         const convForSeen = curConvStr || msgConvId || toIdString(data.conversationId);
         const isGroupConv = !!(isGroup || groupConversation?.isGroup);
         const partnerForSeen = isGroupConv ? null : (otherUser?._id ?? (userId != null ? userId : null));
+        const needsDeliveryAck = !!(socket && data._id && data.delivered !== true);
+        if (needsDeliveryAck) {
+          socket.emit('ackMessageDelivered', { messageId: String(data._id) });
+        }
         if (socket && convForSeen && user?._id && (isGroupConv || partnerForSeen)) {
-          socket.emit('markmessageasSeen', { conversationId: convForSeen, userId: partnerForSeen });
+          const seenDelayMs = needsDeliveryAck ? 1200 : 0;
+          setTimeout(() => {
+            socket.emit('markmessageasSeen', { conversationId: convForSeen, userId: partnerForSeen });
+          }, seenDelayMs);
         }
         return [...prev, data];
       });
@@ -510,6 +517,11 @@ const ChatScreen = ({ route, navigation }: any) => {
   ]);
 
   useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('messageDelivered', handleMessageDelivered);
+    return () => sub.remove();
+  }, [handleMessageDelivered]);
+
+  useEffect(() => {
     return () => {
       if (typingStopTimeoutRef.current) {
         clearTimeout(typingStopTimeoutRef.current);
@@ -717,8 +729,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       const convId = toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr;
       const partnerId = isGroupConv ? null : (otherUser?._id ?? userId);
       const sk = socket as { isSocketConnected?: () => boolean; emit: (e: string, p?: unknown) => void };
-      // Only set hasMarkedSeenRef when the socket is actually connected — socketService.emit no-ops
-      // if TCP is not up yet; setting the ref anyway used to skip mark-seen forever (kill app / cold start).
+      // Delay read receipt so sender briefly sees gray ✓✓ (delivered) before blue (read).
       if (
         convId &&
         user?._id &&
@@ -727,8 +738,12 @@ const ChatScreen = ({ route, navigation }: any) => {
         typeof sk.isSocketConnected === 'function' &&
         sk.isSocketConnected()
       ) {
-        hasMarkedSeenRef.current = true;
-        sk.emit('markmessageasSeen', { conversationId: convId, userId: partnerId });
+        const seenDelayMs = ackIds.length > 0 ? 1200 : 0;
+        setTimeout(() => {
+          if (!sk.isSocketConnected?.()) return;
+          hasMarkedSeenRef.current = true;
+          sk.emit('markmessageasSeen', { conversationId: convId, userId: partnerId });
+        }, seenDelayMs);
       }
 
       // With an inverted list, the newest messages are naturally visible without forcing scrollToEnd.
@@ -771,10 +786,13 @@ const ChatScreen = ({ route, navigation }: any) => {
         const isGroupConv = !!(isGroup || groupConversation?.isGroup);
         const convId = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
         const partnerId = isGroupConv ? null : (otherUser?._id ?? userId);
-        if (convId && user?._id && (isGroupConv || partnerId) && sk.isSocketConnected?.()) {
-          sk.emit?.('markmessageasSeen', { conversationId: convId, userId: partnerId });
-          hasMarkedSeenRef.current = true;
-        }
+        const seenDelayMs = ackIds.length > 0 ? 1200 : 400;
+        setTimeout(() => {
+          if (convId && user?._id && (isGroupConv || partnerId) && sk.isSocketConnected?.()) {
+            sk.emit?.('markmessageasSeen', { conversationId: convId, userId: partnerId });
+            hasMarkedSeenRef.current = true;
+          }
+        }, seenDelayMs);
       }, 500);
     });
     return () => remove?.();

@@ -32,12 +32,10 @@ import { API_URL, LIVE_BAR_RESIGN_GAME } from '../utils/constants';
 import { startOngoingCallNative, stopOngoingCallNative, moveAppToBackgroundNative } from '../services/callData';
 
 import { liveBroadcastNav } from '../services/liveBroadcastNav';
+import { callSessionNav } from '../services/callSessionNav';
 import { restoreCameraForViewers } from '../utils/liveBroadcastCamera';
 
 
-
-/** 0 = no client-side max length (broadcaster ends manually). */
-const LIVESTREAM_MAX_MS = 0;
 
 /** End live if broadcaster leaves the app (home / swipe away) without Share app/phone minimize. */
 const BROADCASTER_BACKGROUND_END_MS = 15000;
@@ -316,7 +314,13 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     try { stopOngoingCallNative(); } catch (_) {}
 
-    try { InCallManager.stop(); } catch (_) {}
+    if (
+      !callSessionNav.isInOneToOneCallSession
+      && !callSessionNav.isOnCallScreen
+      && !callSessionNav.isOnGroupCallScreen
+    ) {
+      try { InCallManager.stop(); } catch (_) {}
+    }
 
     try { await roomRef.current?.disconnect(); } catch (_) {}
 
@@ -707,7 +711,13 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const scheduleBackgroundEnd = () => {
       clearBackgroundTimer();
-      if (isMinimizedRef.current || isSharingRef.current) return;
+      if (
+        isMinimizedRef.current
+        || isSharingRef.current
+        || callSessionNav.isInOneToOneCallSession
+        || callSessionNav.isOnCallScreen
+        || callSessionNav.isOnGroupCallScreen
+      ) return;
       backgroundTimer = setTimeout(() => {
         backgroundTimer = null;
         if (liveEndedRef.current) return;
@@ -926,17 +936,6 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
   useEffect(() => {
-    if (!isLive || LIVESTREAM_MAX_MS <= 0) return undefined;
-    const t = setTimeout(() => {
-      Alert.alert('Live session limit', 'Your broadcast reached the maximum session length.');
-      void endLiveRef.current?.();
-    }, LIVESTREAM_MAX_MS);
-    return () => clearTimeout(t);
-  }, [isLive]);
-
-
-
-  useEffect(() => {
 
     if (!socket || !isLive || !user?._id) return;
 
@@ -956,7 +955,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (liveEndedRef.current) return;
 
-      await endLiveRef.current?.();
+      // Teardown only — never navigate to profile (would kill an active call).
+      await teardownLiveRef.current?.();
 
     };
 

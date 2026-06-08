@@ -842,12 +842,15 @@ const AppNavigator = () => {
     }
   }, [call.isReceivingCall, isInitialMount]); // Re-check when call state changes
 
-  // New socket ring: cancel prefs must not block the next incoming call (User B recall after hangup).
+  // New socket ring / outgoing call: cancel prefs must not block the next call.
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('playsocial:newIncomingRing', () => {
-      setHasPendingCancelFromPrefs(false);
-    });
-    return () => sub.remove();
+    const clearCancelPrefs = () => setHasPendingCancelFromPrefs(false);
+    const subRing = DeviceEventEmitter.addListener('playsocial:newIncomingRing', clearCancelPrefs);
+    const subOut = DeviceEventEmitter.addListener('playsocial:outgoingCallStarted', clearCancelPrefs);
+    return () => {
+      subRing.remove();
+      subOut.remove();
+    };
   }, []);
 
   // When cancel guard state is cleared (pendingCancel/callEnded false), re-check SharedPreferences
@@ -871,13 +874,13 @@ const AppNavigator = () => {
   // BUT: Don't navigate if there's a pending NavigateToCallScreen event (from MainActivity with shouldAutoAnswer)
   useEffect(() => {
     // Cancel prefs block; callEnded only blocks when we are NOT actively ringing (fixes decline → recall → answer).
-    const activelyRinging = !!(call.isReceivingCall && call.from);
-    if (pendingCancel || hasPendingCancelFromPrefs || (callEnded && !activelyRinging)) {
+    const inCallSession = isCalling || callAccepted || !!(call.isReceivingCall && call.from);
+    if (pendingCancel || hasPendingCancelFromPrefs || (callEnded && !inCallSession)) {
       console.log('⏸️ [AppNavigator] Skipping navigation - cancel/ended guard active', {
         pendingCancel,
         hasPendingCancelFromPrefs,
         callEnded,
-        activelyRinging,
+        inCallSession,
       });
       return;
     }
@@ -946,16 +949,16 @@ const AppNavigator = () => {
     const currentRoute = navigationRef.current.getCurrentRoute?.();
     if (currentRoute?.name !== 'CallScreen') return;
 
-    const activelyRinging = !!(call.isReceivingCall && call.from);
+    const inCallSession = isCalling || callAccepted || !!(call.isReceivingCall && call.from);
     const shouldDismiss =
-      (pendingCancel || hasPendingCancelFromPrefs || callEnded) && !activelyRinging;
+      (pendingCancel || hasPendingCancelFromPrefs || callEnded) && !inCallSession;
     if (!shouldDismiss) return;
 
     console.log('📴 [AppNavigator] Forcing CallScreen dismiss (stale/ended call)', {
       pendingCancel,
       hasPendingCancelFromPrefs,
       callEnded,
-      activelyRinging,
+      inCallSession,
     });
 
     // Prefer reset to a known-safe route to avoid GO_BACK not handled issues.

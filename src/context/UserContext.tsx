@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
 import socketService from '../services/socket';
 import fcmService from '../services/fcmService';
+import { callSessionNav } from '../services/callSessionNav';
 import { setLogoutCallback } from '../services/api';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -148,6 +149,14 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background') {
+        // Web keeps socket alive in background for calls — same for mobile during active call.
+        if (
+          callSessionNav.isInOneToOneCallSession
+          || callSessionNav.isOnCallScreen
+          || callSessionNav.isOnGroupCallScreen
+        ) {
+          return;
+        }
         clearPresenceOnlineRetries();
         if (onlinePresenceDebounceRef.current) {
           clearTimeout(onlinePresenceDebounceRef.current);
@@ -163,7 +172,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
           socketService.disconnect();
           console.log('📴 [UserContext] App background – socket disconnected (FCM for calls)');
           disconnectTimerRef.current = null;
-        }, 1500);
+        }, 500);
       } else if (nextState === 'active') {
         if (disconnectTimerRef.current) {
           clearTimeout(disconnectTimerRef.current);
@@ -173,6 +182,9 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
           clearTimeout(onlinePresenceDebounceRef.current);
         }
         const uid = user._id;
+        if (socketService.isSocketConnected()) {
+          socketService.emit('clientPresence', { status: 'online' });
+        }
         onlinePresenceDebounceRef.current = setTimeout(() => {
           onlinePresenceDebounceRef.current = null;
           if (AppState.currentState !== 'active') return;
@@ -180,7 +192,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
           socketService.emit('clientPresence', { status: 'online' });
           schedulePresenceOnlineRetries();
           console.log('📱 [UserContext] App active – online presence (debounced + retries)');
-        }, 450);
+        }, 200);
       }
       // `inactive`: intentionally no presence/socket change (see comment above).
     };
@@ -198,6 +210,17 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         onlinePresenceDebounceRef.current = null;
       }
     };
+  }, [user?._id]);
+
+  // Socket reconnected while app is foreground — mark online (server no longer auto-online on TCP connect).
+  useEffect(() => {
+    if (!user?._id) return;
+    const remove = socketService.addConnectListener(() => {
+      if (AppState.currentState !== 'active') return;
+      socketService.emit('clientPresence', { status: 'online' });
+      schedulePresenceOnlineRetries();
+    });
+    return () => remove?.();
   }, [user?._id]);
 
   const loadUserFromStorage = async () => {

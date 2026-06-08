@@ -15,6 +15,14 @@ export const callSessionNav = {
 
   isOnCallScreen: false,
   isOnGroupCallScreen: false,
+  /** True while ringing, connecting, or in an active 1:1 call (any screen). */
+  isInOneToOneCallSession: false,
+
+  setOneToOneCallSessionActive(active: boolean) {
+    if (callSessionNav.isInOneToOneCallSession === active) return;
+    callSessionNav.isInOneToOneCallSession = active;
+    notifyRouteListeners();
+  },
 
   setRootRouteName(name: string | undefined | null) {
     const onCall = name === 'CallScreen';
