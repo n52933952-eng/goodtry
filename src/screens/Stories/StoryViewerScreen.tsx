@@ -23,23 +23,12 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useTheme } from '../../context/ThemeContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { mediaDisplayUrl } from '../../utils/mediaUrl';
 
 const { width: W, height: H } = Dimensions.get('window');
 
-/** Cloudinary: fit inside screen — never crop (full image visible). */
-function storyImageDisplayUrl(rawUrl: string, screenW: number, screenH: number) {
-  let url = String(rawUrl || '');
-  if (!url.includes('res.cloudinary.com') || !url.includes('/image/upload/')) return url;
-  if (url.includes('c_fill')) {
-    url = url.replace(/c_fill[^/]*/g, 'c_limit').replace(/,g_auto/g, '');
-  }
-  const w = Math.max(320, Math.round(screenW));
-  const h = Math.max(480, Math.round(screenH));
-  if (url.includes('/image/upload/c_')) return url;
-  return url.replace(
-    '/image/upload/',
-    `/image/upload/c_limit,w_${w},h_${h},f_auto,q_auto/`,
-  );
+function storyImageDisplayUrl(rawUrl: string, _screenW: number, _screenH: number) {
+  return mediaDisplayUrl(rawUrl);
 }
 
 const STORY_TAP_NAV_MS = 280;
@@ -73,17 +62,6 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const [index, setIndex] = useState(0);
   const slides: Slide[] = story?.slides || [];
   const slide = slides[index];
-  const optimizeCloudinaryMediaUrl = useCallback((rawUrl: string, kind: 'image' | 'video') => {
-    const url = String(rawUrl || '');
-    if (!url.includes('res.cloudinary.com')) return url;
-    if (kind === 'video') {
-      if (!url.includes('/video/upload/')) return url;
-      return url.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
-    }
-    if (!url.includes('/image/upload/')) return url;
-    return url.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
-  }, []);
-
   // Safety: after deleting a slide (or story refresh), keep index in bounds to avoid `slide` becoming undefined.
   useEffect(() => {
     if (!slides?.length) return;
@@ -412,7 +390,7 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
           </>
         ) : (
           <>
-            <StoryVideo uri={optimizeCloudinaryMediaUrl(slide.url, 'video')} onEnded={onVideoEnd} />
+            <StoryVideo uri={mediaDisplayUrl(slide.url)} onEnded={onVideoEnd} />
             <TouchableOpacity style={[styles.tapLeft, { height: winH }]} activeOpacity={1} onPress={goPrev} />
             <TouchableOpacity style={[styles.tapRight, { height: winH }]} activeOpacity={1} onPress={goNext} />
           </>
@@ -471,7 +449,7 @@ function StoryVideo({ uri, onEnded }: { uri: string; onEnded: () => void }) {
   const safe = encodeURI(uri);
   const html = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
 <body style="margin:0;background:#000;overflow:hidden;">
-<video id="v" playsinline webkit-playsinline style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain" src="${safe}"></video>
+<video id="v" playsinline webkit-playsinline preload="auto" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain" src="${safe}"></video>
 <script>
 (function(){
   var v=document.getElementById('v');

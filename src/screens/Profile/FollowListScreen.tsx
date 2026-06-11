@@ -356,18 +356,20 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
 
   return (
     <View style={[styles.container, styles.rowLtr, { backgroundColor: colors.background }]}>
+      <View style={[styles.searchBarWrap, { backgroundColor: colors.background }]}>
+        <UserListSearchBar
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          containerStyle={styles.searchBar}
+        />
+      </View>
       <FlatList
+        style={styles.list}
         data={filteredUsers}
         keyExtractor={(item) => item._id?.toString() || String(item.username)}
         renderItem={renderItem}
         keyboardShouldPersistTaps="handled"
-        ListHeaderComponent={
-          <UserListSearchBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            containerStyle={styles.searchBar}
-          />
-        }
+        keyboardDismissMode="on-drag"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         onEndReached={searchQuery.trim() ? undefined : loadMore}
         onEndReachedThreshold={0.35}
@@ -378,7 +380,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
         contentContainerStyle={
           filteredUsers.length === 0
             ? styles.emptyContainer
-            : [styles.listContent, { paddingTop: 4, backgroundColor: colors.background }]
+            : [styles.listContent, { backgroundColor: colors.background }]
         }
       />
     </View>
@@ -387,6 +389,12 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  list: { flex: 1 },
+  searchBarWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
   /** Keep list rows LTR so Arabic names sit after the avatar (same as English), not beside the action button. */
   rowLtr: { direction: 'ltr' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -395,9 +403,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 20,
   },
-  searchBar: {
-    marginBottom: 10,
-  },
+  searchBar: {},
   row: {
     flexDirection: 'row',
     alignItems: 'center',

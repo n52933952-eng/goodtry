@@ -33,6 +33,7 @@ import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
 import { parseLiveShareMessage } from '../../utils/liveShareMessage';
+import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
 
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
@@ -201,28 +202,8 @@ const ChatScreen = ({ route, navigation }: any) => {
     [isUserBusy, partnerPresenceId]
   );
 
-  const isVideoUrl = (url: string) => {
-    if (!url) return false;
-    return url.includes('/video/upload/') || /\.(mp4|webm|ogg|mov)$/i.test(url);
-  };
-  const optimizeCloudinaryMediaUrl = useCallback((rawUrl: string, kind: 'image' | 'video') => {
-    const url = String(rawUrl || '');
-    if (!url.includes('res.cloudinary.com')) return url;
-    if (kind === 'video') {
-      if (!url.includes('/video/upload/')) return url;
-      return url.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
-    }
-    if (!url.includes('/image/upload/')) return url;
-    return url.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
-  }, []);
-
   const getVideoThumbnailUrl = useCallback((rawUrl: string) => {
-    const url = String(rawUrl || '');
-    if (!url) return url;
-    if (url.includes('res.cloudinary.com') && url.includes('/video/upload/')) {
-      return url.replace('/video/upload/', '/video/upload/so_0,f_jpg,w_420,h_280,c_fill/');
-    }
-    return url.replace(/\.(mp4|webm|ogg|mov)(\?.*)?$/i, '.jpg$2');
+    return String(rawUrl || '').trim();
   }, []);
 
   const handleNewMessage = useCallback((data: any) => {
@@ -1170,10 +1151,10 @@ const ChatScreen = ({ route, navigation }: any) => {
   const CHAT_MEDIA_SIZE = 220;
 
   const buildChatVideoHtml = (videoUrl: string, autoplay = false) => {
-    const optimized = optimizeCloudinaryMediaUrl(videoUrl, 'video');
+    const optimized = mediaDisplayUrl(videoUrl);
     const safe = String(optimized).replace(/"/g, '&quot;').replace(/</g, '');
     const autoplayAttr = autoplay ? ' autoplay' : '';
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="metadata"${autoplayAttr} src="${safe}"></video></body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="auto"${autoplayAttr} src="${safe}"></video></body></html>`;
   };
 
   const openChatImagePreview = useCallback((uri: string) => {
@@ -1465,7 +1446,7 @@ const ChatScreen = ({ route, navigation }: any) => {
                   >
                     {!!sharedPostImage && !sharedPostHasVideo && (
                       <Image
-                        source={{ uri: optimizeCloudinaryMediaUrl(sharedPostImage, 'image') }}
+                        source={{ uri: mediaDisplayUrl(sharedPostImage) }}
                         style={styles.sharedPostImage}
                         resizeMode="cover"
                       />
@@ -1503,7 +1484,7 @@ const ChatScreen = ({ route, navigation }: any) => {
               style={styles.chatImagePressWrap}
             >
               <Image
-                source={{ uri: optimizeCloudinaryMediaUrl(item.img, 'image') }}
+                source={{ uri: mediaDisplayUrl(item.img) }}
                 style={styles.chatImage}
                 resizeMode="cover"
                 onLoadEnd={() => {

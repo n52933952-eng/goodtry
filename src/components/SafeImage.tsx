@@ -8,7 +8,7 @@ type SafeImageProps = ImageProps & {
 
 /**
  * Image wrapper that stops trying to render a remote source once it fails.
- * Old/expired Cloudinary URLs (e.g. assets from a deleted account) can pile up
+ * Old/expired remote URLs (e.g. assets from a deleted account) can pile up
  * in Fresco/Glide retry queues across a long feed and pressure memory enough
  * to crash a release APK. Once an URL errors here we render a placeholder
  * instead of feeding the same broken URL back to the native image pipeline.

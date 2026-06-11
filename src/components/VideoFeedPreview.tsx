@@ -11,7 +11,7 @@ const uriCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 /**
  * Negative cache: video URLs that failed every timestamp. Stops a broken video
- * (e.g. asset on a deleted Cloudinary account) from triggering 8 native
+ * (e.g. asset on a deleted remote account) from triggering 8 native
  * createThumbnail calls on every FlatList row recycle.
  */
 const failedVideoCache = new Set<string>();

@@ -48,6 +48,7 @@ import {
   getChessGameDataForPost,
 } from '../utils/gameFeedPostUtils';
 import { useFeedCardMetrics } from '../utils/feedCardLayout';
+import { mediaDisplayUrl } from '../utils/mediaUrl';
 
 const INLINE_VIDEO_CONTAIN_CSS = `
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -287,7 +288,7 @@ const Post: React.FC<PostProps> = ({
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
   const [isFeedVideoPlaying, setIsFeedVideoPlaying] = useState(false);
-  /** Once the in-feed video errors (e.g. URL points at a dead Cloudinary asset), keep the WebView un-mounted so it doesn't keep retrying and pressuring memory across long feeds. */
+  /** Once the in-feed video errors (e.g. dead remote URL), keep the WebView un-mounted so it doesn't keep retrying and pressuring memory across long feeds. */
   const [feedVideoErrored, setFeedVideoErrored] = useState(false);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
@@ -1098,23 +1099,8 @@ const Post: React.FC<PostProps> = ({
   const canPreviewPostImage =
     !!post.img && disableNavigation && !isYouTubePost && !isVideoPost;
   const postImagePreviewUrl = String(post.img || '');
-  const optimizedImageUrl = (() => {
-    const raw = String(post.img || '');
-    // Keep original URL for animated images so playback works on mobile.
-    if (isAnimatedImagePost) return raw;
-    if (!raw.includes('res.cloudinary.com') || !raw.includes('/image/upload/')) return raw;
-    return raw.replace('/image/upload/', '/image/upload/f_auto,q_auto:eco,dpr_auto/');
-  })();
-  const optimizedVideoUrl = (() => {
-    const raw = String(post.img || '');
-    if (!isVideoPost || !raw.includes('res.cloudinary.com') || !raw.includes('/video/upload/')) return raw;
-    // Cloudinary delivery optimization for faster mobile playback.
-    // Keep this as delivery-time transform so existing videos benefit immediately.
-    return raw.replace('/video/upload/', '/video/upload/f_auto,q_auto:eco,vc_auto/');
-  })();
-  // Use original video URL for native thumbnail extraction (react-native-create-thumbnail).
-  // Optimized Cloudinary delivery URLs can resolve to formats that some native extractors
-  // fail on, resulting in black placeholders.
+  const displayImageUrl = mediaDisplayUrl(String(post.img || ''));
+  const displayVideoUrl = mediaDisplayUrl(String(post.img || ''));
   const thumbnailVideoUrl = String(post.img || '');
   const serverVideoThumbnail =
     post.thumbnail || post.videoThumbnail || post.thumb || post.thumbnailUrl || null;
@@ -1129,7 +1115,7 @@ const Post: React.FC<PostProps> = ({
           </head>
           <body>
             <video id="v"
-              src="${optimizedVideoUrl}"
+              src="${displayVideoUrl}"
               autoplay
               loop
               playsinline
@@ -1159,7 +1145,7 @@ const Post: React.FC<PostProps> = ({
         </html>
       `,
     }),
-    [optimizedVideoUrl, post.thumbnail]
+    [displayVideoUrl, post.thumbnail]
   );
 
   const { width } = Dimensions.get('window');
@@ -1589,7 +1575,7 @@ const Post: React.FC<PostProps> = ({
                   </head>
                   <body>
                     <video
-                      src="${optimizedVideoUrl}"
+                      src="${displayVideoUrl}"
                       controls
                       ${autoPlayMedia ? 'autoplay' : ''}
                       ${autoPlayMedia ? '' : 'muted'}
@@ -1840,7 +1826,7 @@ const Post: React.FC<PostProps> = ({
               accessibilityLabel={t('viewFullImage')}
             >
               <SafeImage
-                source={{ uri: optimizedImageUrl }}
+                source={{ uri: displayImageUrl }}
                 style={postImageStyle}
                 resizeMode="contain"
               />
@@ -1866,7 +1852,7 @@ const Post: React.FC<PostProps> = ({
             activeOpacity={0.9}
           >
             <SafeImage 
-              source={{ uri: optimizedImageUrl }} 
+              source={{ uri: displayImageUrl }} 
               style={postImageStyle}
               resizeMode="contain"
             />
