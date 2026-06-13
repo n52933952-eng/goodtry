@@ -88,6 +88,10 @@ const CAM_SHARE_PIP = VideoPresets.h180.resolution;
 
 
 
+export type LiveChatMessage = { id: string; sender: string; text: string };
+
+
+
 interface LiveBroadcastContextType {
 
   isLive: boolean;
@@ -145,6 +149,10 @@ interface LiveBroadcastContextType {
 
   sendChat: (text: string, senderName: string) => Promise<void>;
 
+  liveChatMessages: LiveChatMessage[];
+
+  addLiveChatMessage: (sender: string, text: string) => void;
+
   liveRoomName: string;
 
   isMicMuted: boolean;
@@ -191,6 +199,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const [hostPipVisible, setHostPipVisible] = useState(true);
 
+  const [liveChatMessages, setLiveChatMessages] = useState<LiveChatMessage[]>([]);
+
 
 
   const roomRef = useRef<Room | null>(null);
@@ -209,6 +219,34 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   /** Camera kept alive for host pip while unpublished during screen share. */
   const hostPreviewTrackRef = useRef<LocalTrack | null>(null);
+
+  const chatMsgIdRef = useRef(0);
+
+  const chatDataHandlerRef = useRef<((payload: Uint8Array) => void) | null>(null);
+
+
+
+  const addLiveChatMessage = useCallback((sender: string, text: string) => {
+
+    const trimmed = text.trim();
+
+    if (!trimmed) return;
+
+    const id = `msg_${++chatMsgIdRef.current}_${Date.now()}`;
+
+    setLiveChatMessages((prev) => [...prev.slice(-100), { id, sender, text: trimmed }]);
+
+  }, []);
+
+
+
+  const clearLiveChatMessages = useCallback(() => {
+
+    chatMsgIdRef.current = 0;
+
+    setLiveChatMessages([]);
+
+  }, []);
 
 
 
@@ -322,7 +360,17 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       try { InCallManager.stop(); } catch (_) {}
     }
 
-    try { await roomRef.current?.disconnect(); } catch (_) {}
+    const room = roomRef.current;
+
+    if (room && chatDataHandlerRef.current) {
+
+      room.off(RoomEvent.DataReceived, chatDataHandlerRef.current);
+
+      chatDataHandlerRef.current = null;
+
+    }
+
+    try { await room?.disconnect(); } catch (_) {}
 
     roomRef.current = null;
 
@@ -661,12 +709,13 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     roomNameRef.current = '';
     setLiveRoomName('');
     setIsMicMuted(false);
+    clearLiveChatMessages();
     await disconnect();
 
     setTimeout(() => {
       liveBroadcastNav.suppressGameCleanupNav = false;
     }, 2000);
-  }, [socket, user, disconnect, isLive]);
+  }, [socket, user, disconnect, isLive, clearLiveChatMessages]);
 
   const endLiveForCall = useCallback(async () => {
     await teardownLiveSession();
@@ -759,6 +808,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     setStartingLive(true);
 
+    clearLiveChatMessages();
+
     try {
 
       const res = await fetch(`${API_URL}/api/call/token`, {
@@ -841,6 +892,28 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
 
+      const onChatData = (payload: Uint8Array) => {
+
+        try {
+
+          const msg = JSON.parse(new TextDecoder().decode(payload));
+
+          if (msg.type === 'chat' && msg.sender && msg.text) {
+
+            addLiveChatMessage(String(msg.sender), String(msg.text));
+
+          }
+
+        } catch (_) {}
+
+      };
+
+      chatDataHandlerRef.current = onChatData;
+
+      lkRoom.on(RoomEvent.DataReceived, onChatData);
+
+
+
       await lkRoom.connect(livekitUrl, token);
 
 
@@ -903,7 +976,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     }
 
-  }, [user, socket, startingLive, isLive, syncLocalTrack]);
+  }, [user, socket, startingLive, isLive, syncLocalTrack, addLiveChatMessage, clearLiveChatMessages]);
 
 
 
@@ -1030,6 +1103,10 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     sendChat,
 
+    liveChatMessages,
+
+    addLiveChatMessage,
+
     liveRoomName,
 
     isMicMuted,
@@ -1048,7 +1125,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     minimizeLive, returnToLiveControls, restoreLivePreview, setLiveControlsFocused,
 
-    syncLocalTrack, getRoom, sendChat, liveRoomName, isMicMuted, toggleMicMute,
+    syncLocalTrack, getRoom, sendChat, liveChatMessages, addLiveChatMessage, liveRoomName, isMicMuted, toggleMicMute,
 
   ]);
 

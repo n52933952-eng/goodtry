@@ -408,9 +408,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       await lkRoom.localParticipant.setCameraEnabled(false);
       await lkRoom.localParticipant.setMicrophoneEnabled(true);
     } else {
-      await lkRoom.localParticipant.setMicrophoneEnabled(true);
-      await lkRoom.localParticipant.setCameraEnabled(true);
-      syncLocalVideoFromParticipant();
+    await lkRoom.localParticipant.setMicrophoneEnabled(true);
+        await lkRoom.localParticipant.setCameraEnabled(true);
+        syncLocalVideoFromParticipant();
     }
     } finally {
       isConnectingRoomRef.current = false;

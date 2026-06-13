@@ -499,7 +499,7 @@ const LiveViewerScreen = () => {
           fetch(`${API_URL}/api/call/token`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
+          credentials: 'include',
             body: JSON.stringify({ type: 'viewer', targetId: streamerId }),
           }),
         ]);
@@ -607,11 +607,11 @@ const LiveViewerScreen = () => {
     if (!text || !roomRef.current || sendingChat) return;
     setSendingChat(true);
     try {
-      const msg = { type: 'chat', sender: user?.name || user?.username || 'Viewer', text };
-      const encoded = new TextEncoder().encode(JSON.stringify(msg));
-      await roomRef.current.localParticipant.publishData(encoded, { reliable: true });
-      addMessage(msg.sender, msg.text);
-      setChatInput('');
+    const msg = { type: 'chat', sender: user?.name || user?.username || 'Viewer', text };
+    const encoded = new TextEncoder().encode(JSON.stringify(msg));
+    await roomRef.current.localParticipant.publishData(encoded, { reliable: true });
+    addMessage(msg.sender, msg.text);
+    setChatInput('');
       chatInputRef.current?.blur();
       Keyboard.dismiss();
     } catch (_) {
@@ -754,13 +754,13 @@ const LiveViewerScreen = () => {
                   key={emoji}
                   style={{ opacity: itemOpacity, transform: [{ scale: itemScale }] }}
                 >
-                  <TouchableOpacity
+        <TouchableOpacity
                     style={[styles.emojiPickerBtn, ui.emojiPickerBtn]}
                     onPress={() => { void sendEmojiReaction(emoji); }}
                     activeOpacity={0.65}
-                  >
+        >
                     <Text style={[styles.emojiPickerEmoji, ui.emojiPickerEmoji]}>{emoji}</Text>
-                  </TouchableOpacity>
+        </TouchableOpacity>
                 </Animated.View>
               );
             })}
@@ -789,8 +789,8 @@ const LiveViewerScreen = () => {
               renderItem={({ item }) => (
                 <Text style={styles.logLine}>
                   <Text style={styles.logSender}>{item.sender}: </Text>
-                  {item.text}
-                </Text>
+                    {item.text}
+                  </Text>
               )}
             />
           </Animated.View>

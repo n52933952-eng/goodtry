@@ -14,7 +14,7 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
-import CollaboratorPicker from '../../components/CollaboratorPicker';
+import CollaboratorPickerModal from '../../components/CollaboratorPickerModal';
 import {
   buildInitialContributorIds,
   CollaboratorUser,
@@ -26,6 +26,12 @@ import { useShowToast } from '../../hooks/useShowToast';
 import { useImagePicker } from '../../hooks/useImagePicker';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
+import {
+  isVideoWithinMaxDuration,
+  MAX_POST_VIDEO_DURATION_SEC,
+} from '../../utils/videoDuration';
+
+const MAX_CHAR = 500;
 
 const CreatePostScreen = ({ navigation }: any) => {
   const { user } = useUser();
@@ -47,6 +53,15 @@ const CreatePostScreen = ({ navigation }: any) => {
   const [isCollaborative, setIsCollaborative] = useState(false);
   const [selectedCollaborators, setSelectedCollaborators] = useState<CollaboratorUser[]>([]);
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
+  const [collaboratorModalOpen, setCollaboratorModalOpen] = useState(false);
+
+  const handleTextChange = (input: string) => {
+    if (input.length > MAX_CHAR) {
+      setText(input.slice(0, MAX_CHAR));
+      return;
+    }
+    setText(input);
+  };
 
   const handleMediaPick = () => setMediaPickerOpen(true);
 
@@ -68,6 +83,11 @@ const CreatePostScreen = ({ navigation }: any) => {
 
     // Dismiss keyboard immediately when Post button is pressed
     Keyboard.dismiss();
+
+    if (isVideo && imageData && !isVideoWithinMaxDuration(imageData, MAX_POST_VIDEO_DURATION_SEC)) {
+      showToast(t('error'), t('postVideoTooLongBody'), 'error');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -219,6 +239,17 @@ const CreatePostScreen = ({ navigation }: any) => {
             <Text style={[styles.userName, { color: colors.text }]}>{user?.name}</Text>
             <Text style={[styles.userUsername, { color: colors.textGray }]}>@{user?.username}</Text>
           </View>
+          <Text
+            style={[
+              styles.charCounter,
+              {
+                color:
+                  text.length >= MAX_CHAR ? colors.error : colors.textGray,
+              },
+            ]}
+          >
+            {text.length}/{MAX_CHAR}
+          </Text>
         </View>
 
         <TextInput
@@ -226,7 +257,8 @@ const CreatePostScreen = ({ navigation }: any) => {
           placeholder={t('whatsOnYourMind')}
           placeholderTextColor={colors.textGray}
           value={text}
-          onChangeText={setText}
+          onChangeText={handleTextChange}
+          maxLength={MAX_CHAR}
           multiline
           autoFocus
         />
@@ -266,58 +298,37 @@ const CreatePostScreen = ({ navigation }: any) => {
           <TouchableOpacity
             style={styles.option}
             onPress={() => {
-              const next = !isCollaborative;
-              setIsCollaborative(next);
-              if (!next) setSelectedCollaborators([]);
+              if (!isCollaborative) {
+                setIsCollaborative(true);
+                setCollaboratorModalOpen(true);
+              } else {
+                setCollaboratorModalOpen(true);
+              }
             }}
+            onLongPress={() => {
+              if (isCollaborative) {
+                setIsCollaborative(false);
+                setSelectedCollaborators([]);
+                setCollaboratorModalOpen(false);
+              }
+            }}
+            delayLongPress={450}
           >
-            <Text style={styles.optionIcon}>
+            <Text
+              style={[styles.optionIcon, { color: colors.success }]}
+              allowFontScaling={false}
+              {...(Platform.OS === 'android' ? { includeFontPadding: false } : {})}
+            >
               {isCollaborative ? '✅' : '☑️'}
             </Text>
-            <Text style={[styles.optionText, { color: colors.text }]}>{t('collaborativePost')}</Text>
+            <Text style={[styles.optionText, { color: colors.text }]}>
+              {t('collaborativePost')}
+              {isCollaborative && selectedCollaborators.length > 0
+                ? ` (${selectedCollaborators.length})`
+                : ''}
+            </Text>
           </TouchableOpacity>
         </View>
-
-        {isCollaborative && (
-          <View style={styles.collabSection}>
-            <Text style={[styles.collabHint, { color: colors.textGray }]}>{t('addContributors')}</Text>
-            <CollaboratorPicker
-              excludeUserIds={[
-                user?._id?.toString(),
-                ...selectedCollaborators.map((s) => String(s._id)),
-              ].filter(Boolean) as string[]}
-              onSelectUser={(u) => {
-                if (!selectedCollaborators.some((x) => x._id === u._id)) {
-                  setSelectedCollaborators((p) => [...p, u]);
-                }
-              }}
-            />
-            {selectedCollaborators.length > 0 && (
-              <View style={styles.selectedChips}>
-                <Text style={[styles.selectedLabel, { color: colors.textGray }]}>
-                  {t('selected')} ({selectedCollaborators.length})
-                </Text>
-                {selectedCollaborators.map((su) => (
-                  <View
-                    key={su._id}
-                    style={[styles.chipRow, { borderColor: colors.border, backgroundColor: colors.background }]}
-                  >
-                    <Text style={[styles.chipText, { color: colors.text }]} numberOfLines={1}>
-                      {su.name || su.username}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() =>
-                        setSelectedCollaborators((p) => p.filter((x) => x._id !== su._id))
-                      }
-                    >
-                      <Text style={{ color: colors.primary }}>{t('remove')}</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
       </ScrollView>
 
       <View
@@ -330,6 +341,14 @@ const CreatePostScreen = ({ navigation }: any) => {
           <Text style={styles.toolbarIcon}>🖼️</Text>
         </TouchableOpacity>
       </View>
+
+      <CollaboratorPickerModal
+        visible={collaboratorModalOpen}
+        onClose={() => setCollaboratorModalOpen(false)}
+        excludeUserIds={[user?._id?.toString()].filter(Boolean) as string[]}
+        selectedCollaborators={selectedCollaborators}
+        onChangeSelected={setSelectedCollaborators}
+      />
 
       <Modal
         visible={mediaPickerOpen}
@@ -442,8 +461,14 @@ const styles = StyleSheet.create({
   },
   userInfo: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 15,
+  },
+  charCounter: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
+    marginLeft: 8,
   },
   avatar: {
     width: 45,
@@ -532,42 +557,11 @@ const styles = StyleSheet.create({
   },
   optionIcon: {
     fontSize: 20,
-    marginRight: 10,
+    lineHeight: 22,
+    marginRight: 4,
   },
   optionText: {
     fontSize: 16,
-  },
-  collabSection: {
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  collabHint: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  selectedChips: {
-    marginTop: 12,
-  },
-  selectedLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    marginBottom: 6,
-  },
-  chipText: {
-    flex: 1,
-    fontSize: 14,
-    marginRight: 8,
   },
   toolbar: {
     flexDirection: 'row',

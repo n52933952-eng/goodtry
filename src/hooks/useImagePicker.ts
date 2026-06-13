@@ -1,11 +1,38 @@
 import { useState } from 'react';
 import { Alert, Platform, PermissionsAndroid } from 'react-native';
 import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
+import { useLanguage } from '../context/LanguageContext';
+import {
+  MAX_POST_VIDEO_DURATION_SEC,
+  isVideoAsset,
+  isVideoWithinMaxDuration,
+} from '../utils/videoDuration';
 
 export const useImagePicker = () => {
+  const { t } = useLanguage();
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageData, setImageData] = useState<Asset | null>(null);
   const [isVideo, setIsVideo] = useState(false);
+
+  const showVideoTooLongAlert = () => {
+    Alert.alert(t('postVideoTooLongTitle'), t('postVideoTooLongBody'));
+  };
+
+  const rejectLongVideo = (asset: Asset): boolean => {
+    if (!isVideoAsset(asset)) return false;
+    if (isVideoWithinMaxDuration(asset, MAX_POST_VIDEO_DURATION_SEC)) return false;
+    showVideoTooLongAlert();
+    return true;
+  };
+
+  const acceptMediaAsset = (asset: Asset): Asset | null => {
+    if (rejectLongVideo(asset)) return null;
+    const looksVideo = isVideoAsset(asset);
+    setIsVideo(looksVideo);
+    setImageUri(asset.uri || null);
+    setImageData(asset);
+    return asset;
+  };
 
   const requestCameraPermission = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') {
@@ -108,6 +135,7 @@ export const useImagePicker = () => {
       const result = await launchImageLibrary({
         mediaType: 'mixed',
         selectionLimit: 1,
+        includeExtra: true,
       });
 
       if (result.didCancel) {
@@ -118,15 +146,7 @@ export const useImagePicker = () => {
         return null;
       }
       if (result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        const mime = asset.type || '';
-        const uri = asset.uri || '';
-        const looksVideo =
-          mime.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(uri);
-        setIsVideo(looksVideo);
-        setImageUri(uri || null);
-        setImageData(asset);
-        return asset;
+        return acceptMediaAsset(result.assets[0]);
       }
       return null;
     } catch (error) {
@@ -160,7 +180,7 @@ export const useImagePicker = () => {
       const result = await launchCamera({
         mediaType: 'video',
         videoQuality: 'high',
-        durationLimit: 300,
+        durationLimit: MAX_POST_VIDEO_DURATION_SEC,
       });
 
       if (result.didCancel) {
@@ -171,11 +191,7 @@ export const useImagePicker = () => {
         return null;
       }
       if (result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        setIsVideo(true);
-        setImageUri(asset.uri || null);
-        setImageData(asset);
-        return asset;
+        return acceptMediaAsset(result.assets[0]);
       }
       return null;
     } catch (error) {

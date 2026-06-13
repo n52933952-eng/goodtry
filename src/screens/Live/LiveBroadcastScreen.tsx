@@ -10,7 +10,6 @@ import {
   NativeModules, BackHandler, AppState, Alert,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
-import { RoomEvent } from 'livekit-client';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
@@ -139,8 +138,8 @@ const LiveBroadcastScreen = () => {
     isLive, viewerCount, startingLive, localTrack, localScreenTrack, isSharing,
     isLiveControlsFocused,
     goLive, endLive: endLiveCtx, stopScreenShareOnly, shareAndGoAppHome, shareAndGoPhoneHome,
-    setLiveControlsFocused, syncLocalTrack, getRoom, sendChat, flipCamera,
-    liveRoomName, isMicMuted, toggleMicMute,
+    setLiveControlsFocused, syncLocalTrack, sendChat, flipCamera,
+    liveRoomName, isMicMuted, toggleMicMute, liveChatMessages, addLiveChatMessage,
   } = useLiveBroadcast();
 
   const actionRailBottom = bottomPad + metrics.broadcasterRailBottomExtra;
@@ -150,7 +149,6 @@ const LiveBroadcastScreen = () => {
   const showVideoPreview = isLiveControlsFocused;
 
   const [chatInput, setChatInput] = useState('');
-  const [chatLog, setChatLog] = useState<{ id: string; sender: string; text: string }[]>([]);
   const [floatMsgs, setFloatMsgs] = useState<FloatMsg[]>([]);
   const [floatReactions, setFloatReactions] = useState<FloatReaction[]>([]);
   const [showLog, setShowLog] = useState(false);
@@ -162,6 +160,7 @@ const LiveBroadcastScreen = () => {
 
   const flatRef = useRef<FlatList>(null);
   const ctr = useRef(0);
+  const seenChatLenRef = useRef(0);
   const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const ar = isArabicPhone();
@@ -188,12 +187,11 @@ const LiveBroadcastScreen = () => {
     removeTimersRef.current.push(timer);
   }, []);
 
-  const addMessage = useCallback((sender: string, text: string) => {
+  const showFloatMessage = useCallback((sender: string, text: string) => {
     const id = `msg_${++ctr.current}_${Date.now()}`;
     const anim = new Animated.Value(0);
     const opacity = new Animated.Value(1);
     setFloatMsgs(prev => [...prev.slice(-(FLOAT_MSG_VISIBLE - 1)), { id, sender, text, anim, opacity }]);
-    setChatLog(prev => [...prev.slice(-100), { id, sender, text }]);
     Animated.parallel([
       Animated.timing(anim, { toValue: -FLOAT_DRIFT_UP, duration: FLOAT_DRIFT_MS, useNativeDriver: true }),
       Animated.sequence([
@@ -208,6 +206,20 @@ const LiveBroadcastScreen = () => {
     removeTimersRef.current.push(timer);
   }, []);
 
+  useEffect(() => {
+    if (!isLive) {
+      seenChatLenRef.current = 0;
+      return;
+    }
+    if (liveChatMessages.length <= seenChatLenRef.current) {
+      seenChatLenRef.current = liveChatMessages.length;
+      return;
+    }
+    const newItems = liveChatMessages.slice(seenChatLenRef.current);
+    seenChatLenRef.current = liveChatMessages.length;
+    newItems.forEach((m) => showFloatMessage(m.sender, m.text));
+  }, [isLive, liveChatMessages, showFloatMessage]);
+
   const endLive = useCallback(async () => {
     await endLiveCtx();
   }, [endLiveCtx]);
@@ -216,20 +228,8 @@ const LiveBroadcastScreen = () => {
     useCallback(() => {
       setLiveControlsFocused(true);
       syncLocalTrack();
-      const room = getRoom();
-      if (!room) return () => { setLiveControlsFocused(false); };
-      const onData = (payload: Uint8Array) => {
-        try {
-          const msg = JSON.parse(new TextDecoder().decode(payload));
-          if (msg.type === 'chat') addMessage(msg.sender, msg.text);
-        } catch (_) {}
-      };
-      room.on(RoomEvent.DataReceived, onData);
-      return () => {
-        room.off(RoomEvent.DataReceived, onData);
-        setLiveControlsFocused(false);
-      };
-    }, [syncLocalTrack, getRoom, addMessage, addEmojiFloat, setLiveControlsFocused]),
+      return () => { setLiveControlsFocused(false); };
+    }, [syncLocalTrack, setLiveControlsFocused]),
   );
 
   /** After "Share phone" the app may resume on this screen while isMinimized stayed true. */
@@ -285,9 +285,9 @@ const LiveBroadcastScreen = () => {
     if (!text) return;
     const sender = user?.name || user?.username || 'Streamer';
     await sendChat(text, sender);
-    addMessage(sender, text);
+    addLiveChatMessage(sender, text);
     setChatInput('');
-  }, [chatInput, user, sendChat, addMessage]);
+  }, [chatInput, user, sendChat, addLiveChatMessage]);
 
   const placeholderContent = (() => {
     if (startingLive) {
@@ -405,7 +405,7 @@ const LiveBroadcastScreen = () => {
           <View style={[styles.logPanel, ui.logPanel, { bottom: chatAboveInputBottom, backgroundColor: 'rgba(0,0,0,0.7)' }]}>
             <FlatList
               ref={flatRef}
-              data={chatLog}
+              data={liveChatMessages}
               keyExtractor={item => item.id}
               onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: true })}
               renderItem={({ item }) => (

@@ -3,7 +3,7 @@
  * Starts above the tab bar; draggable anywhere on screen.
  */
 
-import React, { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, PanResponder, Animated, useWindowDimensions,
   DeviceEventEmitter, InteractionManager,
@@ -14,10 +14,12 @@ import { useTheme } from '../context/ThemeContext';
 import { liveBroadcastNav } from '../services/liveBroadcastNav';
 import { clampMiniBarPosition } from '../utils/liveMiniBarLayout';
 import { LIVE_BAR_RESIGN_GAME } from '../utils/constants';
+import LiveViewerChatModal from './LiveViewerChatModal';
 
 const BAR_HEIGHT = 56;
 const H_MARGIN = 10;
 const END_BTN_W = 64;
+const MSG_BTN_W = 44;
 const ROW_GAP = 8;
 const DRAG_THRESHOLD = 6;
 
@@ -28,7 +30,23 @@ const LiveStreamMiniBar = () => {
   const {
     isLive, isMinimized, isSharing, viewerCount, hostPipVisible,
     returnToLiveControls, endLive, showHostPip, flipCamera,
+    liveChatMessages,
   } = useLiveBroadcast();
+
+  const [chatOpen, setChatOpen] = useState(false);
+  const [seenChatCount, setSeenChatCount] = useState(0);
+  const unreadChat = Math.max(0, liveChatMessages.length - seenChatCount);
+
+  useEffect(() => {
+    if (chatOpen) setSeenChatCount(liveChatMessages.length);
+  }, [chatOpen, liveChatMessages.length]);
+
+  useEffect(() => {
+    if (!isLive) {
+      setChatOpen(false);
+      setSeenChatCount(0);
+    }
+  }, [isLive]);
 
   const onLiveBroadcastScreen = useSyncExternalStore(
     (cb) => liveBroadcastNav.subscribeRoute(cb),
@@ -171,6 +189,18 @@ const LiveStreamMiniBar = () => {
           </View>
         </View>
         <TouchableOpacity
+          style={styles.msgBtn}
+          onPress={() => setChatOpen(true)}
+          activeOpacity={0.9}
+        >
+          <Text style={styles.msgIcon}>💬</Text>
+          {unreadChat > 0 ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadChat > 9 ? '9+' : unreadChat}</Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.endBtn, { backgroundColor: colors.error, width: END_BTN_W }]}
           onPress={endLive}
           activeOpacity={0.9}
@@ -178,6 +208,7 @@ const LiveStreamMiniBar = () => {
           <Text style={styles.endText}>End</Text>
         </TouchableOpacity>
       </View>
+      <LiveViewerChatModal visible={chatOpen} onClose={() => setChatOpen(false)} />
     </Animated.View>
   );
 };
@@ -229,6 +260,31 @@ const styles = StyleSheet.create({
   },
   meta: { color: 'rgba(255,255,255,0.92)', fontSize: 12 },
   tapHint: { marginTop: 2, color: 'rgba(255,255,255,0.88)', fontSize: 11, fontWeight: '600' },
+  msgBtn: {
+    width: MSG_BTN_W,
+    minHeight: BAR_HEIGHT,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(180, 30, 30, 0.96)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    flexShrink: 0,
+  },
+  msgIcon: { fontSize: 20 },
+  badge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: { color: '#B41E1E', fontSize: 10, fontWeight: '800' },
   endBtn: {
     minHeight: BAR_HEIGHT,
     borderRadius: 16,

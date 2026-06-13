@@ -20,6 +20,10 @@ import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useImagePicker } from '../hooks/useImagePicker';
+import {
+  isVideoWithinMaxDuration,
+  MAX_POST_VIDEO_DURATION_SEC,
+} from '../utils/videoDuration';
 
 const MAX_LEN = 500;
 
@@ -72,6 +76,11 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     }
     if (trimmed.length > MAX_LEN) {
       showToast(t('error'), t('postTextTooLong'), 'error');
+      return;
+    }
+
+    if (willUploadNew && isVideo && imageData && !isVideoWithinMaxDuration(imageData, MAX_POST_VIDEO_DURATION_SEC)) {
+      showToast(t('error'), t('postVideoTooLongBody'), 'error');
       return;
     }
 
@@ -169,12 +178,23 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
               multiline
               maxLength={MAX_LEN}
               value={text}
-              onChangeText={setText}
+              onChangeText={(input) => {
+                if (input.length > MAX_LEN) {
+                  setText(input.slice(0, MAX_LEN));
+                  return;
+                }
+                setText(input);
+              }}
               placeholder={t('whatsOnYourMind')}
               placeholderTextColor={colors.textGray}
             />
-            <Text style={[styles.counter, { color: colors.textGray }]}>
-              {MAX_LEN - (text?.length || 0)}
+            <Text
+              style={[
+                styles.counter,
+                { color: (text?.length || 0) >= MAX_LEN ? colors.error : colors.textGray },
+              ]}
+            >
+              {text?.length || 0}/{MAX_LEN}
             </Text>
 
             <Text style={[styles.sectionLabel, { color: colors.textGray }]}>{t('media')}</Text>

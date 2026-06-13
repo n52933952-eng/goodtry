@@ -6,8 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  ScrollView,
-  Image,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -58,12 +56,16 @@ const AddContributorModal: React.FC<Props> = ({
     user?._id?.toString(),
     postOwnerId,
     ...existingContributorIds,
-    ...selectedUsers.map((s) => s._id?.toString()).filter(Boolean),
   ].filter(Boolean) as string[];
 
-  const handleSelectUser = (u: CollaboratorUser) => {
-    if (!selectedUsers.some((x) => x._id === u._id)) {
-      setSelectedUsers((prev) => [...prev, u]);
+  const handleToggleUser = (u: CollaboratorUser, selected: boolean) => {
+    const id = String(u._id);
+    if (selected) {
+      setSelectedUsers((prev) =>
+        prev.some((x) => String(x._id) === id) ? prev : [...prev, u]
+      );
+    } else {
+      setSelectedUsers((prev) => prev.filter((x) => String(x._id) !== id));
     }
   };
 
@@ -92,7 +94,6 @@ const AddContributorModal: React.FC<Props> = ({
       if (successful.length > 0) {
         const first = successful[0] as { ok: true; data: { post?: any } };
         const updated = first.data?.post;
-        // Backend sometimes returns contributors as ids (strings). Hydrate via GET so avatar/name shows immediately.
         const needsHydration = (p: any) =>
           !Array.isArray(p?.contributors) ||
           p.contributors.some((c: any) => typeof c === 'string' || typeof c === 'number' || !c?.profilePic);
@@ -103,8 +104,6 @@ const AddContributorModal: React.FC<Props> = ({
           finalPost = (fresh as any)?.post ?? fresh;
         }
 
-        // Best-effort client hydration: merge selectedUsers into contributors so UI shows avatars immediately,
-        // even if backend returns only contributor ids.
         const selectedById = new Map(
           selectedUsers
             .filter((u) => u?._id)
@@ -118,7 +117,6 @@ const AddContributorModal: React.FC<Props> = ({
         };
         if (finalPost && Array.isArray(finalPost.contributors)) {
           const merged = finalPost.contributors.map(normalizeContributor);
-          // Ensure newly selected are present
           for (const [id, u] of selectedById.entries()) {
             if (!merged.some((c: any) => String((c?._id ?? c) || '') === id)) merged.push(u);
           }
@@ -153,51 +151,26 @@ const AddContributorModal: React.FC<Props> = ({
         <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
         <View style={[styles.sheet, { backgroundColor: colors.backgroundLight }]}>
           <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.sheetTitle, { color: colors.text }]}>{t('addContributors')}</Text>
+            <View style={styles.headerTextWrap}>
+              <Text style={[styles.sheetTitle, { color: colors.text }]}>{t('addContributors')}</Text>
+              {selectedUsers.length > 0 ? (
+                <Text style={[styles.countHint, { color: colors.textGray }]}>
+                  {t('selected')} ({selectedUsers.length})
+                </Text>
+              ) : null}
+            </View>
             <TouchableOpacity onPress={onClose}>
               <Text style={{ color: colors.primary, fontSize: 16 }}>{t('cancel')}</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView
-            style={styles.sheetBody}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 24 }}
-          >
-            <CollaboratorPicker excludeUserIds={excludeUserIds} onSelectUser={handleSelectUser} />
 
-            {selectedUsers.length > 0 && (
-              <View style={styles.section}>
-                <Text style={[styles.sectionTitle, { color: colors.textGray }]}>
-                  {t('selected')} ({selectedUsers.length})
-                </Text>
-                {selectedUsers.map((su) => (
-                  <View
-                    key={su._id}
-                    style={[styles.row, { backgroundColor: colors.background, borderColor: colors.border }]}
-                  >
-                    {su.profilePic ? (
-                      <Image source={{ uri: su.profilePic }} style={styles.avatar} />
-                    ) : (
-                      <View style={[styles.avatar, styles.avatarPh, { backgroundColor: colors.avatarBg }]}>
-                        <Text style={styles.avatarTxt}>
-                          {(su.name || su.username || '?')[0]?.toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.name, { color: colors.text }]}>{su.name}</Text>
-                      <Text style={[styles.sub, { color: colors.textGray }]}>@{su.username}</Text>
-                    </View>
-                    <TouchableOpacity
-                      onPress={() => setSelectedUsers((p) => p.filter((x) => x._id !== su._id))}
-                    >
-                      <Text style={{ color: colors.error }}>{t('remove')}</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
-          </ScrollView>
+          <View style={styles.pickerWrap}>
+            <CollaboratorPicker
+              excludeUserIds={excludeUserIds}
+              selectedIds={selectedUsers.map((u) => String(u._id))}
+              onToggleUser={handleToggleUser}
+            />
+          </View>
 
           <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: colors.backgroundLight }]}>
             <TouchableOpacity
@@ -232,66 +205,39 @@ const styles = StyleSheet.create({
   },
   sheet: {
     maxHeight: '88%',
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
+    minHeight: '70%',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
     overflow: 'hidden',
   },
   sheetHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerTextWrap: {
+    flex: 1,
+    marginRight: 12,
   },
   sheetTitle: {
     fontSize: 18,
     fontWeight: '700',
   },
-  sheetBody: {
+  countHint: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  pickerWrap: {
+    flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  section: {
-    marginTop: 8,
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    marginBottom: 8,
-  },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 10,
-  },
-  avatarPh: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarTxt: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  name: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  sub: {
-    fontSize: 13,
+    paddingTop: 10,
   },
   footer: {
     padding: 16,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   primaryBtn: {
     paddingVertical: 14,
@@ -300,8 +246,8 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: {
     color: '#fff',
-    fontWeight: '700',
     fontSize: 16,
+    fontWeight: '700',
   },
 });
 
