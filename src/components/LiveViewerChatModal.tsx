@@ -17,6 +17,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useUser } from '../context/UserContext';
 import { LiveChatMessage, useLiveBroadcast } from '../context/LiveBroadcastContext';
+import { useShowToast } from '../hooks/useShowToast';
 
 type Props = {
   visible: boolean;
@@ -38,6 +39,7 @@ const LiveViewerChatModal: React.FC<Props> = ({ visible, onClose }) => {
   const { t } = useLanguage();
   const { user } = useUser();
   const { liveChatMessages, sendChat, addLiveChatMessage } = useLiveBroadcast();
+  const showToast = useShowToast();
   const [input, setInput] = useState('');
   const listRef = useRef<FlatList<LiveChatMessage>>(null);
 
@@ -53,7 +55,11 @@ const LiveViewerChatModal: React.FC<Props> = ({ visible, onClose }) => {
     const text = input.trim();
     if (!text) return;
     const sender = user?.name || user?.username || 'Streamer';
-    await sendChat(text, sender);
+    const sent = await sendChat(text, sender);
+    if (!sent) {
+      showToast(t('error'), t('liveChatSlowDown'), 'error');
+      return;
+    }
     addLiveChatMessage(sender, text);
     setInput('');
   };

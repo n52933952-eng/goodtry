@@ -40,6 +40,7 @@ import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
 import SafeImage from './SafeImage';
 import PinchZoomImageModal from './PinchZoomImageModal';
+import FeedPostImageZoom from './FeedPostImageZoom';
 import { navigateToMainStack } from '../utils/navigationHelpers';
 import {
   isGoFishFeedPost,
@@ -180,6 +181,44 @@ const Post: React.FC<PostProps> = ({
     }
   }, [navigation, disableNavigation, fromScreen, userProfileParams, post?.img]);
 
+  const navigateToUserProfile = useCallback((usernameOrId: string) => {
+    const query = String(usernameOrId || '').trim();
+    if (!query) return;
+
+    const params = { username: query };
+
+    const tryPushUserProfile = (nav: any): boolean => {
+      if (!nav) return false;
+      try {
+        const state = nav.getState?.() as { routeNames?: string[] } | undefined;
+        const names = state?.routeNames ?? [];
+        if (names.includes('UserProfile')) {
+          if (typeof nav.push === 'function') {
+            nav.push('UserProfile', params);
+          } else {
+            nav.navigate('UserProfile', params);
+          }
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    };
+
+    if (tryPushUserProfile(navigation)) return;
+    if (tryPushUserProfile(navigation.getParent?.())) return;
+
+    const tabNav = navigation.getParent?.();
+    if (tabNav?.navigate) {
+      tabNav.navigate('Profile', { screen: 'UserProfile', params });
+      return;
+    }
+
+    navigation.navigate('Profile', {
+      screen: 'UserProfile',
+      params,
+    });
+  }, [navigation]);
+
   /** Football feed card: header/avatar open the Football tab; 💬 still opens this post for comments. */
   const navigateToFootballTab = () => {
     try {
@@ -205,10 +244,11 @@ const Post: React.FC<PostProps> = ({
     updatePost,
     hideFeedPostFromFeed,
     hideFeedSourceFromFeed,
+    addHiddenFeedPostId,
   } = usePost();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
-  const { socket } = useSocket();
+  const { socket, isUserOnline } = useSocket();
   const showToast = useShowToast();
 
   const [addContribOpen, setAddContribOpen] = useState(false);
@@ -739,6 +779,28 @@ const Post: React.FC<PostProps> = ({
     return !!cId && !!currentUserId && cId === currentUserId;
   });
 
+  const isFollowedAuthor = useMemo(() => {
+    if (!showFeedExtras || !user?.following?.length || !postedById || isOwner) return false;
+    return user.following.some((entry: any) => {
+      const fid =
+        typeof entry === 'object' && entry != null
+          ? entry._id?.toString?.() ?? String(entry._id ?? '')
+          : String(entry ?? '');
+      return !!fid && fid === postedById;
+    });
+  }, [showFeedExtras, user?.following, postedById, isOwner]);
+
+  const showAuthorPresenceDot =
+    isFollowedAuthor &&
+    !isChannelPost &&
+    !isFootballPost &&
+    !isWeatherPost &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.isLive;
+
+  const authorIsOnline = showAuthorPresenceDot && isUserOnline(postedById);
+
   const canAddCollaborator =
     !!post.isCollaborative && (isOwner || !!isContributor);
   const canManageContributorsList =
@@ -1040,11 +1102,78 @@ const Post: React.FC<PostProps> = ({
 
   const isMyChannelFeedCard =
     !!post?.channelAddedBy && String(post.channelAddedBy) === String(user?._id);
-  /** Football: no ✕ on feed — unfollow / hide source from Football tab. Weather & user-added channels keep dismiss. */
-  const showDismissFromFeed =
-    (isWeatherPost || isMyChannelFeedCard) && !isChessPost && !isCardPost;
 
-  const handleDismissFromFeed = () => {
+  const canHideRegularUserPost =
+    showFeedExtras &&
+    !!user &&
+    !isOwner &&
+    !isChannelPost &&
+    !isFootballPost &&
+    !isWeatherPost &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.isLive &&
+    !!post?._id &&
+    /^[0-9a-fA-F]{24}$/.test(String(post._id));
+
+  /** Feed ⋮ menu: regular posts, Weather, or channels you added. No Football / system channels / games / live / own posts. */
+  const showFeedPostMenu =
+    showFeedExtras &&
+    !!user &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.isLive &&
+    !isFootballPost &&
+    !isOwner &&
+    (canHideRegularUserPost || isWeatherPost || isMyChannelFeedCard);
+
+  const hideRegularPostFromFeed = () => {
+    const isSelfContributor =
+      !!post.isCollaborative && !!isContributor && !isOwner && !!currentUserId;
+
+    if (isSelfContributor) {
+      Alert.alert(t('leaveCollaborativePost'), t('leaveCollaborativePostHint'), [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('leaveCollaborativePostConfirm'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const data: any = await apiService.delete(
+                `${ENDPOINTS.REMOVE_CONTRIBUTOR}/${String(post._id)}/contributor/${currentUserId}`,
+              );
+              deletePostContext(String(post._id));
+              onPostDeleted?.(String(post._id));
+              if (data?.hiddenPostId) {
+                addHiddenFeedPostId(String(data.hiddenPostId));
+              }
+              showToast(t('success'), t('contributorRemoved'), 'success');
+            } catch (e: any) {
+              showToast(t('error'), e?.message || t('failedToRemoveContributor'), 'error');
+            }
+          },
+        },
+      ]);
+      return;
+    }
+
+    Alert.alert(t('notInterested'), t('notInterestedHint'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('notInterestedConfirm'),
+        onPress: async () => {
+          try {
+            await hideFeedPostFromFeed(String(post._id));
+            showToast(t('success'), t('removedFromFeed'), 'success');
+          } catch (e: any) {
+            showToast(t('error'), e?.message || 'Failed', 'error');
+          }
+        },
+      },
+    ]);
+  };
+
+  const hideChannelOrWeatherFromFeed = () => {
     Alert.alert(
       t('removeFromFeed'),
       t('removeFromFeedHint'),
@@ -1067,7 +1196,7 @@ const Post: React.FC<PostProps> = ({
                 if (uname === 'Football' || uname === 'Weather') {
                   hideFeedSourceFromFeed(String(uname));
                 } else {
-                  hideFeedPostFromFeed(String(post._id));
+                  await hideFeedPostFromFeed(String(post._id));
                 }
               }
               showToast(t('success'), t('removedFromFeed'), 'success');
@@ -1080,6 +1209,16 @@ const Post: React.FC<PostProps> = ({
     );
   };
 
+  const handleFeedPostMenuPress = () => {
+    if (isWeatherPost || isMyChannelFeedCard) {
+      hideChannelOrWeatherFromFeed();
+      return;
+    }
+    if (canHideRegularUserPost) {
+      hideRegularPostFromFeed();
+    }
+  };
+
   const canEditPostText =
     !!user &&
     !isChannelPost &&
@@ -1089,6 +1228,34 @@ const Post: React.FC<PostProps> = ({
     !isCardPost &&
     !post?.channelAddedBy &&
     (isOwner || (!!post.isCollaborative && isContributor));
+
+  const canMessagePostOwner =
+    showFeedExtras &&
+    !!user &&
+    !isOwner &&
+    !isChannelPost &&
+    !isFootballPost &&
+    !isWeatherPost &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.isLive &&
+    !!postedById &&
+    /^[0-9a-fA-F]{24}$/.test(postedById);
+
+  const onMessagePostOwner = useCallback(() => {
+    if (!canMessagePostOwner) return;
+    const author =
+      typeof post.postedBy === 'object' && post.postedBy ? post.postedBy : null;
+    navigateToMainStack(navigation, 'ChatScreen', {
+      userId: postedById,
+      otherUser: {
+        _id: postedById,
+        name: author?.name || author?.username || 'User',
+        username: author?.username,
+        profilePic: author?.profilePic,
+      },
+    });
+  }, [canMessagePostOwner, navigation, post.postedBy, postedById]);
   
   // Check if post has regular video (mp4, webm, etc.)
   const isVideoPost = post.img && (
@@ -1224,10 +1391,19 @@ const Post: React.FC<PostProps> = ({
       return;
     }
 
-    navigation.navigate('Profile', {
-      screen: 'UserProfile',
-      params: { username },
-    });
+    navigateToUserProfile(username);
+  };
+
+  const onContributorPress = (contributor: any, contributorId?: string) => {
+    const cObj = typeof contributor === 'object' ? contributor : null;
+    const cid = contributorId || (cObj?._id || contributor)?.toString?.();
+    const hydrated = cid && contribHydrateMap[cid] ? contribHydrateMap[cid] : null;
+    const profile = hydrated || cObj;
+    const username = profile?.username ? String(profile.username).trim() : '';
+    const query = username || cid;
+    if (!query) return;
+
+    navigateToUserProfile(query);
   };
 
   return (
@@ -1250,6 +1426,7 @@ const Post: React.FC<PostProps> = ({
     >
       {!hideFootballFeedHeader && (
       <View style={styles.header}>
+        <View style={styles.headerAvatarWrap}>
         <StoryAvatarRing
           visible={showStoryRing}
           showAnimatedRedFill={!!storyRing?.storyId && !!storyRing?.hasUnviewed}
@@ -1292,6 +1469,19 @@ const Post: React.FC<PostProps> = ({
           })()}
         </TouchableOpacity>
         </StoryAvatarRing>
+        {showAuthorPresenceDot && (
+          <View
+            style={[
+              styles.authorOnlineDot,
+              {
+                backgroundColor: authorIsOnline ? colors.success : colors.textGray,
+                borderColor: colors.background,
+              },
+            ]}
+            accessibilityLabel={authorIsOnline ? t('online') : t('offline')}
+          />
+        )}
+        </View>
 
         {isFootballPost && !disableNavigation ? (
           <TouchableOpacity
@@ -1359,16 +1549,39 @@ const Post: React.FC<PostProps> = ({
         )}
 
         <View style={styles.headerActions}>
-          {showDismissFromFeed && (
+          {canMessagePostOwner && (
             <TouchableOpacity
               onPress={(e) => {
                 e.stopPropagation();
-                handleDismissFromFeed();
+                onMessagePostOwner();
               }}
-              style={{ padding: 6, marginRight: 2 }}
-              accessibilityLabel={t('removeFromFeed')}
+              style={styles.headerMessageBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel={`Message ${post.postedBy?.name || post.postedBy?.username || ''}`}
             >
-              <Text style={{ fontSize: 18, color: colors.textGray }}>✕</Text>
+              <Text style={[styles.headerMessageIcon, { color: colors.primary }]}>✉</Text>
+            </TouchableOpacity>
+          )}
+          {showFeedPostMenu && (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                handleFeedPostMenuPress();
+              }}
+              style={styles.headerMenuBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isWeatherPost || isMyChannelFeedCard
+                  ? t('removeFromFeed')
+                  : !!post.isCollaborative && !!isContributor && !isOwner
+                    ? t('leaveCollaborativePost')
+                    : t('notInterested')
+              }
+            >
+              <Text style={[styles.headerMenuIcon, { color: colors.textGray }]}>⋮</Text>
             </TouchableOpacity>
           )}
           {canEditPostText && (
@@ -1416,7 +1629,15 @@ const Post: React.FC<PostProps> = ({
                   const cObj = hydrated || contributor;
                   const label = cObj?.name || cObj?.username || '?';
                   return (
-                    <View key={cid || String(idx)} style={{ marginRight: 8 }}>
+                    <TouchableOpacity
+                      key={cid || String(idx)}
+                      style={{ marginRight: 8 }}
+                      activeOpacity={0.75}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        onContributorPress(cObj, cid);
+                      }}
+                    >
                       {cObj?.profilePic ? (
                         <SafeImage source={{ uri: cObj.profilePic }} style={styles.contribAvatar} />
                       ) : (
@@ -1433,7 +1654,7 @@ const Post: React.FC<PostProps> = ({
                           <Text style={{ color: '#fff', fontWeight: '700' }}>{label[0]?.toUpperCase()}</Text>
                         </View>
                       )}
-                    </View>
+                    </TouchableOpacity>
                   );
                 })}
               </ScrollView>
@@ -1844,19 +2065,11 @@ const Post: React.FC<PostProps> = ({
             />
           </>
         ) : (
-          <TouchableOpacity 
-            onPress={() => {
-              // Navigate to PostDetail
-              navigateToPostDetail(post._id);
-            }}
-            activeOpacity={0.9}
-          >
-            <SafeImage 
-              source={{ uri: displayImageUrl }} 
-              style={postImageStyle}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
+          <FeedPostImageZoom
+            uri={displayImageUrl}
+            containerStyle={postImageStyle}
+            onPressImage={() => navigateToPostDetail(post._id)}
+          />
         )
       ) : null}
 
@@ -2328,11 +2541,7 @@ const Post: React.FC<PostProps> = ({
         }}
         onGoToProfile={
           storyMenu?.username
-            ? () =>
-                navigation.navigate('Profile', {
-                  screen: 'UserProfile',
-                  params: { username: storyMenu.username },
-                })
+            ? () => navigateToUserProfile(storyMenu.username!)
             : undefined
         }
       />
@@ -2367,7 +2576,11 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 10,
+  },
+  headerAvatarWrap: {
+    position: 'relative',
   },
   avatar: {
     width: 45,
@@ -2401,12 +2614,44 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 6,
+    marginLeft: 6,
+    flexShrink: 0,
+  },
+  headerMessageBtn: {
+    padding: 6,
+    marginRight: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerMessageIcon: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  headerMenuBtn: {
+    padding: 6,
+    marginRight: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerMenuIcon: {
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 22,
   },
   name: {
     fontSize: 16,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  authorOnlineDot: {
+    position: 'absolute',
+    bottom: 1,
+    left: 0,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    zIndex: 2,
   },
   collaborativeBadge: {
     marginLeft: 5,

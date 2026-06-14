@@ -34,6 +34,12 @@ import { startOngoingCallNative, stopOngoingCallNative, moveAppToBackgroundNativ
 import { liveBroadcastNav } from '../services/liveBroadcastNav';
 import { callSessionNav } from '../services/callSessionNav';
 import { restoreCameraForViewers } from '../utils/liveBroadcastCamera';
+import {
+  canSendLiveChat,
+  createLiveChatBatchSink,
+  LIVE_CHAT_MAX_MESSAGES,
+  type LiveChatIncoming,
+} from '../utils/liveChatThrottle';
 
 
 
@@ -147,7 +153,7 @@ interface LiveBroadcastContextType {
 
   getRoom: () => Room | null;
 
-  sendChat: (text: string, senderName: string) => Promise<void>;
+  sendChat: (text: string, senderName: string) => Promise<boolean>;
 
   liveChatMessages: LiveChatMessage[];
 
@@ -224,6 +230,14 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const chatDataHandlerRef = useRef<((payload: Uint8Array) => void) | null>(null);
 
+  const lastChatSendAtRef = useRef(0);
+
+  const flushIncomingChatRef = useRef<(items: LiveChatIncoming[]) => void>(() => {});
+
+  const incomingChatBatchRef = useRef(
+    createLiveChatBatchSink((items) => flushIncomingChatRef.current(items)),
+  );
+
 
 
   const addLiveChatMessage = useCallback((sender: string, text: string) => {
@@ -234,8 +248,22 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const id = `msg_${++chatMsgIdRef.current}_${Date.now()}`;
 
-    setLiveChatMessages((prev) => [...prev.slice(-100), { id, sender, text: trimmed }]);
+    setLiveChatMessages((prev) => [...prev.slice(-(LIVE_CHAT_MAX_MESSAGES - 1)), { id, sender, text: trimmed }]);
 
+  }, []);
+
+  useEffect(() => {
+    flushIncomingChatRef.current = (items) => {
+      if (!items.length) return;
+      setLiveChatMessages((prev) => {
+        const next = [...prev];
+        for (const item of items) {
+          const id = `msg_${++chatMsgIdRef.current}_${Date.now()}`;
+          next.push({ id, sender: item.sender, text: item.text });
+        }
+        return next.slice(-LIVE_CHAT_MAX_MESSAGES);
+      });
+    };
   }, []);
 
 
@@ -243,6 +271,10 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   const clearLiveChatMessages = useCallback(() => {
 
     chatMsgIdRef.current = 0;
+
+    lastChatSendAtRef.current = 0;
+
+    incomingChatBatchRef.current.clear();
 
     setLiveChatMessages([]);
 
@@ -900,7 +932,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
           if (msg.type === 'chat' && msg.sender && msg.text) {
 
-            addLiveChatMessage(String(msg.sender), String(msg.text));
+            incomingChatBatchRef.current.push(String(msg.sender), String(msg.text));
 
           }
 
@@ -980,19 +1012,27 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
 
-  const sendChat = useCallback(async (text: string, senderName: string) => {
+  const sendChat = useCallback(async (text: string, senderName: string): Promise<boolean> => {
 
     const trimmed = text.trim();
 
     const room = roomRef.current;
 
-    if (!trimmed || !room) return;
+    if (!trimmed || !room) return false;
+
+    const now = Date.now();
+
+    if (!canSendLiveChat(lastChatSendAtRef.current, now)) return false;
 
     const msg = { type: 'chat', sender: senderName, text: trimmed };
 
     const encoded = new TextEncoder().encode(JSON.stringify(msg));
 
     await room.localParticipant.publishData(encoded, { reliable: true });
+
+    lastChatSendAtRef.current = now;
+
+    return true;
 
   }, []);
 

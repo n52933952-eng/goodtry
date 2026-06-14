@@ -51,6 +51,8 @@ export const ENDPOINTS = {
   
   // Posts
   GET_FEED: '/api/post/feed/feedpost',
+  HIDE_FEED_POST: '/api/post/feed/hide',
+  GET_HIDDEN_FEED_POST_IDS: '/api/post/feed/hidden-ids',
   CREATE_POST: '/api/post/create',
   /** PUT /api/post/:id — update text (owner or collaborative contributor) */
   UPDATE_POST: '/api/post',

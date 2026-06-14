@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  useWindowDimensions,
+  PanResponder,
+  LayoutChangeEvent,
 } from 'react-native';
 import CollaboratorPickerModal from '../../components/CollaboratorPickerModal';
 import {
@@ -32,6 +35,11 @@ import {
 } from '../../utils/videoDuration';
 
 const MAX_CHAR = 500;
+const PREVIEW_ZOOM_MIN = 1;
+const PREVIEW_ZOOM_MAX = 3;
+const PREVIEW_ZOOM_STEP = 0.12;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 const CreatePostScreen = ({ navigation }: any) => {
   const { user } = useUser();
@@ -47,6 +55,16 @@ const CreatePostScreen = ({ navigation }: any) => {
   } = useImagePicker();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
+  const { width: winW } = useWindowDimensions();
+
+  const imagePreviewHeight = useMemo(() => {
+    const w = imageData?.width;
+    const h = imageData?.height;
+    const frameW = Math.max(200, winW - 60);
+    if (!w || !h || w <= 0 || h <= 0) return 220;
+    const computed = Math.round(frameW * (h / w));
+    return Math.min(320, Math.max(180, computed));
+  }, [imageData?.width, imageData?.height, winW]);
 
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -54,6 +72,87 @@ const CreatePostScreen = ({ navigation }: any) => {
   const [selectedCollaborators, setSelectedCollaborators] = useState<CollaboratorUser[]>([]);
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const [collaboratorModalOpen, setCollaboratorModalOpen] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
+  const [previewVpSize, setPreviewVpSize] = useState({ w: 0, h: 0 });
+
+  const previewZoomRef = useRef(1);
+  const previewVpRef = useRef({ w: 0, h: 0 });
+  const previewPanRef = useRef({ x: 0, y: 0 });
+  const previewPanStartRef = useRef({ x: 0, y: 0 });
+
+  previewZoomRef.current = previewZoom;
+  previewVpRef.current = previewVpSize;
+  previewPanRef.current = previewPan;
+
+  useEffect(() => {
+    setPreviewZoom(1);
+    setPreviewPan({ x: 0, y: 0 });
+  }, [imageUri]);
+
+  const maxPreviewPan = useCallback((z: number, w: number, h: number) => ({
+    x: (w * (z - 1)) / 2,
+    y: (h * (z - 1)) / 2,
+  }), []);
+
+  const clampPreviewPan = useCallback((x: number, y: number, z: number, w: number, h: number) => {
+    const m = maxPreviewPan(z, w, h);
+    return { x: clamp(x, -m.x, m.x), y: clamp(y, -m.y, m.y) };
+  }, [maxPreviewPan]);
+
+  useEffect(() => {
+    if (previewZoom <= 1) {
+      setPreviewPan({ x: 0, y: 0 });
+    } else {
+      setPreviewPan((p) => clampPreviewPan(p.x, p.y, previewZoom, previewVpSize.w, previewVpSize.h));
+    }
+  }, [previewZoom, previewVpSize.w, previewVpSize.h, clampPreviewPan]);
+
+  const onPreviewViewportLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width > 0 && height > 0) {
+      setPreviewVpSize({ w: width, h: height });
+    }
+  }, []);
+
+  const previewPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => previewZoomRef.current > 1,
+        onMoveShouldSetPanResponder: (_, g) =>
+          previewZoomRef.current > 1 && (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4),
+        onPanResponderGrant: () => {
+          previewPanStartRef.current = { ...previewPanRef.current };
+        },
+        onPanResponderMove: (_, g) => {
+          const z = previewZoomRef.current;
+          const { w, h } = previewVpRef.current;
+          setPreviewPan(
+            clampPreviewPan(
+              previewPanStartRef.current.x + g.dx,
+              previewPanStartRef.current.y + g.dy,
+              z,
+              w,
+              h,
+            ),
+          );
+        },
+      }),
+    [clampPreviewPan],
+  );
+
+  const zoomPreviewIn = useCallback(() => {
+    setPreviewZoom((z) => clamp(Number((z + PREVIEW_ZOOM_STEP).toFixed(2)), PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX));
+  }, []);
+
+  const zoomPreviewOut = useCallback(() => {
+    setPreviewZoom((z) => clamp(Number((z - PREVIEW_ZOOM_STEP).toFixed(2)), PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX));
+  }, []);
+
+  const resetPreviewZoom = useCallback(() => {
+    setPreviewZoom(1);
+    setPreviewPan({ x: 0, y: 0 });
+  }, []);
 
   const handleTextChange = (input: string) => {
     if (input.length > MAX_CHAR) {
@@ -236,8 +335,12 @@ const CreatePostScreen = ({ navigation }: any) => {
             </View>
           )}
           <View style={styles.userDetails}>
-            <Text style={[styles.userName, { color: colors.text }]}>{user?.name}</Text>
-            <Text style={[styles.userUsername, { color: colors.textGray }]}>@{user?.username}</Text>
+            <Text style={[styles.userName, { color: colors.text }]} numberOfLines={1}>
+              {user?.name}
+            </Text>
+            <Text style={[styles.userUsername, { color: colors.textGray }]} numberOfLines={1}>
+              @{user?.username}
+            </Text>
           </View>
           <Text
             style={[
@@ -264,8 +367,68 @@ const CreatePostScreen = ({ navigation }: any) => {
         />
 
         {imageUri && !isVideo && (
-          <View style={styles.imageContainer}>
-            <Image source={{ uri: imageUri }} style={styles.image} />
+          <View
+            style={[
+              styles.imageContainer,
+              { height: imagePreviewHeight, backgroundColor: colors.backgroundLight },
+            ]}
+          >
+            <View style={styles.imageViewport} onLayout={onPreviewViewportLayout}>
+              <Image
+                source={{ uri: imageUri }}
+                style={[
+                  styles.imageFill,
+                  previewZoom > 1 && {
+                    transform: [
+                      { translateX: previewPan.x },
+                      { translateY: previewPan.y },
+                      { scale: previewZoom },
+                    ],
+                  },
+                ]}
+                resizeMode="contain"
+              />
+              {previewZoom > 1 && (
+                <View style={styles.previewDragOverlay} {...previewPanResponder.panHandlers} />
+              )}
+            </View>
+
+            <View style={styles.previewZoomControls} pointerEvents="box-none">
+              <TouchableOpacity
+                style={styles.previewZoomChip}
+                onPress={zoomPreviewOut}
+                disabled={previewZoom <= PREVIEW_ZOOM_MIN}
+              >
+                <Text
+                  style={[
+                    styles.previewZoomChipText,
+                    previewZoom <= PREVIEW_ZOOM_MIN && styles.previewZoomChipDisabled,
+                  ]}
+                >
+                  −
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.previewZoomChip} onPress={resetPreviewZoom}>
+                <Text style={[styles.previewZoomChipText, styles.previewZoomPct]}>
+                  {Math.round(previewZoom * 100)}%
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.previewZoomChip}
+                onPress={zoomPreviewIn}
+                disabled={previewZoom >= PREVIEW_ZOOM_MAX}
+              >
+                <Text
+                  style={[
+                    styles.previewZoomChipText,
+                    previewZoom >= PREVIEW_ZOOM_MAX && styles.previewZoomChipDisabled,
+                  ]}
+                >
+                  +
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <TouchableOpacity
               style={styles.removeImageButton}
               onPress={clearImage}
@@ -463,12 +626,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     marginBottom: 15,
+    direction: 'ltr',
   },
   charCounter: {
     fontSize: 13,
     fontWeight: '600',
     marginTop: 4,
     marginLeft: 8,
+    flexShrink: 0,
+    textAlign: 'right',
   },
   avatar: {
     width: 45,
@@ -487,13 +653,21 @@ const styles = StyleSheet.create({
   },
   userDetails: {
     flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
   },
   userName: {
     fontSize: 16,
     fontWeight: 'bold',
+    textAlign: 'left',
+    alignSelf: 'stretch',
+    writingDirection: 'ltr',
   },
   userUsername: {
     fontSize: 14,
+    textAlign: 'left',
+    alignSelf: 'stretch',
+    writingDirection: 'ltr',
   },
   textInput: {
     fontSize: 16,
@@ -503,11 +677,52 @@ const styles = StyleSheet.create({
   imageContainer: {
     marginTop: 15,
     position: 'relative',
-  },
-  image: {
-    width: '100%',
-    height: 200,
     borderRadius: 12,
+    overflow: 'hidden',
+  },
+  imageViewport: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  imageFill: {
+    width: '100%',
+    height: '100%',
+  },
+  previewDragOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 5,
+  },
+  previewZoomControls: {
+    position: 'absolute',
+    right: 8,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 20,
+  },
+  previewZoomChip: {
+    minWidth: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  previewZoomChipText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  previewZoomPct: {
+    fontSize: 11,
+  },
+  previewZoomChipDisabled: {
+    opacity: 0.35,
   },
   videoPreview: {
     width: '100%',
@@ -534,13 +749,14 @@ const styles = StyleSheet.create({
   removeImageButton: {
     position: 'absolute',
     top: 10,
-    right: 10,
+    left: 10,
     width: 30,
     height: 30,
     borderRadius: 15,
     backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 25,
   },
   removeImageText: {
     color: '#FFFFFF',

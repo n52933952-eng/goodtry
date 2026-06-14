@@ -28,6 +28,14 @@ import {
   applyRemoteVideoTrack,
 } from '../../utils/liveKitTracks';
 import { liveActionStyles, s, useLiveScreenMetrics } from '../../utils/liveScreenLayout';
+import { useLanguage } from '../../context/LanguageContext';
+import { useShowToast } from '../../hooks/useShowToast';
+import {
+  canSendLiveChat,
+  createLiveChatBatchSink,
+  LIVE_CHAT_MAX_MESSAGES,
+  type LiveChatIncoming,
+} from '../../utils/liveChatThrottle';
 
 interface FloatMsg { id: string; sender: string; text: string; anim: Animated.Value; opacity: Animated.Value }
 interface FloatReaction {
@@ -136,6 +144,8 @@ const LiveViewerScreen = () => {
   const socketCtx = useSocket();
   const socket = socketCtx?.socket;
   const { colors } = useTheme();
+  const { t } = useLanguage();
+  const showToast = useShowToast();
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
   const metrics = useLiveScreenMetrics();
@@ -189,6 +199,11 @@ const LiveViewerScreen = () => {
   const chatInputRef = useRef<TextInput>(null);
   const msgCounter = useRef(0);
   const removeTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const lastChatSendAtRef = useRef(0);
+  const flushIncomingChatRef = useRef<(items: LiveChatIncoming[]) => void>(() => {});
+  const incomingChatBatchRef = useRef(
+    createLiveChatBatchSink((items) => flushIncomingChatRef.current(items)),
+  );
 
   const MAX_VIEWER_RECONNECT = 2;
 
@@ -376,14 +391,13 @@ const LiveViewerScreen = () => {
     addEmojiFloat(emoji);
   }, [socket, streamerId, user, closeEmojiPicker, addEmojiFloat]);
 
-  const addMessage = useCallback((sender: string, text: string) => {
+  const spawnFloatForChat = useCallback((sender: string, text: string) => {
     const id = `msg_${++msgCounter.current}_${Date.now()}`;
     const anim = new Animated.Value(0);
     const opacity = new Animated.Value(1);
 
     const floatMsg: FloatMsg = { id, sender, text, anim, opacity };
     setFloatMsgs((prev) => [...prev.slice(-6), floatMsg]);
-    setChatLog((prev) => [...prev.slice(-100), { id, sender, text }]);
 
     Animated.parallel([
       Animated.timing(anim, { toValue: -FLOAT_DRIFT_UP, duration: FLOAT_DRIFT_MS, useNativeDriver: true }),
@@ -399,6 +413,32 @@ const LiveViewerScreen = () => {
     }, FLOAT_FADE_DELAY_MS + FLOAT_FADE_MS + 200);
     removeTimersRef.current.push(timer);
   }, []);
+
+  const appendChatLog = useCallback((entries: { sender: string; text: string }[]) => {
+    if (!entries.length) return;
+    setChatLog((prev) => {
+      const added = entries.map((entry) => ({
+        id: `msg_${++msgCounter.current}_${Date.now()}`,
+        sender: entry.sender,
+        text: entry.text,
+      }));
+      return [...prev, ...added].slice(-LIVE_CHAT_MAX_MESSAGES);
+    });
+  }, []);
+
+  useEffect(() => {
+    flushIncomingChatRef.current = (items) => {
+      if (!items.length) return;
+      appendChatLog(items);
+      const last = items[items.length - 1];
+      spawnFloatForChat(last.sender, last.text);
+    };
+  }, [appendChatLog, spawnFloatForChat]);
+
+  const addMessage = useCallback((sender: string, text: string) => {
+    appendChatLog([{ sender, text }]);
+    spawnFloatForChat(sender, text);
+  }, [appendChatLog, spawnFloatForChat]);
 
   useEffect(() => {
     let mounted = true;
@@ -484,7 +524,9 @@ const LiveViewerScreen = () => {
         try {
           const msg = JSON.parse(new TextDecoder().decode(payload));
           if (!mounted) return;
-          if (msg.type === 'chat') addMessage(msg.sender, msg.text);
+          if (msg.type === 'chat') {
+            incomingChatBatchRef.current.push(String(msg.sender), String(msg.text));
+          }
         } catch (_) {}
       });
     };
@@ -566,6 +608,8 @@ const LiveViewerScreen = () => {
       }
       (removeTimersRef.current ?? []).forEach(clearTimeout);
       removeTimersRef.current = [];
+      incomingChatBatchRef.current.clear();
+      lastChatSendAtRef.current = 0;
       try { InCallManager.stop(); } catch (_) {}
       roomRef.current?.disconnect().catch(() => {});
     };
@@ -605,11 +649,16 @@ const LiveViewerScreen = () => {
   const sendChat = useCallback(async () => {
     const text = chatInput.trim();
     if (!text || !roomRef.current || sendingChat) return;
+    if (!canSendLiveChat(lastChatSendAtRef.current)) {
+      showToast(t('error'), t('liveChatSlowDown'), 'error');
+      return;
+    }
     setSendingChat(true);
     try {
     const msg = { type: 'chat', sender: user?.name || user?.username || 'Viewer', text };
     const encoded = new TextEncoder().encode(JSON.stringify(msg));
     await roomRef.current.localParticipant.publishData(encoded, { reliable: true });
+    lastChatSendAtRef.current = Date.now();
     addMessage(msg.sender, msg.text);
     setChatInput('');
       chatInputRef.current?.blur();
@@ -619,7 +668,7 @@ const LiveViewerScreen = () => {
     } finally {
       setSendingChat(false);
     }
-  }, [chatInput, user, addMessage, sendingChat]);
+  }, [chatInput, user, addMessage, sendingChat, showToast, t]);
 
   const screenSid = remoteScreenTrack?.sid || 'none';
   const keyboardOpen = keyboardHeight > 0;

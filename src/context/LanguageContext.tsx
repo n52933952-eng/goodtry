@@ -55,6 +55,13 @@ const translations: Record<Language, Record<string, string>> = {
       'This card will disappear from your feed. Open Weather, Football, or Channels again to bring it back.',
     'removeFromFeedConfirm': 'Remove',
     'removedFromFeed': 'Removed from your feed',
+    'notInterested': 'Not interested',
+    'notInterestedHint': 'This post will be hidden from your feed.',
+    'notInterestedConfirm': 'Hide',
+    'leaveCollaborativePost': 'Leave collaborative post',
+    'leaveCollaborativePostHint':
+      'You will be removed from this post and it will disappear from your feed.',
+    'leaveCollaborativePostConfirm': 'Leave',
     
     // Messages Screen
     'messages': 'Messages',
@@ -219,6 +226,9 @@ const translations: Record<Language, Record<string, string>> = {
     'postVideoTooLongBody': 'Videos must be 10 minutes or less.',
     'liveViewerMessages': 'Viewer messages',
     'liveChatPlaceholder': 'Reply to viewers…',
+    'liveChatSlowDown': 'Wait a moment before sending another message.',
+    'feedImageZoomHint': 'Reset zoom to open post',
+    'feedImageResetZoomToOpen': 'Reset zoom to 100% first, then tap the image to open the post.',
     'done': 'Done',
     'noViewsYet': 'No views yet',
     'deleteAccount': 'Delete account',
@@ -381,6 +391,13 @@ const translations: Record<Language, Record<string, string>> = {
       'ستُزال هذه البطاقة من خلاصتك. يمكنك فتح الطقس أو كرة القدم أو القنوات لإعادتها.',
     'removeFromFeedConfirm': 'إزالة',
     'removedFromFeed': 'تمت الإزالة من خلاصتك',
+    'notInterested': 'غير مهتم',
+    'notInterestedHint': 'سيُخفى هذا المنشور من خلاصتك.',
+    'notInterestedConfirm': 'إخفاء',
+    'leaveCollaborativePost': 'مغادرة المنشور التعاوني',
+    'leaveCollaborativePostHint':
+      'ستُزال من هذا المنشور وسيختفي من خلاصتك.',
+    'leaveCollaborativePostConfirm': 'مغادرة',
     
     // Messages Screen
     'messages': 'الرسائل',
@@ -545,6 +562,9 @@ const translations: Record<Language, Record<string, string>> = {
     'postVideoTooLongBody': 'يجب ألا تتجاوز مدة الفيديو 10 دقائق.',
     'liveViewerMessages': 'رسائل المشاهدين',
     'liveChatPlaceholder': 'رد على المشاهدين…',
+    'liveChatSlowDown': 'انتظر قليلاً قبل إرسال رسالة أخرى.',
+    'feedImageZoomHint': 'أعد التكبير لفتح المنشور',
+    'feedImageResetZoomToOpen': 'أعد التكبير إلى 100% أولاً، ثم اضغط الصورة لفتح المنشور.',
     'done': 'تم',
     'noViewsYet': 'لا توجد مشاهدات بعد',
     'deleteAccount': 'حذف الحساب',

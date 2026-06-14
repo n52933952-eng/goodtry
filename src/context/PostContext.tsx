@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from './UserContext';
 import { dedupeGamePostsForFeed } from '../utils/dedupeGameFeedPosts';
 import { getGameFeedDedupeKey, mergeGameFeedPostData } from '../utils/gameFeedPostUtils';
+import { apiService } from '../services/api';
+import { ENDPOINTS } from '../utils/constants';
 
 const feedHiddenStorageKey = (userId: string) => `feed_hidden_post_ids_${userId}`;
 const feedHiddenSourcesKey = (userId: string) => `feed_hidden_sources_${userId}`;
@@ -51,12 +53,16 @@ interface PostContextType {
   likePost: (postId: string, userId: string) => void;
   unlikePost: (postId: string, userId: string) => void;
   addComment: (postId: string, comment: any) => void;
-  /** Post IDs the user hid from feed (Football / Weather / channel cards); persisted per account. */
+  /** Post IDs the user hid from feed ("not interested"); synced from server per account. */
   hiddenFeedPostIds: Set<string>;
-  /** Usernames the user hid from feed (system cards like Football/Weather); persisted per account. */
+  /** Usernames the user hid from feed (system cards like Football/Weather); persisted locally. */
   hiddenFeedSources: Set<string>;
-  hideFeedPostFromFeed: (postId: string) => void;
+  hideFeedPostFromFeed: (postId: string) => Promise<void>;
   hideFeedSourceFromFeed: (username: string) => void;
+  /** Replace hidden post ids from server (login sync). */
+  syncHiddenFeedPostIds: (ids: string[]) => void;
+  /** Add one hidden post id after hide/leave (no full list from server). */
+  addHiddenFeedPostId: (postId: string) => void;
   /** Clear hidden IDs so dismissed feed cards can show again (e.g., after re-follow / re-adding channels). */
   clearHiddenFeedPosts: () => void;
   /** Unhide a specific post id (e.g., re-add one channel without restoring all). */
@@ -141,6 +147,17 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       })
       .catch(() => {});
 
+    apiService
+      .get(ENDPOINTS.GET_HIDDEN_FEED_POST_IDS)
+      .then((data: any) => {
+        if (cancelled || !Array.isArray(data?.postIds)) return;
+        const next = new Set(data.postIds.map(String));
+        setHiddenFeedPostIds(next);
+        hiddenFeedPostIdsRef.current = next;
+        AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+      })
+      .catch(() => {});
+
     AsyncStorage.getItem(feedHiddenSourcesKey(String(user._id)))
       .then((raw) => {
         if (cancelled || !raw) return;
@@ -188,11 +205,13 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   }, [hiddenFeedPostIds, filterPostsForFeed]);
 
   const hideFeedPostFromFeed = useCallback(
-    (postId: string) => {
+    async (postId: string) => {
       const id = String(postId);
+      const data: any = await apiService.put(`${ENDPOINTS.HIDE_FEED_POST}/${id}`);
+      const hiddenId = String(data?.postId || id);
       setHiddenFeedPostIds((prev) => {
         const next = new Set(prev);
-        next.add(id);
+        next.add(hiddenId);
         hiddenFeedPostIdsRef.current = next;
         if (user?._id) {
           AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
@@ -202,6 +221,35 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       setPosts((prev) => prev.filter((p) => String(p._id) !== id));
     },
     [user?._id]
+  );
+
+  const syncHiddenFeedPostIds = useCallback(
+    (ids: string[]) => {
+      const next = new Set((Array.isArray(ids) ? ids : []).map(String));
+      setHiddenFeedPostIds(next);
+      hiddenFeedPostIdsRef.current = next;
+      if (user?._id) {
+        AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+      }
+    },
+    [user?._id],
+  );
+
+  const addHiddenFeedPostId = useCallback(
+    (postId: string) => {
+      const id = String(postId || '').trim();
+      if (!id) return;
+      setHiddenFeedPostIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        hiddenFeedPostIdsRef.current = next;
+        if (user?._id) {
+          AsyncStorage.setItem(feedHiddenStorageKey(String(user._id)), JSON.stringify([...next])).catch(() => {});
+        }
+        return next;
+      });
+    },
+    [user?._id],
   );
 
   const hideFeedSourceFromFeed = useCallback(
@@ -522,6 +570,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         hiddenFeedSources,
         hideFeedPostFromFeed,
         hideFeedSourceFromFeed,
+        syncHiddenFeedPostIds,
+        addHiddenFeedPostId,
         clearHiddenFeedPosts,
         unhideFeedPostFromFeed,
         unhideFeedSourceFromFeed,
