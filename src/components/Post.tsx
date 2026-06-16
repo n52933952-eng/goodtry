@@ -47,6 +47,7 @@ import {
   isChessFeedPost,
   getCardGameDataForPost,
   getChessGameDataForPost,
+  getGameRoomIdFromPost,
 } from '../utils/gameFeedPostUtils';
 import { useFeedCardMetrics } from '../utils/feedCardLayout';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
@@ -406,6 +407,7 @@ const Post: React.FC<PostProps> = ({
   const [cardGameData, setCardGameData] = useState<any>(null);
   /** When socket says this room ended, flip Live → Ended without waiting for a feed refresh */
   const [chessFeedEndedLocally, setChessFeedEndedLocally] = useState(false);
+  const [cardFeedEndedLocally, setCardFeedEndedLocally] = useState(false);
 
   // Football post state - fetch matches from API
   const [footballMatches, setFootballMatches] = useState<any[]>([]);
@@ -418,6 +420,35 @@ const Post: React.FC<PostProps> = ({
   useEffect(() => {
     setCardGameData(isCardPost ? getCardGameDataForPost(post) : null);
   }, [isCardPost, post?.cardGameData, post?.text, post?.postedBy?._id, post?.postedBy?.name]);
+
+  const cardRoomIdForFeed = useMemo(() => {
+    if (!isCardPost) return '';
+    return getGameRoomIdFromPost(post);
+  }, [isCardPost, post?.cardGameData, post?.text]);
+
+  useEffect(() => {
+    if (!cardRoomIdForFeed) {
+      setCardFeedEndedLocally(false);
+      return;
+    }
+    const sync = () => setCardFeedEndedLocally(isChessRoomFeedEnded(cardRoomIdForFeed));
+    sync();
+    const unsubStore = subscribeChessFeedEndedStore(sync);
+    const sub = DeviceEventEmitter.addListener(
+      CHESS_GAME_FEED_UI_ENDED,
+      (payload: { roomId?: string }) => {
+        const r = payload?.roomId != null ? String(payload.roomId).trim() : '';
+        if (r && r === cardRoomIdForFeed) {
+          markChessRoomFeedEnded(r);
+          sync();
+        }
+      },
+    );
+    return () => {
+      unsubStore();
+      sub.remove();
+    };
+  }, [cardRoomIdForFeed]);
 
   /** Room id from props (immediate) — avoids one frame of stale `chessGameData` state so feed listeners match the second game. */
   const chessRoomIdForFeed = useMemo(() => {
@@ -2222,13 +2253,14 @@ const Post: React.FC<PostProps> = ({
                 <Text style={[styles.chessTitle, { color: colors.cardText }]}>Playing Go Fish</Text>
               </View>
             </View>
-            {cardGameData.gameStatus === 'active' || cardGameData.gameStatus == null ? (
-              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
-                <Text style={styles.chessLiveText}>Live</Text>
-              </View>
-            ) : (
+            {cardFeedEndedLocally ||
+            !(cardGameData.gameStatus === 'active' || cardGameData.gameStatus == null) ? (
               <View style={[styles.chessLiveBadge, { backgroundColor: colors.textGray }]}>
                 <Text style={styles.chessLiveText}>Ended</Text>
+              </View>
+            ) : (
+              <View style={[styles.chessLiveBadge, { backgroundColor: colors.error }]}>
+                <Text style={styles.chessLiveText}>Live</Text>
               </View>
             )}
           </View>

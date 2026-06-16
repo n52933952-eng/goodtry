@@ -39,7 +39,7 @@ interface AvailableUser {
 const FeedScreen = ({ navigation }: any) => {
   const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
   const { user, logout } = useUser();
-  const { socket, isUserOnline, notificationCount } = useSocket();
+  const { socket, isUserOnline, notificationCount, refreshNotificationCount } = useSocket();
   const { isLive } = useLiveBroadcast();
   const { t, isRTL } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
@@ -141,6 +141,7 @@ const FeedScreen = ({ navigation }: any) => {
   useFocusEffect(
     useCallback(() => {
       setStoryRingReplayKey((k) => k + 1);
+      refreshNotificationCount?.();
       // Refresh feed (e.g. live cards) when returning to the tab
       if (!loading && !isFetchingRef.current) {
         console.log('🔄 [FeedScreen] useFocusEffect: Refreshing feed for live updates');
@@ -149,7 +150,7 @@ const FeedScreen = ({ navigation }: any) => {
       fetchStoryStrip();
       // fetchFeed is intentionally omitted from deps (same as before) to avoid re-registering every render
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fetchStoryStrip, loading])
+    }, [fetchStoryStrip, loading, refreshNotificationCount])
   );
 
   useEffect(() => {

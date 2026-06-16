@@ -19,7 +19,7 @@ import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
-import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
+import { isFollowedInSessionList, toUserIdStr } from '../../utils/followState';
 
 /** Keep search text on the left (same as English) when typing Arabic on RTL devices. */
 const SEARCH_INPUT_LTR = {
@@ -53,10 +53,18 @@ const SearchScreen = ({ navigation }: any) => {
     return new Set(ids);
   }, [currentUser?.following]);
 
+  const sessionFollowingLoaded = !!currentUser?._id && Array.isArray(currentUser?.following);
+
+  const followStateForUser = useCallback(
+    (u: { _id?: unknown; isFollowedByMe?: boolean } | null | undefined) =>
+      isFollowedInSessionList(u, followingSet, sessionFollowingLoaded),
+    [followingSet, sessionFollowingLoaded],
+  );
+
   const stampFollowFlags = (users: any[]) =>
     users.map((u) => ({
       ...u,
-      isFollowedByMe: isUserFollowedByMe(u, followingSet),
+      isFollowedByMe: followStateForUser(u),
     }));
 
   useEffect(() => {
@@ -210,7 +218,7 @@ const SearchScreen = ({ navigation }: any) => {
 
     if (updatingUserIds[targetId]) return;
 
-    const isCurrentlyFollowing = isUserFollowedByMe(targetUser, followingSet);
+    const isCurrentlyFollowing = followStateForUser(targetUser);
 
     setUpdatingUserIds((prev) => ({ ...prev, [targetId]: true }));
     try {
@@ -277,7 +285,7 @@ const SearchScreen = ({ navigation }: any) => {
   const renderUser = ({ item }: { item: any }) => {
     const userId = item?._id?.toString() || '';
     const isUpdating = !!(userId && updatingUserIds[userId]);
-    const isFollowing = isUserFollowedByMe(item, followingSet);
+    const isFollowing = followStateForUser(item);
 
     return (
       <View

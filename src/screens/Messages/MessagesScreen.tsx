@@ -170,6 +170,15 @@ const MessagesScreen = ({ navigation }: any) => {
     fetchConversationsRef.current?.(false, { silent: true });
   }, []);
 
+  /** DM removed (e.g. unfollow) — drop from list without waiting for refetch. */
+  const handleConversationDeleted = React.useCallback((data: any) => {
+    const conversationId = data?.conversationId?.toString();
+    if (!conversationId) return;
+    setConversations((prev) =>
+      prev.filter((conv) => conv._id?.toString() !== conversationId),
+    );
+  }, []);
+
   const handleMessagesSeen = React.useCallback((data: any) => {
     const conversationId = data.conversationId?.toString();
     if (!conversationId) return;
@@ -207,11 +216,13 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('conversationMarkedRead', handleMessagesSeen);
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
+      socket.off('conversationDeleted', handleConversationDeleted);
       socket.on('newMessage', handleNewMessage);
       socket.on('unreadCountUpdate', handleUnreadCountUpdate);
       socket.on('conversationMarkedRead', handleMessagesSeen);
       socket.on('liveShareExpired', handleLiveShareCleanup);
       socket.on('livekit:streamEnded', handleLiveShareCleanup);
+      socket.on('conversationDeleted', handleConversationDeleted);
     };
 
     bindConversationListeners();
@@ -226,8 +237,9 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('conversationMarkedRead', handleMessagesSeen);
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
+      socket.off('conversationDeleted', handleConversationDeleted);
     };
-  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen, handleLiveShareCleanup]);
+  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen, handleLiveShareCleanup, handleConversationDeleted]);
 
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;

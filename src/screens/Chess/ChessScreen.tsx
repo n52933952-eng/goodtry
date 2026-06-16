@@ -15,6 +15,7 @@ import { useSocket } from '../../context/SocketContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
+import { fetchOnlineGameOpponents } from '../../utils/fetchOnlineGameOpponents';
 
 interface ChessChallenge {
   _id: string;
@@ -32,8 +33,8 @@ interface AvailableUser {
 }
 
 const ChessScreen = ({ navigation }: any) => {
-  const { user } = useUser();
-  const { socket, isUserOnline } = useSocket();
+  const { user, refetchSessionUser } = useUser();
+  const { socket, isUserOnline, refreshPresenceSubscription } = useSocket();
   const showToast = useShowToast();
 
   const [challenges, setChallenges] = useState<ChessChallenge[]>([]);
@@ -127,56 +128,15 @@ const ChessScreen = ({ navigation }: any) => {
         /* ignore */
       }
 
-      // 1) Fetch fresh current user profile to get latest following/followers (same as FeedScreen / web)
-      let freshUserData: any = user;
-      try {
-        freshUserData = await apiService.get(`/api/user/getUserPro/${user._id}`);
-      } catch (e) {
-        freshUserData = user;
-      }
+      await refetchSessionUser?.();
+      refreshPresenceSubscription?.();
 
-      // 2) Build connection IDs from following + followers (handle both string IDs and populated objects)
-      const allConnectionIds = [
-        ...(freshUserData?.following || []),
-        ...(freshUserData?.followers || []),
-      ].filter((id: any) => {
-        const raw = id?._id ?? id;
-        const idStr = raw?.toString?.()?.trim() ?? String(raw).trim();
-        if (!idStr || idStr.length !== 24) return false;
-        return /^[0-9a-fA-F]{24}$/.test(idStr);
-      });
-
-      const uniqueIds = [...new Set(allConnectionIds.map((id: any) => (id?._id ?? id).toString()))];
-
-      if (uniqueIds.length === 0) {
-        setAvailableUsers([]);
-        setLoadingUsers(false);
-        return;
-      }
-
-      // 3) Fetch each user profile with apiService (sends auth cookies; raw fetch does not in RN)
-      const userPromises = uniqueIds.map(async (userId: string) => {
-        try {
-          const userData = await apiService.get(`/api/user/getUserPro/${userId}`);
-          if (userData && userData._id) return userData;
-        } catch (err) {
-          console.warn(`⚠️ [Chess] Error fetching user ${userId}:`, err);
-        }
-        return null;
-      });
-
-      const allUsers = (await Promise.all(userPromises)).filter((u): u is AvailableUser => u !== null);
-
-      // 4) Online, not self, not in an active chess or card game (same rules as Feed modals)
-      const onlineAvailableUsers = allUsers.filter((u) => {
-        const userIdStr = u._id?.toString();
-        const currentUserIdStr = user._id?.toString();
-        if (!userIdStr || !currentUserIdStr) return false;
-
-        const notBusyChess = !busyChessUserIds.some((id) => id === userIdStr);
-        const notBusyCard = !busyCardUserIds.some((id) => id === userIdStr);
-        return isUserOnline(userIdStr) && userIdStr !== currentUserIdStr && notBusyChess && notBusyCard;
-      });
+      const onlineAvailableUsers = await fetchOnlineGameOpponents(
+        String(user._id),
+        isUserOnline,
+        busyChessUserIds,
+        busyCardUserIds,
+      );
 
       setAvailableUsers(onlineAvailableUsers);
     } catch (error) {

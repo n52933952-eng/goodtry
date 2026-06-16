@@ -439,6 +439,13 @@ const ChatScreen = ({ route, navigation }: any) => {
       }
     };
 
+    const handleConversationDeleted = ({ conversationId: deletedId }: { conversationId: string }) => {
+      const thisId = toIdString(currentConversationId) || routeConversationIdStr;
+      if (deletedId && thisId && String(deletedId) === String(thisId)) {
+        navigation.pop(1);
+      }
+    };
+
     const bind = () => {
       // If the socket instance was recreated on reconnect, ensure our listeners are attached to the new one.
       socket.off('newMessage', handleNewMessage);
@@ -450,6 +457,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
       socket.off('groupDeleted', handleGroupDeleted);
+      socket.off('conversationDeleted', handleConversationDeleted);
       socket.on('newMessage', handleNewMessage);
       socket.on('messageReactionUpdated', handleMessageReactionUpdated);
       socket.on('messageDeleted', handleMessageDeleted);
@@ -459,6 +467,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.on('userTyping', handleUserTyping);
       socket.on('messageDelivered', handleMessageDelivered);
       socket.on('groupDeleted', handleGroupDeleted);
+      socket.on('conversationDeleted', handleConversationDeleted);
     };
 
     // Bind now (current socket instance)
@@ -479,6 +488,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       socket.off('userTyping', handleUserTyping);
       socket.off('messageDelivered', handleMessageDelivered);
       socket.off('groupDeleted', handleGroupDeleted);
+      socket.off('conversationDeleted', handleConversationDeleted);
     };
   }, [
     socket,

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DeviceEventEmitter, Vibration } from 'react-native';
+import { AppState, AppStateStatus, DeviceEventEmitter, Vibration } from 'react-native';
 import socketService from '../services/socket';
 import { apiService } from '../services/api';
 import { useUser } from './UserContext';
@@ -9,6 +9,7 @@ import {
   SOCKET_EVENTS,
   API_URL,
   STORAGE_KEYS,
+  ENDPOINTS,
   STORY_STRIP_SHOULD_REFRESH,
   CHESS_GAME_FEED_UI_ENDED,
 } from '../utils/constants';
@@ -31,6 +32,8 @@ interface SocketContextType {
   clearCardChallenge: (challengeFrom?: string) => void;
   notificationCount: number;
   setNotificationCount: (count: number | ((prev: number) => number)) => void;
+  /** Re-fetch unread notification count from server (badge on feed). */
+  refreshNotificationCount: () => Promise<void>;
   selectedConversationId: string | null;
   setSelectedConversationId: (id: string | null) => void;
   selectedConversationPartnerId: string | null;
@@ -69,6 +72,23 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     newMessageHandlerBodyRef.current?.(data);
   }, []);
   const [isNotificationCountLoaded, setIsNotificationCountLoaded] = useState(false);
+
+  const refreshNotificationCount = useCallback(async () => {
+    if (!user?._id) return;
+    try {
+      const data = await apiService.get(ENDPOINTS.GET_NOTIFICATION_UNREAD_COUNT);
+      const serverCount = typeof data?.unreadCount === 'number' ? data.unreadCount : 0;
+      setNotificationCount(serverCount);
+      await AsyncStorage.setItem(NOTIFICATION_COUNT_KEY, String(serverCount));
+    } catch (error) {
+      console.error('❌ [SocketContext] Error fetching notification count:', error);
+    } finally {
+      setIsNotificationCountLoaded(true);
+    }
+  }, [user?._id]);
+
+  const refreshNotificationCountRef = useRef(refreshNotificationCount);
+  refreshNotificationCountRef.current = refreshNotificationCount;
   const setPresenceWatchUserIds = useCallback((userIds: string[]) => {
     const normalized = Array.from(
       new Set(
@@ -167,52 +187,23 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     selectedConversationPartnerIdRef.current = selectedConversationPartnerId;
   }, [selectedConversationPartnerId]);
 
-  // Load notification count from storage on mount
+  // Sync notification badge from server when user is available (not stale AsyncStorage).
   useEffect(() => {
-    const loadNotificationCount = async () => {
-      try {
-        const savedCount = await AsyncStorage.getItem(NOTIFICATION_COUNT_KEY);
-        if (savedCount !== null) {
-          const count = parseInt(savedCount, 10);
-          if (!isNaN(count)) {
-            console.log('📱 [SocketContext] Loaded notification count from storage:', count);
-            setNotificationCount(count);
-          }
-        }
-      } catch (error) {
-        console.error('❌ [SocketContext] Error loading notification count:', error);
-      } finally {
-        setIsNotificationCountLoaded(true);
+    if (!user?._id) return;
+    refreshNotificationCount();
+  }, [user?._id, refreshNotificationCount]);
+
+  // Re-sync when app returns to foreground.
+  useEffect(() => {
+    if (!user?._id) return;
+    const onAppState = (state: AppStateStatus) => {
+      if (state === 'active') {
+        refreshNotificationCountRef.current?.();
       }
     };
-    loadNotificationCount();
-  }, []);
-
-  // Fetch actual notification count from server when user is available
-  useEffect(() => {
-    if (!user?._id || !isNotificationCountLoaded) return;
-
-    const fetchNotificationCount = async () => {
-      try {
-        const response = await fetch(`${API_URL}/api/notification`, {
-          credentials: 'include',
-        });
-        const data = await response.json();
-        
-        if (response.ok && data.unreadCount !== undefined) {
-          const serverCount = data.unreadCount || 0;
-          console.log('📱 [SocketContext] Fetched notification count from server:', serverCount);
-          setNotificationCount(serverCount);
-          // Save to storage
-          await AsyncStorage.setItem(NOTIFICATION_COUNT_KEY, String(serverCount));
-        }
-      } catch (error) {
-        console.error('❌ [SocketContext] Error fetching notification count:', error);
-      }
-    };
-
-    fetchNotificationCount();
-  }, [user?._id, isNotificationCountLoaded]);
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => sub.remove();
+  }, [user?._id]);
 
   // Persist notification count whenever it changes
   useEffect(() => {
@@ -611,23 +602,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           addPost(post);
           return;
         }
-        const userFollowing = user?.following || [];
-        const isFollowing = userFollowing.some((f: any) => {
-          const followId = f?._id?.toString?.() || f?.toString?.() || f;
-          return followId === authorId;
-        });
-        
-        // Add post if following the author OR if it's a system post (Weather, Football, etc.)
-        const isSystemPost = post.postedBy?.username === 'Weather' || 
-                            post.postedBy?.username === 'Football' ||
-                            post.postedBy?.username === 'AlJazeera';
-        
-        if (isFollowing || isSystemPost) {
-          console.log('✅ [SocketContext] Adding post to feed:', post._id);
-          addPost(post);
-        } else {
-          console.log('⚠️ [SocketContext] Ignoring post from user not followed:', authorId);
-        }
+
+        // Backend only emits newPost to the author's followers — trust the event (no stale local following check).
+        console.log('✅ [SocketContext] Adding post to feed:', post._id);
+        addPost(post);
       } else {
         console.warn('⚠️ [SocketContext] Post missing postedBy field, ignoring:', post._id);
       }
@@ -761,23 +739,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Listen for new notifications
     socketService.on('newNotification', (notification) => {
       console.log('🔔 New notification received:', notification);
-      // Only increment if notification is not already read
-      // Backend should send read status, but be safe and increment only if not explicitly read
       const isRead = notification.read === true;
       if (!isRead) {
-        setNotificationCount(prev => {
-          // Prevent count from going negative
-          const newCount = prev + 1;
-          console.log('🔔 [SocketContext] Incrementing notification count:', prev, '->', newCount);
-          return newCount;
-        });
-        // Vibrate phone when receiving unread notification
-        Vibration.vibrate(400); // Vibrate for 400ms
-      } else {
-        console.log('🔔 [SocketContext] Notification already read, skipping count increment');
+        setNotificationCount(prev => Math.max(0, prev + 1));
+        Vibration.vibrate(400);
       }
-      // Play notification sound for likes, comments, follows, mentions, etc.
       playNotificationSound('notification');
+    });
+
+    socketService.on('notificationDeleted', () => {
+      refreshNotificationCountRef.current?.();
     });
 
     socketService.on('newMessage', onNewMessageForSocket);
@@ -786,8 +757,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
     });
 
-    /** Followers’ feed chess cards: flip “Live” off when the room ends (no full refresh). */
+    /** Followers’ feed chess / Go Fish cards: flip “Live” off when the room ends (no full refresh). */
     socketService.on('chessGameEnded', (data: any) => {
+      const rid = data?.roomId;
+      if (rid == null) return;
+      const s = String(rid).trim();
+      if (!s) return;
+      markChessRoomFeedEnded(s);
+      DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
+    });
+    socketService.on('cardGameEnded', (data: any) => {
       const rid = data?.roomId;
       if (rid == null) return;
       const s = String(rid).trim();
@@ -842,6 +821,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setSocketReachable(true);
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       subscribeToPresence();
+      refreshNotificationCountRef.current?.();
 
       // Ack undelivered incoming (internet back) + FCM queue so sender gets ✓✓.
       (async () => {
@@ -923,6 +903,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off('newMessage', onNewMessageForSocket);
       socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
       socketService.off('chessGameEnded');
+      socketService.off('cardGameEnded');
       socketService.off('userBusyChess');
       socketService.off('userBusyCard');
       socketService.off('userBusyRace');
@@ -1006,6 +987,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       clearCardChallenge,
       notificationCount,
       setNotificationCount,
+      refreshNotificationCount,
       selectedConversationId,
       setSelectedConversationId,
       selectedConversationPartnerId,

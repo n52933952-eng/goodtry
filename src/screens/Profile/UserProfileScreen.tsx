@@ -257,9 +257,16 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         console.log('⚠️ [UserProfileScreen] Username changed during fetch, ignoring response');
         return;
       }
-      
-      setProfileUser(data);
-      setFollowing(isUserFollowedByMe(data, buildFollowingSet(followingOverride)));
+
+      const fSet = buildFollowingSet(followingOverride);
+      const profileId = toUserIdStr(data._id);
+      const followed =
+        followingOverride !== undefined
+          ? fSet.has(profileId)
+          : isUserFollowedByMe(data, fSet);
+
+      setProfileUser({ ...data, isFollowedByMe: followed });
+      setFollowing(followed);
     } catch (error: any) {
       // Only show error if we're still viewing the same profile
       if (currentUsername === username) {
@@ -363,20 +370,32 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       const profileUserId = profileUser._id?.toString();
       const isCurrentlyFollowing = following;
 
-      setFollowing(!following);
+      const nextIsFollowing =
+        data?.action === 'follow'
+          ? true
+          : data?.action === 'unfollow'
+            ? false
+            : !isCurrentlyFollowing;
+
+      setFollowing(nextIsFollowing);
+      setProfileUser((prev: any) =>
+        prev ? { ...prev, isFollowedByMe: nextIsFollowing } : prev,
+      );
 
       const serverFollowing = data?.current?.following;
-      const nextIsFollowing = !isCurrentlyFollowing;
       const canTrustServerFollowing =
         Array.isArray(serverFollowing) &&
         (serverFollowing.length > 0 || (serverFollowing.length === 0 && !nextIsFollowing));
 
+      let sessionFollowing: unknown[] | undefined;
       if (canTrustServerFollowing && Array.isArray(data?.current?.followers)) {
+        sessionFollowing = serverFollowing;
         updateUser({
           following: serverFollowing as any,
           followers: data.current.followers as any,
         });
       } else if (canTrustServerFollowing) {
+        sessionFollowing = serverFollowing;
         updateUser({
           following: serverFollowing as any,
           followers: currentUser.followers as any,
@@ -385,11 +404,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         const nextFollowing = isCurrentlyFollowing
           ? (currentUser.following || []).filter((id: any) => id?.toString() !== profileUserId)
           : [...(currentUser.following || []), profileUserId];
+        sessionFollowing = nextFollowing;
         updateUser({ following: nextFollowing as any });
       }
 
-      // Refresh profile to get updated followers/following counts
-      fetchUserProfile();
+      fetchUserProfile(sessionFollowing);
 
       showToast(t('success'), isCurrentlyFollowing ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {

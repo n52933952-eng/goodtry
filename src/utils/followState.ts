@@ -5,8 +5,9 @@ export function toUserIdStr(id: unknown): string {
 }
 
 /**
- * Follow button state: session following[] (synced via /me after web follow)
- * OR server isFollowedByMe === true. Stale API false must not hide a real follow.
+ * Follow button state: session following[] (synced via /me / follow response)
+ * OR server isFollowedByMe when session list may not include this user yet (e.g. followed on web).
+ * Explicit isFollowedByMe === false wins (after unfollow before profile refetch).
  */
 export function isUserFollowedByMe(
   user: { _id?: unknown; isFollowedByMe?: boolean } | null | undefined,
@@ -15,5 +16,18 @@ export function isUserFollowedByMe(
   const id = toUserIdStr(user?._id);
   if (!id) return false;
   if (followingSet.has(id)) return true;
+  if (user?.isFollowedByMe === false) return false;
   return user?.isFollowedByMe === true;
+}
+
+/** Search/lists: when session following[] is loaded, trust it only (ignore stale API flags). */
+export function isFollowedInSessionList(
+  user: { _id?: unknown; isFollowedByMe?: boolean } | null | undefined,
+  followingSet: Set<string>,
+  sessionFollowingLoaded: boolean
+): boolean {
+  const id = toUserIdStr(user?._id);
+  if (!id) return false;
+  if (sessionFollowingLoaded) return followingSet.has(id);
+  return isUserFollowedByMe(user, followingSet);
 }

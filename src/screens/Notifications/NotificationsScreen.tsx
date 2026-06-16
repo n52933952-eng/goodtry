@@ -13,7 +13,8 @@ import {
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
-import { API_URL, COLORS } from '../../utils/constants';
+import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
+import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 import { useFocusEffect } from '@react-navigation/native';
@@ -30,7 +31,7 @@ const NOTIF_LTR = {
 
 const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation }) => {
   const { user } = useUser();
-  const { socket, notificationCount, setNotificationCount } = useSocket();
+  const { socket, notificationCount, setNotificationCount, refreshNotificationCount } = useSocket();
   const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
@@ -100,18 +101,14 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const fetchNotifications = async () => {
     try {
-      const baseUrl = API_URL;
-      const response = await fetch(`${baseUrl}/api/notification`, {
-        credentials: 'include',
-      });
-      const data = await response.json();
-      
-      if (response.ok && data.notifications) {
+      const data = await apiService.get(ENDPOINTS.GET_NOTIFICATIONS);
+      if (data?.notifications) {
         setNotifications(Array.isArray(data.notifications) ? data.notifications : []);
-        // Update notification count from server
-        if (setNotificationCount && data.unreadCount !== undefined) {
-          setNotificationCount(data.unreadCount);
-        }
+      }
+      if (typeof data?.unreadCount === 'number') {
+        setNotificationCount(data.unreadCount);
+      } else {
+        await refreshNotificationCount();
       }
     } catch (error) {
       console.error('Error fetching notifications:', error);
@@ -123,20 +120,15 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const markAsRead = async (notificationId: string) => {
     try {
-      const baseUrl = API_URL;
-      await fetch(`${baseUrl}/api/notification/${notificationId}/read`, {
-        method: 'PUT',
-        credentials: 'include',
-      });
-      
+      await apiService.put(`${ENDPOINTS.GET_NOTIFICATIONS}/${notificationId}/read`);
       const notification = notifications.find(n => n._id === notificationId);
       setNotifications(prev =>
         prev.map(n => n._id === notificationId ? { ...n, read: true } : n)
       );
-      // Decrement count if notification was unread
-      if (notification && !notification.read && setNotificationCount) {
+      if (notification && !notification.read) {
         setNotificationCount(prev => Math.max(0, prev - 1));
       }
+      await refreshNotificationCount();
     } catch (error) {
       console.error('Error marking notification as read:', error);
     }
@@ -144,7 +136,6 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const markAllAsRead = async () => {
     try {
-      const baseUrl = API_URL;
       const unreadNotifications = notifications.filter(n => !n.read);
       
       if (unreadNotifications.length === 0) {
@@ -152,25 +143,14 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
         return;
       }
 
-      // Mark all unread notifications as read
-      const promises = unreadNotifications.map(notification =>
-        fetch(`${baseUrl}/api/notification/${notification._id}/read`, {
-          method: 'PUT',
-          credentials: 'include',
-        })
-      );
-
-      await Promise.all(promises);
+      await apiService.put(ENDPOINTS.MARK_ALL_NOTIFICATIONS_READ);
       
-      // Update all notifications to read
       setNotifications(prev =>
         prev.map(n => ({ ...n, read: true }))
       );
       
-      // Reset notification count to 0
-      if (setNotificationCount) {
-        setNotificationCount(0);
-      }
+      setNotificationCount(0);
+      await refreshNotificationCount();
       
       showToast(t('success') || 'Success', t('allNotificationsMarkedAsRead') || 'All notifications marked as read', 'success');
     } catch (error) {
@@ -180,25 +160,17 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   };
 
   const handleDeleteNotification = async (notificationId: string, e: any) => {
-    e.stopPropagation(); // Prevent triggering the click handler
+    e.stopPropagation();
     
     try {
-      const baseUrl = API_URL;
-      const res = await fetch(`${baseUrl}/api/notification/${notificationId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-
-      if (res.ok) {
-        // Remove from local state
-        const deleted = notifications.find(n => n._id === notificationId);
-        setNotifications(prev => prev.filter(n => n._id !== notificationId));
-        
-        // Update count if notification was unread
-        if (deleted && !deleted.read && setNotificationCount) {
-          setNotificationCount(prev => Math.max(0, prev - 1));
-        }
+      await apiService.delete(`${ENDPOINTS.GET_NOTIFICATIONS}/${notificationId}`);
+      const deleted = notifications.find(n => n._id === notificationId);
+      setNotifications(prev => prev.filter(n => n._id !== notificationId));
+      
+      if (deleted && !deleted.read) {
+        setNotificationCount(prev => Math.max(0, prev - 1));
       }
+      await refreshNotificationCount();
     } catch (error) {
       console.error('Error deleting notification:', error);
       showToast('Error', 'Failed to delete notification', 'error');

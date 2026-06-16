@@ -97,7 +97,9 @@ export const ENDPOINTS = {
   
   // Notifications
   GET_NOTIFICATIONS: '/api/notification',
+  GET_NOTIFICATION_UNREAD_COUNT: '/api/notification/unread-count',
   MARK_READ: '/api/notification/read',
+  MARK_ALL_NOTIFICATIONS_READ: '/api/notification/read-all',
   
   // Activity
   GET_ACTIVITY: '/api/activity',

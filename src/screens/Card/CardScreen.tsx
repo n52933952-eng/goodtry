@@ -12,9 +12,10 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
-import { API_URL, COLORS } from '../../utils/constants';
+import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
+import { fetchOnlineGameOpponents } from '../../utils/fetchOnlineGameOpponents';
 
 interface CardChallenge {
   _id: string;
@@ -32,8 +33,8 @@ interface AvailableUser {
 }
 
 const CardScreen = ({ navigation }: any) => {
-  const { user } = useUser();
-  const { socket, isUserOnline } = useSocket();
+  const { user, refetchSessionUser } = useUser();
+  const { socket, isUserOnline, refreshPresenceSubscription } = useSocket();
   const showToast = useShowToast();
 
   const [challenges, setChallenges] = useState<CardChallenge[]>([]);
@@ -127,52 +128,15 @@ const CardScreen = ({ navigation }: any) => {
         /* ignore */
       }
 
-      const baseUrl = API_URL;
-      
-      const allConnectionIds = [
-        ...(user.following || []),
-        ...(user.followers || []),
-      ].filter((id) => {
-        const idStr = id?.toString().trim();
-        if (!idStr || idStr.length !== 24) return false;
-        return /^[0-9a-fA-F]{24}$/.test(idStr);
-      });
+      await refetchSessionUser?.();
+      refreshPresenceSubscription?.();
 
-      const uniqueIds = [...new Set(allConnectionIds.map((id) => id.toString()))];
-
-      if (uniqueIds.length === 0) {
-        setAvailableUsers([]);
-        return;
-      }
-
-      const userPromises = uniqueIds.map(async (userId) => {
-        try {
-          const res = await fetch(`${baseUrl}/api/user/getUserPro/${userId}`, {
-            credentials: 'include',
-          });
-          if (res.ok) {
-            const userData = await res.json();
-            if (userData && userData._id) {
-              return userData;
-            }
-          }
-        } catch (err) {
-          console.warn(`⚠️ Error fetching user ${userId}:`, err);
-        }
-        return null;
-      });
-
-      const allUsers = (await Promise.all(userPromises)).filter((u) => u !== null);
-
-      const onlineAvailableUsers = allUsers.filter((u) => {
-        const userIdStr = u._id?.toString();
-        const currentUserIdStr = user._id?.toString();
-        if (!userIdStr || !currentUserIdStr) return false;
-
-        const notBusyChess = !busyChessUserIds.some((id) => id === userIdStr);
-        const notBusyCard = !busyCardUserIds.some((id) => id === userIdStr);
-        return isUserOnline(userIdStr) && userIdStr !== currentUserIdStr && notBusyChess && notBusyCard;
-      });
+      const onlineAvailableUsers = await fetchOnlineGameOpponents(
+        String(user._id),
+        isUserOnline,
+        busyChessUserIds,
+        busyCardUserIds,
+      );
 
       setAvailableUsers(onlineAvailableUsers);
     } catch (error) {
