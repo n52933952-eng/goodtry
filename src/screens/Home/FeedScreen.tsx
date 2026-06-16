@@ -37,7 +37,7 @@ interface AvailableUser {
 }
 
 const FeedScreen = ({ navigation }: any) => {
-  const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost } = usePost();
+  const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost, deletePost } = usePost();
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount, refreshNotificationCount } = useSocket();
   const { isLive } = useLiveBroadcast();
@@ -62,6 +62,14 @@ const FeedScreen = ({ navigation }: any) => {
     if (!isLive) return posts;
     return posts.filter((p) => !isOwnLivePost(p));
   }, [posts, isLive, isOwnLivePost]);
+
+  const hasLiveFeedCards = useMemo(
+    () => visiblePosts.some((p: any) => p?.isLive),
+    [visiblePosts],
+  );
+
+  const postsRef = useRef(posts);
+  postsRef.current = posts;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -221,16 +229,30 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
-    // Live stream: inject card at top when a followed user goes live (removal is global via SocketContext + deletePost)
+    const normalizeStreamerId = (raw: unknown) => {
+      if (raw == null) return '';
+      return String(
+        typeof raw === 'object' && raw !== null && 'toString' in (raw as object)
+          ? (raw as { toString: () => string }).toString()
+          : raw,
+      ).trim();
+    };
+
+    const removeLiveCard = (sid: string) => {
+      deletePost(`live_${sid}`);
+      setPosts((prev: any[]) =>
+        prev.filter((p: any) => {
+          const pid = p?._id != null ? String(p._id) : '';
+          if (pid === `live_${sid}`) return false;
+          const authorId = p?.postedBy?._id != null ? String(p.postedBy._id) : '';
+          return !(p?.isLive && authorId === sid);
+        }),
+      );
+    };
+
+    // Live stream: inject card at top when a followed user goes live
     const handleStreamStarted = (data: any) => {
-      const sid =
-        data?.streamerId != null
-          ? String(
-              typeof data.streamerId === 'object' && data.streamerId !== null && 'toString' in data.streamerId
-                ? (data.streamerId as { toString: () => string }).toString()
-                : data.streamerId
-            ).trim()
-          : '';
+      const sid = normalizeStreamerId(data?.streamerId);
       if (!sid) return;
       const myId = user?._id != null ? String(user._id) : '';
       // Host is already broadcasting — don't inject a LIVE card they could tap by mistake.
@@ -250,6 +272,12 @@ const FeedScreen = ({ navigation }: any) => {
       });
     };
 
+    const handleStreamEnded = (payload: any) => {
+      const sid = normalizeStreamerId(payload?.streamerId);
+      if (!sid) return;
+      removeLiveCard(sid);
+    };
+
     // Incoming chess/card challenges: SocketContext + AppNavigator overlays (ChessChallengeNotification / CardChallengeNotification).
     // Do not duplicate listeners here — caused a second full-screen modal on Feed.
 
@@ -257,14 +285,37 @@ const FeedScreen = ({ navigation }: any) => {
     socket.on('cardDeclined', handleCardDeclined);
     socket.on('userAvailableCard', handleUserAvailableCard);
     socket.on('livekit:streamStarted', handleStreamStarted);
+    socket.on('livekit:streamEnded', handleStreamEnded);
 
     return () => {
       socket.off('chessDeclined', handleChessDeclined);
       socket.off('cardDeclined', handleCardDeclined);
       socket.off('userAvailableCard', handleUserAvailableCard);
       socket.off('livekit:streamStarted', handleStreamStarted);
+      socket.off('livekit:streamEnded', handleStreamEnded);
     };
-  }, [socket, user, navigation]);
+  }, [socket, user, navigation, deletePost, setPosts]);
+
+  // Backup: same server status check as pull-to-refresh (~15s, matches backend disconnect grace).
+  useEffect(() => {
+    if (!hasLiveFeedCards) return;
+
+    const syncEndedLiveCards = async () => {
+      const prev = postsRef.current;
+      if (!prev.some((p: any) => p?.isLive)) return;
+      const pruned = await pruneStaleLiveFeedPosts(prev);
+      if (pruned.length !== prev.length) {
+        setPosts(filterPostsForFeed(pruned));
+      }
+    };
+
+    const initial = setTimeout(syncEndedLiveCards, 3000);
+    const timer = setInterval(syncEndedLiveCards, 15000);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(timer);
+    };
+  }, [hasLiveFeedCards, filterPostsForFeed, setPosts]);
 
   const fetchFeed = async (loadMore = false) => {
     // Prevent duplicate requests

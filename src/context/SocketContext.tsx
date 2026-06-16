@@ -52,6 +52,13 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { addPost, updatePost, deletePost } = usePost();
   const deletePostRef = useRef(deletePost);
   deletePostRef.current = deletePost;
+  const setLiveStreamsRef = useRef<
+    React.Dispatch<
+      React.SetStateAction<
+        Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>
+      >
+    >
+  >(() => {});
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
   const [busyUsers, setBusyUsers] = useState<Set<string>>(new Set());
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
@@ -395,6 +402,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off('userAvailableChess');
     socketService.off('userAvailableCard');
     socketService.off('userAvailableRace');
+    socketService.off('livekit:streamStarted');
+    socketService.off('livekit:streamEnded');
+    socketService.off('cardGameEnded');
 
     socketService.on('presenceSnapshot', (payload: any) => {
       const users = payload?.onlineUsers;
@@ -774,6 +784,29 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       markChessRoomFeedEnded(s);
       DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
     });
+
+    const normalizeLiveStreamerId = (raw: unknown) => {
+      if (raw == null) return '';
+      const s =
+        typeof raw === 'object' && raw !== null && typeof (raw as { toString?: () => string }).toString === 'function'
+          ? String((raw as { toString: () => string }).toString()).trim()
+          : String(raw).trim();
+      return s;
+    };
+    socketService.on('livekit:streamStarted', (data: any) => {
+      const sid = normalizeLiveStreamerId(data?.streamerId);
+      if (!sid) return;
+      setLiveStreamsRef.current((prev) => {
+        if (prev.some((s) => String(s.streamerId) === sid)) return prev;
+        return [...prev, { ...data, streamerId: sid }];
+      });
+    });
+    socketService.on('livekit:streamEnded', (payload: any) => {
+      const sid = normalizeLiveStreamerId(payload?.streamerId);
+      if (!sid) return;
+      setLiveStreamsRef.current((prev) => prev.filter((s) => String(s.streamerId) !== sid));
+      deletePostRef.current(`live_${sid}`);
+    });
     };
 
     // Subscribe to targeted presence updates (followers + following + conversation partner USER ID)
@@ -910,6 +943,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off('userAvailableChess');
       socketService.off('userAvailableCard');
       socketService.off('userAvailableRace');
+      socketService.off('livekit:streamStarted');
+      socketService.off('livekit:streamEnded');
     };
   }, [user?._id, addPost, updatePost, deletePost, playNotificationSound, onNewMessageForSocket]);
 
@@ -942,38 +977,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
   // ── Live streams ──────────────────────────────────────────────────────────
   const [liveStreams, setLiveStreams] = useState<Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>>([]);
-
-  useEffect(() => {
-    if (!user?._id) return;
-    const normalizeStreamerId = (raw: unknown) => {
-      if (raw == null) return '';
-      const s =
-        typeof raw === 'object' && raw !== null && typeof (raw as { toString?: () => string }).toString === 'function'
-          ? String((raw as { toString: () => string }).toString()).trim()
-          : String(raw).trim();
-      return s;
-    };
-    const onStreamStarted = (data: any) => {
-      const sid = normalizeStreamerId(data?.streamerId);
-      if (!sid) return;
-      setLiveStreams(prev => {
-        if (prev.some(s => String(s.streamerId) === sid)) return prev;
-        return [...prev, { ...data, streamerId: sid }];
-      });
-    };
-    const onStreamEnded = (payload: any) => {
-      const sid = normalizeStreamerId(payload?.streamerId);
-      if (!sid) return;
-      setLiveStreams(prev => prev.filter(s => String(s.streamerId) !== sid));
-      deletePostRef.current(`live_${sid}`);
-    };
-    socketService.on('livekit:streamStarted', onStreamStarted);
-    socketService.on('livekit:streamEnded',   onStreamEnded);
-    return () => {
-      socketService.off('livekit:streamStarted', onStreamStarted);
-      socketService.off('livekit:streamEnded',   onStreamEnded);
-    };
-  }, [user?._id]);
+  setLiveStreamsRef.current = setLiveStreams;
 
   return (
     <SocketContext.Provider value={{ 
