@@ -91,6 +91,7 @@ const FeedScreen = ({ navigation }: any) => {
   /** Each feed focus: replay gray→red fill on all story rings */
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   const isFetchingRef = useRef(false);
+  const feedCursorRef = useRef<string | null>(null);
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const activeVideoPostIdRef = useRef<string | null>(null);
@@ -338,14 +339,37 @@ const FeedScreen = ({ navigation }: any) => {
     isFetchingRef.current = true;
 
     try {
-      const skip = loadMore ? posts.length : 0;
-      const limit = 9; // Load 9 posts at a time
-      
-      console.log(`📥 [FeedScreen] Fetching feed: skip=${skip}, limit=${limit}, loadMore=${loadMore}`);
-      
-      const data = await apiService.get(`${ENDPOINTS.GET_FEED}?limit=${limit}&skip=${skip}`);
+      const limit = 9;
+      let url = `${ENDPOINTS.GET_FEED}?limit=${limit}`;
+      if (loadMore) {
+        const token = feedCursorRef.current;
+        if (!token) {
+          isFetchingRef.current = false;
+          setLoadingMore(false);
+          return;
+        }
+        if (token.startsWith('skip:')) {
+          url += `&skip=${encodeURIComponent(token.slice(5))}`;
+        } else {
+          url += `&cursor=${encodeURIComponent(token)}`;
+        }
+      } else {
+        feedCursorRef.current = null;
+      }
+
+      console.log(`📥 [FeedScreen] Fetching feed: loadMore=${loadMore}, limit=${limit}`);
+
+      const data = await apiService.get(url);
       const postsArray = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
       const responseHasMore = data.hasMore !== undefined ? data.hasMore : postsArray.length === limit;
+
+      if (data.nextCursor != null && String(data.nextCursor).trim() !== '') {
+        feedCursorRef.current = String(data.nextCursor);
+      } else if (responseHasMore && typeof data.nextSkip === 'number') {
+        feedCursorRef.current = `skip:${data.nextSkip}`;
+      } else {
+        feedCursorRef.current = null;
+      }
       
       // Filter out duplicates by _id
       const uniquePosts = postsArray.filter((post: any, index: number, self: any[]) => {
@@ -370,7 +394,7 @@ const FeedScreen = ({ navigation }: any) => {
       }
       
       setHasMore(responseHasMore);
-      console.log(`✅ [FeedScreen] Fetched ${uniquePosts.length} unique posts (skip=${skip}, hasMore=${responseHasMore})`);
+      console.log(`✅ [FeedScreen] Fetched ${uniquePosts.length} unique posts (hasMore=${responseHasMore})`);
     } catch (error: any) {
       console.error('❌ Error fetching feed:', error);
       if (!loadMore) {
@@ -388,6 +412,7 @@ const FeedScreen = ({ navigation }: any) => {
   const handleRefresh = () => {
     setRefreshing(true);
     setHasMore(true);
+    feedCursorRef.current = null;
     setStoryRingReplayKey((k) => k + 1);
     feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
     fetchStoryStrip();

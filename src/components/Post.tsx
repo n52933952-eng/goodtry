@@ -2405,7 +2405,7 @@ const Post: React.FC<PostProps> = ({
           >
             <Text style={styles.actionIcon}>💬</Text>
             <Text style={[styles.actionText, { color: colors.textGray }]}>
-              {post.replies?.length || 0}
+              {(post as any).replyCount ?? post.replies?.length ?? 0}
             </Text>
           </TouchableOpacity>
 

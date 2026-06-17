@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -39,6 +39,13 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const notifCursorRef = useRef<string | null>(null);
+  const isFetchingRef = useRef(false);
+  const lastLoadMoreTimeRef = useRef(0);
+  const LOAD_MORE_DEBOUNCE_MS = 1500;
+  const NOTIFICATION_PAGE_LIMIT = 12;
 
   useEffect(() => {
     fetchNotifications();
@@ -99,22 +106,80 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     };
   }, [socket, setNotificationCount]);
 
-  const fetchNotifications = async () => {
+  const fetchNotifications = async (loadMore = false) => {
+    if (isFetchingRef.current) return;
+    if (loadMore && (!hasMore || loadingMore)) return;
+    if (loadMore && notifications.length === 0) return;
+
+    isFetchingRef.current = true;
+
     try {
-      const data = await apiService.get(ENDPOINTS.GET_NOTIFICATIONS);
-      if (data?.notifications) {
-        setNotifications(Array.isArray(data.notifications) ? data.notifications : []);
+      let url = `${ENDPOINTS.GET_NOTIFICATIONS}?limit=${NOTIFICATION_PAGE_LIMIT}`;
+      if (loadMore) {
+        const token = notifCursorRef.current;
+        if (!token) {
+          isFetchingRef.current = false;
+          setLoadingMore(false);
+          return;
+        }
+        url += `&cursor=${encodeURIComponent(token)}`;
+      } else {
+        notifCursorRef.current = null;
       }
+
+      const data = await apiService.get(url);
+      const page = Array.isArray(data?.notifications) ? data.notifications : [];
+      const responseHasMore = data?.hasMore === true;
+
+      if (data?.nextCursor != null && String(data.nextCursor).trim() !== '') {
+        notifCursorRef.current = String(data.nextCursor);
+      } else {
+        notifCursorRef.current = null;
+      }
+
+      if (loadMore) {
+        setNotifications(prev => {
+          const seen = new Set(prev.map(n => n._id));
+          const merged = [...prev];
+          for (const n of page) {
+            if (n?._id && !seen.has(n._id)) {
+              seen.add(n._id);
+              merged.push(n);
+            }
+          }
+          return merged;
+        });
+        setLoadingMore(false);
+      } else {
+        setNotifications(page);
+      }
+
+      setHasMore(responseHasMore);
+
       if (typeof data?.unreadCount === 'number') {
         setNotificationCount(data.unreadCount);
-      } else {
+      } else if (!loadMore) {
         await refreshNotificationCount();
       }
     } catch (error) {
       console.error('Error fetching notifications:', error);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      isFetchingRef.current = false;
+      if (!loadMore) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  };
+
+  const handleLoadMore = () => {
+    if (notifications.length === 0) return;
+    if (!loadingMore && hasMore && !isFetchingRef.current) {
+      const now = Date.now();
+      if (now - lastLoadMoreTimeRef.current < LOAD_MORE_DEBOUNCE_MS) return;
+      lastLoadMoreTimeRef.current = now;
+      setLoadingMore(true);
+      fetchNotifications(true);
     }
   };
 
@@ -222,7 +287,9 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchNotifications();
+    setHasMore(true);
+    notifCursorRef.current = null;
+    fetchNotifications(false);
   };
 
   const getNotificationIcon = (type: string) => {
@@ -442,12 +509,21 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
         renderItem={renderNotification}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.listContainer}
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
             tintColor={colors.primary}
           />
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : null
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
@@ -500,6 +576,10 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 20,
+  },
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
   },
   notificationItem: {
     flexDirection: 'row',
