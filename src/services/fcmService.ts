@@ -8,7 +8,6 @@ import messaging from '@react-native-firebase/messaging';
 import { DeviceEventEmitter, Platform, PermissionsAndroid } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from './api';
-import { navigateFromPushData } from './pushNavigation';
 import { API_URL, STORAGE_KEYS } from '../utils/constants';
 
 async function ackDeliveredViaHttp(messageId: string) {
@@ -203,29 +202,34 @@ class FCMService {
         return;
       }
       if (data.type === 'call_ended') return;
-      if (this.navigationRef?.current) {
-        navigateFromPushData(this.navigationRef, data);
-      }
+      DeviceEventEmitter.emit('NavigateFromPush', data);
     });
   }
 
   /**
    * Cold start: user tapped a notification that launched the app.
+   * Navigation is flushed from AppNavigator once the container is ready.
    */
-  async flushInitialNotification() {
+  async getInitialPushData(): Promise<Record<string, string> | null> {
     try {
       const remoteMessage = await messaging().getInitialNotification();
       const data = remoteMessage?.data as Record<string, string> | undefined;
-      if (!data?.type) return;
+      if (!data?.type) return null;
       if (data.type === 'incoming_call') {
         emitNavigateToCallFromPushData(data);
-        return;
+        return null;
       }
-      if (!this.navigationRef?.current) return;
-      navigateFromPushData(this.navigationRef, data);
+      return data;
     } catch (e) {
-      console.warn('[FCM] flushInitialNotification', e);
+      console.warn('[FCM] getInitialPushData', e);
+      return null;
     }
+  }
+
+  /** @deprecated use getInitialPushData + AppNavigator queue */
+  async flushInitialNotification() {
+    const data = await this.getInitialPushData();
+    if (data) DeviceEventEmitter.emit('NavigateFromPush', data);
   }
 
   private setupForegroundHandler() {

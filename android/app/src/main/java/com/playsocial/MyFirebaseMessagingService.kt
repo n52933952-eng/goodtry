@@ -100,8 +100,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
                 // Background / killed: full-screen IncomingCallActivity + ringtone
                 launchIncomingCallActivity(callerId, callerName, callType)
-            } else if (type == "message") {
-                handleMessagePush(data)
+            } else if (type == "message" || type == "group_message" || type == "group_added") {
+                handleChatPush(data)
             } else if (type == "call_ended") {
                 Log.d(TAG, "🔕 [FCM] Call ended notification received")
                 Log.e(TAG, "🔕 [FCM] Stopping ringtone and closing incoming call UI")
@@ -265,12 +265,24 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     }
     
     /**
-     * Data-only message FCM: ack delivery so sender sees ✓✓, then show tray notification.
+     * Data-only message FCM (DM) or group chat push: ack delivery, show tray, pass full payload on tap.
      */
-    private fun handleMessagePush(data: Map<String, String>) {
+    private fun handleChatPush(data: Map<String, String>) {
         val messageId = data["messageId"]?.trim().orEmpty()
-        val title = data["title"]?.trim().orEmpty().ifEmpty { data["senderName"]?.trim().orEmpty().ifEmpty { "PlaySocial" } }
-        val body = data["body"]?.trim().orEmpty().ifEmpty { "sent you a message" }
+        val pushType = data["type"]?.trim().orEmpty()
+        val title = data["title"]?.trim().orEmpty().ifEmpty {
+            when (pushType) {
+                "group_message", "group_added" -> data["groupName"]?.trim().orEmpty().ifEmpty { "PlaySocial" }
+                else -> data["senderName"]?.trim().orEmpty().ifEmpty { "PlaySocial" }
+            }
+        }
+        val body = data["body"]?.trim().orEmpty().ifEmpty {
+            when (pushType) {
+                "group_message" -> "${data["senderName"]?.trim().orEmpty().ifEmpty { "Someone" }}: sent a message"
+                "group_added" -> "You were added to the group"
+                else -> "sent you a message"
+            }
+        }
         val conversationId = data["conversationId"]?.trim().orEmpty()
 
         val prefs = getSharedPreferences("CallDataPrefs", Context.MODE_PRIVATE)
@@ -278,7 +290,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
         if (messageId.isNotEmpty() && recipientUserId.isNotEmpty()) {
             postAckDelivered(messageId, recipientUserId)
-        } else {
+        } else if (pushType == "message") {
             Log.w(TAG, "⚠️ [FCM] message push: skip ack (messageId or currentUserId missing)")
         }
 
@@ -287,10 +299,15 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("conversationId", conversationId)
             putExtra("fromPush", true)
+            for ((key, value) in data) {
+                putExtra(key, value)
+            }
+            if (conversationId.isNotEmpty()) {
+                putExtra("conversationId", conversationId)
+            }
         }
-        val reqCode = (messageId.hashCode() and 0x7FFF) + 50000
+        val reqCode = (messageId.ifEmpty { conversationId }.hashCode() and 0x7FFF) + 50000
         val contentPending = PendingIntent.getActivity(
             this,
             reqCode,

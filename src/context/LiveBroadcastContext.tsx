@@ -364,11 +364,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (!room) return;
 
-    try { await room.localParticipant.setScreenShareEnabled(false); } catch (_) {}
-
-    try { await room.localParticipant.setCameraEnabled(false); } catch (_) {}
-
-    try { await room.localParticipant.setMicrophoneEnabled(false); } catch (_) {}
+    await Promise.all([
+      room.localParticipant.setScreenShareEnabled(false).catch(() => {}),
+      room.localParticipant.setCameraEnabled(false).catch(() => {}),
+      room.localParticipant.setMicrophoneEnabled(false).catch(() => {}),
+    ]);
 
     isSharingRef.current = false;
 
@@ -717,7 +717,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
 
-  const teardownLiveSession = useCallback(async () => {
+  const teardownLiveSession = useCallback(async (opts?: { backgroundDisconnect?: boolean }) => {
     if (!roomRef.current && !isLive) return;
 
     liveBroadcastNav.suppressGameCleanupNav = true;
@@ -742,15 +742,21 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     setLiveRoomName('');
     setIsMicMuted(false);
     clearLiveChatMessages();
-    await disconnect();
+
+    if (opts?.backgroundDisconnect) {
+      await stopAllPublishedTracks();
+      void disconnect();
+    } else {
+      await disconnect();
+    }
 
     setTimeout(() => {
       liveBroadcastNav.suppressGameCleanupNav = false;
     }, 2000);
-  }, [socket, user, disconnect, isLive, clearLiveChatMessages]);
+  }, [socket, user, disconnect, isLive, clearLiveChatMessages, stopAllPublishedTracks]);
 
   const endLiveForCall = useCallback(async () => {
-    await teardownLiveSession();
+    await teardownLiveSession({ backgroundDisconnect: true });
   }, [teardownLiveSession]);
 
   const endLive = useCallback(async () => {

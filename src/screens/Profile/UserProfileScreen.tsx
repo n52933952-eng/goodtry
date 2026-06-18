@@ -40,13 +40,15 @@ import {
 import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
-  const { username: usernameParam } = route.params || {};
+  const { username: usernameParam, userId: userIdParam } = route.params || {};
   const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
   const { socket, liveStreams } = useSocket();
   const { isLive: isSelfBroadcasting } = useLiveBroadcast();
   const { colors } = useTheme();
   const username =
-    usernameParam === 'self' ? currentUser?.username : usernameParam;
+    usernameParam === 'self'
+      ? currentUser?.username
+      : (usernameParam || userIdParam);
   const showToast = useShowToast();
   const { t } = useLanguage();
 
@@ -143,7 +145,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     setHasMore(true);
 
     fetchUserProfile();
-    fetchUserPosts(false);
+    if (!(userIdParam && !usernameParam)) {
+      fetchUserPosts(false);
+    }
 
     return () => {};
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when resolved username changes
@@ -267,6 +271,11 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
       setProfileUser({ ...data, isFollowedByMe: followed });
       setFollowing(followed);
+
+      // Posts API needs username — if we opened via userId (push), load posts after profile resolves.
+      if (userIdParam && !usernameParam && data?.username) {
+        fetchUserPosts(false, data.username);
+      }
     } catch (error: any) {
       // Only show error if we're still viewing the same profile
       if (currentUsername === username) {
@@ -281,9 +290,18 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const fetchUserPosts = async (isLoadMore = false) => {
+  const fetchUserPosts = async (isLoadMore = false, postsUsernameOverride?: string) => {
+    const postsUsername = postsUsernameOverride || profileUser?.username || username;
     // Store current username to verify response is still relevant
-    const currentUsername = username;
+    const currentUsername = postsUsername;
+    
+    if (!currentUsername) {
+      if (!isLoadMore) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+      return;
+    }
     
     if (isLoadMore) {
       setLoadingMore(true);
@@ -299,7 +317,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       );
       
       // Verify we're still viewing the same profile (prevent stale data)
-      if (currentUsername !== username) {
+      if (currentUsername !== (postsUsernameOverride || profileUser?.username || username)) {
         console.log('⚠️ [UserProfileScreen] Username changed during posts fetch, ignoring response');
         return;
       }

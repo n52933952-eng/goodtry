@@ -9,6 +9,7 @@ import { useWebRTC } from '../context/LiveKitContext';
 import { useGroupCall } from '../context/GroupCallContext';
 import { useTheme } from '../context/ThemeContext';
 import fcmService from '../services/fcmService';
+import { navigateFromPushData } from '../services/pushNavigation';
 import { getPendingCallData, clearCallData } from '../services/callData';
 
 // Auth Screens
@@ -579,6 +580,7 @@ const MainStack = () => {
         options={{
           cardStyle: { backgroundColor: colors.background },
           animationEnabled: false,
+          unmountOnBlur: true,
         }}
       />
       <Stack.Screen
@@ -663,11 +665,68 @@ const AppNavigator = () => {
   } = useWebRTC();
   const pendingCancel = false;
   const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
-  const { isLive } = useLiveBroadcast();
+  const { isLive, isMinimized, isSharing, endLiveForCall } = useLiveBroadcast();
   const isLiveRef = useRef(isLive);
   useEffect(() => {
     isLiveRef.current = isLive;
   }, [isLive]);
+
+  /** Normal camera live (not share+minimize) — end stream before joining a game. */
+  const endNormalLiveBeforeGame = useCallback(() => {
+    if (isLive && !isMinimized && !isSharing) {
+      void endLiveForCall();
+    }
+  }, [isLive, isMinimized, isSharing, endLiveForCall]);
+
+  const acceptChessChallenge = useCallback(async (challenge: { from?: string }) => {
+    if (!socket || !user?._id || !challenge?.from) {
+      clearChessChallenge(challenge?.from);
+      return;
+    }
+    try {
+      endNormalLiveBeforeGame();
+      const roomId = `chess_${challenge.from}_${user._id}_${Date.now()}`;
+      navigationRef.current?.navigate('ChessGame', {
+        roomId,
+        color: 'black',
+        opponentId: challenge.from,
+      });
+      setTimeout(() => {
+        socket.emit('acceptChessChallenge', {
+          from: user._id,
+          to: challenge.from,
+          roomId,
+        });
+      }, 100);
+    } finally {
+      clearChessChallenge(challenge?.from);
+    }
+  }, [socket, user, endNormalLiveBeforeGame, clearChessChallenge]);
+
+  const acceptCardChallenge = useCallback(async (challenge: { from?: string }) => {
+    if (!socket || !user?._id || !challenge?.from) {
+      clearCardChallenge(challenge?.from);
+      return;
+    }
+    try {
+      endNormalLiveBeforeGame();
+      const roomId = `card_${challenge.from}_${user._id}_${Date.now()}`;
+      navigationRef.current?.navigate('CardGame', {
+        roomId,
+        opponentId: challenge.from,
+      });
+      setTimeout(() => {
+        socket.emit('acceptCardChallenge', {
+          from: user._id,
+          to: challenge.from,
+          roomId,
+        });
+      }, 100);
+    } finally {
+      clearCardChallenge(challenge?.from);
+    }
+  }, [socket, user, endNormalLiveBeforeGame, clearCardChallenge]);
+
   const callRef = useRef(call);
   const setIncomingCallFromNotificationRef = useRef(setIncomingCallFromNotification);
   callRef.current = call;
@@ -676,6 +735,7 @@ const AppNavigator = () => {
   const navReadyRef = useRef(false);
   const [navReady, setNavReady] = useState(false);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
+  const pendingPushNavRef = useRef<Record<string, string> | null>(null);
   const pendingChessAcceptNavRef = useRef<any>(null);
   const pendingCardAcceptNavRef  = useRef<any>(null);
   const lastNavigateToCallRef = useRef<{ callerId: string; ts: number; auto?: boolean } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x). `auto` = that nav was an auto-answer.
@@ -968,6 +1028,31 @@ const AppNavigator = () => {
     });
   }, [pendingCancel, hasPendingCancelFromPrefs, callEnded, call.isReceivingCall, isCalling, callAccepted]);
 
+  const tryNavigateFromPush = useCallback((raw: Record<string, string>) => {
+    let data = raw;
+    if (!data?.type && data?.conversationId) {
+      data = {
+        ...data,
+        type: data.isGroup === 'true' ? 'group_message' : 'message',
+      };
+    }
+    if (!data?.type) return;
+
+    const nav = navigationRef.current;
+    const navIsReady = nav?.isReady?.() ?? !!nav?.navigate;
+    if (!nav?.navigate || !navReadyRef.current || !navIsReady || !user) {
+      pendingPushNavRef.current = data;
+      return;
+    }
+    pendingPushNavRef.current = null;
+    navigateFromPushData(navigationRef, data);
+  }, [user]);
+
+  const flushPendingPushNavigation = useCallback(() => {
+    const pending = pendingPushNavRef.current;
+    if (pending) tryNavigateFromPush(pending);
+  }, [tryNavigateFromPush]);
+
   // Set up navigation ref for FCM deep links when navigation is ready
   useEffect(() => {
     if (!navReady || !navigationRef.current) return;
@@ -975,7 +1060,10 @@ const AppNavigator = () => {
     console.log('✅ [AppNavigator] Setting up navigation refs...');
     fcmService.setNavigationRef(navigationRef);
     if (user) {
-      fcmService.flushInitialNotification().catch(() => {});
+      fcmService.getInitialPushData().then((data) => {
+        if (data) tryNavigateFromPush(data);
+        else flushPendingPushNavigation();
+      }).catch(() => flushPendingPushNavigation());
     }
 
     const guard = cancelGuardRef.current;
@@ -1080,7 +1168,27 @@ const AppNavigator = () => {
 
       console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
     }
-  }, [navReady, user, setIncomingCallFromNotification]);
+  }, [navReady, user, setIncomingCallFromNotification, tryNavigateFromPush, flushPendingPushNavigation]);
+
+  // All social / message push deep links — wait until NavigationContainer is ready
+  useEffect(() => {
+    const onPush = (data: any) => {
+      if (!data || typeof data !== 'object') return;
+      const raw: Record<string, string> = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (value == null) continue;
+        raw[key] = String(value);
+      }
+      tryNavigateFromPush(raw);
+    };
+
+    const pushListener = DeviceEventEmitter.addListener('NavigateFromPush', onPush);
+    const chatListener = DeviceEventEmitter.addListener('NavigateToChatFromPush', onPush);
+    return () => {
+      pushListener.remove();
+      chatListener.remove();
+    };
+  }, [tryNavigateFromPush]);
 
   // Chess / Go Fish: attach listeners as soon as socket + user exist — NOT gated on navReady.
   // Otherwise server can emit (or pending deliver) before NavigationContainer is ready → event lost (common after Google login).
@@ -1223,9 +1331,13 @@ const AppNavigator = () => {
         }
         
         if (navigationRef.current && data) {
-          if (isLiveRef.current) {
+          // In-app ring while live → IncomingCallMiniBar. Push/native Answer → CallScreen auto-connect.
+          if (isLiveRef.current && data.shouldAutoAnswer !== true) {
             console.log('⏸️ [AppNavigator] NavigateToCallScreen skipped — live uses incoming call mini bar');
             return;
+          }
+          if (isLiveRef.current && data.shouldAutoAnswer === true) {
+            console.log('📞 [AppNavigator] Live + notification Answer — CallScreen auto-connect (no mini bar)');
           }
 
           // Check if we're already on CallScreen
@@ -1447,33 +1559,7 @@ const AppNavigator = () => {
                 clearChessChallenge(challenge?.from);
               }
             }}
-            onAccept={(challenge) => {
-              try {
-                if (!socket || !user?._id || !challenge?.from) {
-                  clearChessChallenge(challenge?.from);
-                  return;
-                }
-
-                const roomId = `chess_${challenge.from}_${user._id}_${Date.now()}`;
-
-                // Navigate first (like web), then emit accept
-                navigationRef.current?.navigate('ChessGame', {
-                  roomId,
-                  color: 'black', // receiver/accepter is black (backend uses from=accepter)
-                  opponentId: challenge.from,
-                });
-
-                setTimeout(() => {
-                  socket.emit('acceptChessChallenge', {
-                    from: user._id, // accepter
-                    to: challenge.from, // challenger
-                    roomId,
-                  });
-                }, 100);
-              } finally {
-                clearChessChallenge(challenge?.from);
-              }
-            }}
+            onAccept={(challenge) => { void acceptChessChallenge(challenge); }}
           />
         )}
         {user && (
@@ -1491,32 +1577,7 @@ const AppNavigator = () => {
                 clearCardChallenge(challenge?.from);
               }
             }}
-            onAccept={(challenge) => {
-              try {
-                if (!socket || !user?._id || !challenge?.from) {
-                  clearCardChallenge(challenge?.from);
-                  return;
-                }
-
-                const roomId = `card_${challenge.from}_${user._id}_${Date.now()}`;
-
-                // Navigate first (like web), then emit accept
-                navigationRef.current?.navigate('CardGame', {
-                  roomId,
-                  opponentId: challenge.from,
-                });
-
-                setTimeout(() => {
-                  socket.emit('acceptCardChallenge', {
-                    from: user._id, // accepter
-                    to: challenge.from, // challenger
-                    roomId,
-                  });
-                }, 100);
-              } finally {
-                clearCardChallenge(challenge?.from);
-              }
-            }}
+            onAccept={(challenge) => { void acceptCardChallenge(challenge); }}
           />
         )}
         {user && <LiveStreamMiniBar />}

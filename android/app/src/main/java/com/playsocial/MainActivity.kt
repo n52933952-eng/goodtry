@@ -119,8 +119,21 @@ class MainActivity : ReactActivity() {
     val screen = intent.getStringExtra("screen")
     val shouldAutoAnswer = intent.getBooleanExtra("shouldAutoAnswer", false)
     val shouldCancelCall = intent.getBooleanExtra("shouldCancelCall", false)
-    android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] handleIntent STARTED - screen=$screen, shouldAutoAnswer=$shouldAutoAnswer, shouldCancelCall=$shouldCancelCall")
+    val fromPush = intent.getBooleanExtra("fromPush", false)
+    val pushConversationId = intent.getStringExtra("conversationId")?.trim().orEmpty()
+    val pushType = intent.getStringExtra("type")?.trim().orEmpty()
+    android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] handleIntent STARTED - screen=$screen, shouldAutoAnswer=$shouldAutoAnswer, shouldCancelCall=$shouldCancelCall, fromPush=$fromPush, pushType=$pushType")
     android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] Intent extras: ${intent.extras?.keySet()?.joinToString()}")
+
+    val isChatPush =
+      fromPush ||
+      (pushConversationId.isNotEmpty() &&
+        (pushType == "message" || pushType == "group_message" || pushType == "group_added"))
+    if (isChatPush) {
+      android.util.Log.e("MainActivity", "💬💬💬 [MainActivity] Chat push intent detected — conversationId=$pushConversationId type=$pushType")
+      emitNavigateToChatFromPush(intent)
+      return
+    }
     
     // Handle shouldCancelCall from IncomingCallActivity (Decline button)
     if (shouldCancelCall) {
@@ -464,6 +477,56 @@ class MainActivity : ReactActivity() {
     }
   }
   
+  /**
+   * Emit chat push payload to React Native (message / group_message deep links).
+   */
+  private fun emitNavigateToChatFromPush(intent: Intent) {
+    android.util.Log.e("MainActivity", "💬 [MainActivity] Emitting NavigateToChatFromPush")
+    var attempts = 0
+    val maxAttempts = 24
+
+    fun trySendEvent() {
+      attempts++
+      try {
+        val reactContext = reactNativeHost.reactInstanceManager.currentReactContext
+        reactContext?.let { context ->
+          val params = com.facebook.react.bridge.Arguments.createMap().apply {
+            intent.extras?.keySet()?.forEach { key ->
+              val value = intent.extras?.get(key)
+              when (value) {
+                is String -> putString(key, value)
+                is Boolean -> putBoolean(key, value)
+                is Int -> putInt(key, value)
+                is Long -> putDouble(key, value.toDouble())
+                is Double -> putDouble(key, value)
+                is Float -> putDouble(key, value.toDouble())
+                else -> if (value != null) putString(key, value.toString())
+              }
+            }
+            if (!hasKey("type")) {
+              val isGroup = getString("isGroup") == "true"
+              putString("type", if (isGroup) "group_message" else "message")
+            }
+          }
+          context
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit("NavigateToChatFromPush", params)
+          android.util.Log.e("MainActivity", "✅ [MainActivity] NavigateToChatFromPush event sent")
+        } ?: run {
+          if (attempts < maxAttempts) {
+            val backoff = if (attempts <= 8) 120L else 250L
+            mainHandler.postDelayed({ trySendEvent() }, backoff)
+          } else {
+            android.util.Log.e("MainActivity", "❌ [MainActivity] FAILED: React Native context not available for chat push")
+          }
+        }
+      } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "❌ [MainActivity] Error sending NavigateToChatFromPush", e)
+      }
+    }
+    trySendEvent()
+  }
+
   /**
    * Emit event to React Native to trigger pending cancel check
    */

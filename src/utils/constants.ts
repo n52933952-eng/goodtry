@@ -107,6 +107,8 @@ export const ENDPOINTS = {
   
   // Messages
   GET_CONVERSATIONS: '/api/message/conversations',
+  SEARCH_CONVERSATIONS: '/api/message/conversations/search',
+  GET_CONVERSATION_BY_ID: '/api/message/conversation',
   GET_MESSAGES: '/api/message',
   SEND_MESSAGE: '/api/message',
   MARK_MESSAGES_SEEN: '/api/message/seen',

@@ -2,9 +2,9 @@
  * Incoming 1:1 call while hosting live — mini bar (Answer / Decline) instead of full CallScreen.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Image, Animated,
+  View, Text, TouchableOpacity, StyleSheet, Image, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -31,9 +31,13 @@ const IncomingCallMiniBar = () => {
     getIncomingCallFromNotificationCallerId,
   } = useWebRTC();
 
-  const [answering, setAnswering] = useState(false);
-  const autoAnswerStartedRef = useRef(false);
+  const answeringRef = useRef(false);
   const pulse = useRef(new Animated.Value(0)).current;
+
+  const notifAnswerCaller = getIncomingCallFromNotificationCallerId?.() ?? null;
+  const answeredFromNotification = !!(
+    notifAnswerCaller && call.from && notifAnswerCaller === call.from
+  );
 
   const visible = !!(
     isLive
@@ -41,7 +45,14 @@ const IncomingCallMiniBar = () => {
     && call.from
     && !callAccepted
     && !callEnded
+    && !answeredFromNotification
   );
+
+  useEffect(() => {
+    if (!call.isReceivingCall || callEnded) {
+      answeringRef.current = false;
+    }
+  }, [call.isReceivingCall, callEnded]);
 
   useEffect(() => {
     if (!visible) {
@@ -82,34 +93,22 @@ const IncomingCallMiniBar = () => {
   }, [navigation, call.from, call.name, call.callType]);
 
   const handleAnswer = useCallback(async () => {
-    if (answering) return;
-    setAnswering(true);
+    if (answeringRef.current) return;
+    answeringRef.current = true;
     try {
       await endLiveForCall();
-      await answerCall();
+      const answerP = answerCall();
       openCallScreen();
+      await answerP;
     } catch (e) {
       console.warn('[IncomingCallMiniBar] answer failed:', e);
-    } finally {
-      setAnswering(false);
+      answeringRef.current = false;
     }
-  }, [answering, endLiveForCall, answerCall, openCallScreen]);
+  }, [endLiveForCall, answerCall, openCallScreen]);
 
   const handleDecline = useCallback(() => {
     leaveCall();
   }, [leaveCall]);
-
-  useEffect(() => {
-    if (!visible) {
-      autoAnswerStartedRef.current = false;
-      return;
-    }
-    const notifCaller = getIncomingCallFromNotificationCallerId?.() ?? null;
-    if (!notifCaller || notifCaller !== call.from) return;
-    if (autoAnswerStartedRef.current) return;
-    autoAnswerStartedRef.current = true;
-    void handleAnswer();
-  }, [visible, call.from, getIncomingCallFromNotificationCallerId, handleAnswer]);
 
   if (!visible) return null;
 
@@ -155,7 +154,6 @@ const IncomingCallMiniBar = () => {
             <TouchableOpacity
               style={[styles.actionBtn, styles.declineBtn]}
               onPress={handleDecline}
-              disabled={answering}
               activeOpacity={0.82}
               accessibilityLabel="Decline call"
             >
@@ -164,15 +162,10 @@ const IncomingCallMiniBar = () => {
             <TouchableOpacity
               style={[styles.actionBtn, styles.answerBtn, { backgroundColor: colors.success }]}
               onPress={() => { void handleAnswer(); }}
-              disabled={answering}
               activeOpacity={0.82}
               accessibilityLabel="Answer call"
             >
-              {answering ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Text style={styles.actionIcon}>📞</Text>
-              )}
+              <Text style={styles.actionIcon}>📞</Text>
             </TouchableOpacity>
           </View>
         </View>

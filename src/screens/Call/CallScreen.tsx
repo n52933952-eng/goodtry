@@ -18,6 +18,7 @@ import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
+import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
@@ -135,6 +136,8 @@ const CallScreen = () => {
     setSelectedConversationPartnerId,
   } = useSocket();
 
+  const { isLive, isMinimized, isSharing, endLiveForCall } = useLiveBroadcast();
+
   const {
     call,
     callAccepted,
@@ -171,17 +174,27 @@ const CallScreen = () => {
     autoAnswerStartedRef.current = false;
   }, [incomingCallKey]);
 
-  // Native Answer / FCM: join room as soon as incoming state is ready (socket may arrive after hydrate).
+  // Native Answer / FCM while live: show Connecting, end live if needed, then join.
   useEffect(() => {
     if (!shouldAutoAnswer || autoAnswerStartedRef.current) return;
     if (!call.isReceivingCall || !call.from) return;
     const routeOk = !userId || idEq(userId, call.from);
     if (!routeOk) return;
     autoAnswerStartedRef.current = true;
-    void answerCall().catch(() => {
-      autoAnswerStartedRef.current = false;
-    });
-  }, [shouldAutoAnswer, call.isReceivingCall, call.from, userId, answerCall, incomingCallKey]);
+    void (async () => {
+      try {
+        if (isLive && !isMinimized && !isSharing) {
+          await endLiveForCall();
+        }
+        await answerCall();
+      } catch {
+        autoAnswerStartedRef.current = false;
+      }
+    })();
+  }, [
+    shouldAutoAnswer, call.isReceivingCall, call.from, userId, answerCall, incomingCallKey,
+    isLive, isMinimized, isSharing, endLiveForCall,
+  ]);
 
   // ── call control state ────────────────────────────────────────────────────
   const [isMuted,    setIsMuted]    = useState(false);

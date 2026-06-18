@@ -17,9 +17,16 @@ export function navigateFromPushData(
 
   try {
     if (type === 'follow') {
-      const userId = raw.userId;
-      if (userId) {
-        nav.navigate('Profile', { screen: 'UserProfile', params: { userId } });
+      const profileUsername = (raw.username || raw.followerUsername || '').trim();
+      const userId = (raw.userId || '').trim();
+      const profileQuery = profileUsername || userId;
+      if (profileQuery) {
+        nav.navigate('Profile', {
+          screen: 'UserProfile',
+          params: profileUsername
+            ? { username: profileUsername }
+            : { userId: profileQuery },
+        });
         return true;
       }
     }
@@ -51,10 +58,27 @@ export function navigateFromPushData(
     }
 
     if (type === 'message') {
+      const conversationId = raw.conversationId;
       const senderId = raw.senderId || raw.userId || raw.fromUserId;
+      if (conversationId) {
+        nav.navigate('ChatScreen', {
+          conversationId,
+          ...(senderId
+            ? {
+                userId: senderId,
+                otherUser: {
+                  _id: senderId,
+                  name: raw.senderName,
+                  username: raw.senderUsername,
+                  profilePic: raw.senderProfilePic,
+                },
+              }
+            : {}),
+        });
+        return true;
+      }
       if (senderId) {
         nav.navigate('ChatScreen', {
-          conversationId: raw.conversationId,
           userId: senderId,
           otherUser: {
             _id: senderId,
@@ -76,6 +100,12 @@ export function navigateFromPushData(
           conversationId,
           isGroup: true,
           groupName: raw.groupName || 'Group',
+          conversation: {
+            _id: conversationId,
+            isGroup: true,
+            groupName: raw.groupName || 'Group',
+            participants: [],
+          },
         });
         return true;
       }

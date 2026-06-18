@@ -19,6 +19,7 @@ import {
   Modal,
   Dimensions,
   DeviceEventEmitter,
+  InteractionManager,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
@@ -37,6 +38,43 @@ import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
 
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
+/** Wait for Messages → Chat transition before fetch/render heavy list (reduces jank). */
+const CHAT_OPEN_FETCH_DEFER_MS = 220;
+const CHAT_OPEN_FETCH_DEFER_CACHED_MS = 0;
+const CHAT_MESSAGES_CACHE_TTL_MS = 5 * 60_000;
+
+type ChatMessagesCacheEntry = {
+  messages: any[];
+  hasMore: boolean;
+  cursor: string | null;
+  cachedAt: number;
+};
+const chatMessagesCache = new Map<string, ChatMessagesCacheEntry>();
+
+const readChatMessagesCache = (conversationId: string): ChatMessagesCacheEntry | null => {
+  const entry = chatMessagesCache.get(conversationId);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > CHAT_MESSAGES_CACHE_TTL_MS) {
+    chatMessagesCache.delete(conversationId);
+    return null;
+  }
+  return entry;
+};
+
+const writeChatMessagesCache = (
+  conversationId: string,
+  messages: any[],
+  hasMore: boolean,
+  cursor: string | null,
+) => {
+  if (!conversationId) return;
+  chatMessagesCache.set(conversationId, {
+    messages,
+    hasMore,
+    cursor,
+    cachedAt: Date.now(),
+  });
+};
 
 const extractSharedPostId = (text?: string) => {
   const value = String(text || '');
@@ -82,6 +120,8 @@ const WA = {
 
 const ChatScreen = ({ route, navigation }: any) => {
   const { conversationId, userId, otherUser, isGroup, groupName, conversation: groupConversation } = route.params || {};
+  const [hydratedGroupConversation, setHydratedGroupConversation] = useState<any>(groupConversation);
+  const activeGroupConversation = hydratedGroupConversation ?? groupConversation ?? null;
   const { user } = useUser();
   const { socket, isUserOnline, isUserBusy, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC(); // useWebRTC → useLiveKit alias
@@ -131,7 +171,8 @@ const ChatScreen = ({ route, navigation }: any) => {
   const lastForegroundRefreshAtRef = useRef(0); // Debounce app-active refresh
   const ignoreNextForegroundRefreshRef = useRef(false); // Image picker can trigger inactive->active
   const lastChatPresenceRefreshAtRef = useRef(0);
-  const CHAT_PRESENCE_REFRESH_FOCUS_MIN_MS = 10_000;
+  const CHAT_PRESENCE_REFRESH_FOCUS_MIN_MS = 30_000;
+  const messageCursorRef = useRef<string | null>(null);
 
   const lastScrollOffsetRef = useRef(0);
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
@@ -143,6 +184,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
   const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
+  const [inlineChatVideosPlaying, setInlineChatVideosPlaying] = useState<Record<string, boolean>>({});
   const [chatImagePreviewUri, setChatImagePreviewUri] = useState<string | null>(null);
   const isChatFocused = useIsFocused();
 
@@ -169,7 +211,50 @@ const ChatScreen = ({ route, navigation }: any) => {
   }, []);
 
   const routeConversationIdStr = useMemo(() => toIdString(conversationId), [conversationId, toIdString]);
-  const routeGroupConversationIdStr = useMemo(() => toIdString(groupConversation?._id), [groupConversation?._id, toIdString]);
+  const routeGroupConversationIdStr = useMemo(
+    () => toIdString(activeGroupConversation?._id),
+    [activeGroupConversation?._id, toIdString],
+  );
+
+  useEffect(() => {
+    setHydratedGroupConversation(groupConversation);
+  }, [groupConversation, routeConversationIdStr]);
+
+  useEffect(() => {
+    const isGroupConv = !!(isGroup || groupConversation?.isGroup || activeGroupConversation?.isGroup);
+    if (!isGroupConv) return;
+    const convId = routeConversationIdStr || routeGroupConversationIdStr;
+    if (!convId) return;
+    const participants = activeGroupConversation?.participants;
+    if (Array.isArray(participants) && participants.length > 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiService.get(`${ENDPOINTS.GET_CONVERSATION_BY_ID}/${convId}`);
+        if (cancelled || !data?.conversation) return;
+        setHydratedGroupConversation(data.conversation);
+        navigation.setParams({
+          conversation: data.conversation,
+          groupName: data.conversation.groupName || groupName,
+        });
+      } catch {
+        // Optional until backend deploys GET /conversation/:id
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isGroup,
+    groupConversation?.isGroup,
+    activeGroupConversation?.isGroup,
+    routeConversationIdStr,
+    routeGroupConversationIdStr,
+    activeGroupConversation?.participants?.length,
+    groupName,
+    navigation,
+  ]);
 
   useEffect(() => {
     lastChatPresenceRefreshAtRef.current = 0;
@@ -581,22 +666,6 @@ const ChatScreen = ({ route, navigation }: any) => {
     user?._id,
   ]);
 
-  useEffect(() => {
-    hasMarkedSeenRef.current = false;
-    previousScrollYRef.current = 0;
-
-    if (routeConversationIdStr) {
-      setCurrentConversationId(routeConversationIdStr);
-      setTimeout(() => { fetchMessages(); }, 50);
-    } else if (userId && otherUser) {
-      setLoading(false);
-    } else if (otherUser?._id) {
-      setTimeout(() => { fetchMessages(); }, 50);
-    } else {
-      setLoading(false);
-    }
-  }, [routeConversationIdStr, userId, otherUser?._id, user?._id]);
-
   // Track currently open conversation globally (used to avoid incrementing unread while viewing)
   useEffect(() => {
     const id = toIdString(currentConversationId) || routeConversationIdStr || null;
@@ -637,7 +706,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   // Page size for messages (same as web – avoids server load)
   const MESSAGE_PAGE_SIZE = 12;
 
-  const fetchMessages = useCallback(async (loadMore = false, beforeId: string | null = null) => {
+  const fetchMessages = useCallback(async (loadMore = false, opts: { silent?: boolean } = {}) => {
     const isGroupConv = isGroup || groupConversation?.isGroup;
     const existingConversationId = toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr;
     const groupConvId = existingConversationId;
@@ -655,6 +724,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       if (!loadMore) setLoading(false);
       return;
     }
+    if (loadMore && !messageCursorRef.current) return;
 
     const otherUserIdStr = !isGroupConv
       ? (typeof otherUserId === 'string' ? otherUserId : String((otherUserId as any)?._id ?? otherUserId))
@@ -664,7 +734,8 @@ const ChatScreen = ({ route, navigation }: any) => {
       loadingMoreRef.current = true;
       setLoadingMoreMessages(true);
     } else {
-      setLoading(true);
+      messageCursorRef.current = null;
+      if (!opts.silent) setLoading(true);
     }
 
     try {
@@ -674,13 +745,21 @@ const ChatScreen = ({ route, navigation }: any) => {
       } else {
         url = `${ENDPOINTS.GET_MESSAGES}/${otherUserIdStr}?limit=${MESSAGE_PAGE_SIZE}`;
       }
-      if (beforeId) url += `&beforeId=${beforeId}`;
+      if (loadMore && messageCursorRef.current) {
+        url += `&cursor=${encodeURIComponent(messageCursorRef.current)}`;
+      }
 
       const response = await apiService.get(url);
       const messagesData = response?.messages ?? (Array.isArray(response) ? response : []);
       const hasMore = response?.hasMore === true;
 
-      if (loadMore && beforeId) {
+      if (response?.nextCursor != null && String(response.nextCursor).trim() !== '') {
+        messageCursorRef.current = String(response.nextCursor);
+      } else {
+        messageCursorRef.current = null;
+      }
+
+      if (loadMore) {
         loadingMoreRef.current = false;
         setHasMoreMessages(hasMore);
         setLoadingMoreMessages(false);
@@ -715,6 +794,14 @@ const ChatScreen = ({ route, navigation }: any) => {
         socket.emit('ackMessageDelivered', { messageIds: ackIds });
       }
       setHasMoreMessages(hasMore);
+      if (existingConversationId) {
+        writeChatMessagesCache(
+          String(existingConversationId),
+          messagesData,
+          hasMore,
+          messageCursorRef.current,
+        );
+      }
 
       const isGroupConv = !!(isGroup || groupConversation?.isGroup);
       const convId = toIdString(currentConversationId) || routeConversationIdStr || routeGroupConversationIdStr;
@@ -759,6 +846,57 @@ const ChatScreen = ({ route, navigation }: any) => {
     getSenderId,
     toIdString,
   ]);
+
+  const fetchMessagesRef = useRef(fetchMessages);
+  fetchMessagesRef.current = fetchMessages;
+
+  useEffect(() => {
+    hasMarkedSeenRef.current = false;
+    previousScrollYRef.current = 0;
+    messageCursorRef.current = null;
+
+    const cached = routeConversationIdStr ? readChatMessagesCache(routeConversationIdStr) : null;
+    if (cached) {
+      setMessages(cached.messages);
+      setHasMoreMessages(cached.hasMore);
+      messageCursorRef.current = cached.cursor;
+      setLoading(false);
+    } else {
+      setMessages([]);
+      setLoading(true);
+    }
+
+    let cancelled = false;
+    let deferTimer: ReturnType<typeof setTimeout> | null = null;
+    const deferMs = cached ? CHAT_OPEN_FETCH_DEFER_CACHED_MS : CHAT_OPEN_FETCH_DEFER_MS;
+    const interactionTask = InteractionManager.runAfterInteractions(() => {
+      deferTimer = setTimeout(() => {
+        if (cancelled) return;
+        if (routeConversationIdStr) {
+          setCurrentConversationId(routeConversationIdStr);
+          fetchMessagesRef.current(false, { silent: !!cached });
+        } else if (userId && otherUser) {
+          setLoading(false);
+        } else if (otherUser?._id) {
+          fetchMessagesRef.current(false, { silent: !!cached });
+        } else {
+          setLoading(false);
+        }
+      }, deferMs);
+    });
+
+    return () => {
+      cancelled = true;
+      interactionTask.cancel?.();
+      if (deferTimer) clearTimeout(deferTimer);
+    };
+  }, [routeConversationIdStr, userId, otherUser?._id, user?._id]);
+
+  useEffect(() => {
+    const convId = toIdString(currentConversationId) || routeConversationIdStr;
+    if (!convId || messages.length === 0) return;
+    writeChatMessagesCache(convId, messages, hasMoreMessages, messageCursorRef.current);
+  }, [messages, hasMoreMessages, currentConversationId, routeConversationIdStr, toIdString]);
 
   // After socket connects/reconnects, ack delivery + mark conversation read (fetch may have run before TCP was up).
   useEffect(() => {
@@ -817,11 +955,9 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const loadOlderMessages = useCallback(() => {
     if (!hasMoreMessages || loadingMoreMessages || loadingMoreRef.current || messages.length === 0) return;
-    const oldest = messages[0];
-    const beforeId = oldest?._id?.toString?.() ?? (oldest ? String(oldest._id) : null);
-    if (!beforeId) return;
-    fetchMessages(true, beforeId);
-  }, [hasMoreMessages, loadingMoreMessages, messages, fetchMessages]);
+    if (!messageCursorRef.current) return;
+    fetchMessages(true);
+  }, [hasMoreMessages, loadingMoreMessages, messages.length, fetchMessages]);
 
   // Message send timeout (e.g. backend cold start); same as web expectations
   const SEND_MESSAGE_TIMEOUT_MS = 20000;
@@ -1179,9 +1315,9 @@ const ChatScreen = ({ route, navigation }: any) => {
       otherUser,
       isGroup,
       groupName,
-      conversation: groupConversation,
+      conversation: activeGroupConversation,
     }),
-    [currentConversationId, userId, otherUser, isGroup, groupName, groupConversation]
+    [currentConversationId, userId, otherUser, isGroup, groupName, activeGroupConversation]
   );
 
   const openLiveViewer = useCallback(
@@ -1233,6 +1369,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     useCallback(() => {
       return () => {
         setSharedPostVideoPlaying({});
+        setInlineChatVideosPlaying({});
       };
     }, [])
   );
@@ -1240,42 +1377,59 @@ const ChatScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const unsubBlur = navigation.addListener('blur', () => {
       setSharedPostVideoPlaying({});
+      setInlineChatVideosPlaying({});
     });
     return unsubBlur;
   }, [navigation]);
 
   useEffect(() => {
     let cancelled = false;
-    const ids = Array.from(
-      new Set(
-        (messages || [])
-          .map((m) => extractSharedPostId(m?.text))
-          .filter(Boolean)
-      )
-    ) as string[];
-    if (!ids.length) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      const ids = Array.from(
+        new Set(
+          (messages || [])
+            .map((m) => extractSharedPostId(m?.text))
+            .filter(Boolean)
+        )
+      ) as string[];
+      if (!ids.length) return;
 
-    const missing = ids.filter((id) => !sharedPostCache.has(id) && !sharedPostMap[id]);
-    if (!missing.length) return;
+      const missing = ids.filter((id) => !sharedPostCache.has(id));
+      if (!missing.length) return;
 
-    (async () => {
-      for (const postId of missing) {
-        try {
-          const data = await apiService.get(`${ENDPOINTS.GET_POST}/${postId}`);
-          if (cancelled) return;
-          sharedPostCache.set(postId, data);
-          setSharedPostMap((prev) => ({ ...prev, [postId]: data }));
-        } catch (_) {
-          if (cancelled) return;
-          setSharedPostMap((prev) => ({ ...prev, [postId]: null }));
+      (async () => {
+        for (const postId of missing) {
+          try {
+            const data = await apiService.get(`${ENDPOINTS.GET_POST}/${postId}`);
+            if (cancelled) return;
+            sharedPostCache.set(postId, data);
+            setSharedPostMap((prev) => (prev[postId] ? prev : { ...prev, [postId]: data }));
+          } catch (_) {
+            if (cancelled) return;
+            setSharedPostMap((prev) => (prev[postId] !== undefined ? prev : { ...prev, [postId]: null }));
+          }
         }
-      }
-    })();
+      })();
+    });
 
     return () => {
       cancelled = true;
+      task.cancel?.();
     };
-  }, [messages, sharedPostMap]);
+  }, [messages]);
+
+  const listData = useMemo(() => {
+    if (!messages.length) return [];
+    const reversed = messages.slice();
+    reversed.reverse();
+    return reversed;
+  }, [messages]);
+
+  const messageKeyExtractor = useCallback(
+    (item: any, index: number) =>
+      item._id?.toString?.() ?? item._clientMsgId ?? `message-${index}`,
+    [],
+  );
 
   const renderMessage = ({ item }: { item: any }) => {
     const senderId = getSenderId(item.sender);
@@ -1513,20 +1667,44 @@ const ChatScreen = ({ route, navigation }: any) => {
             </TouchableOpacity>
           )}
 
-          {!!item.img && isVideoUrl(item.img) && isChatFocused && (
-            <View style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
-              <WebView
-                source={{ html: buildChatVideoHtml(item.img) }}
-                style={[styles.chatVideo, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
-                allowsFullscreenVideo
-                mediaPlaybackRequiresUserAction
-                scrollEnabled={false}
-                showsVerticalScrollIndicator={false}
-                showsHorizontalScrollIndicator={false}
-                androidLayerType="hardware"
-              />
-            </View>
-          )}
+          {!!item.img && isVideoUrl(item.img) && isChatFocused ? (
+            (() => {
+              const inlineVideoKey = String(item._id || item._clientMsgId || '');
+              const isInlineVideoPlaying = !!inlineChatVideosPlaying[inlineVideoKey];
+              if (!isInlineVideoPlaying) {
+                return (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={() => {
+                      if (!inlineVideoKey) return;
+                      setInlineChatVideosPlaying((prev) => ({ ...prev, [inlineVideoKey]: true }));
+                    }}
+                    style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
+                  >
+                    <View style={[styles.chatVideo, styles.chatVideoPlaceholder, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
+                      <View style={styles.sharedPostPlayCircle}>
+                        <Text style={styles.sharedPostPlayIcon}>▶</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }
+              return (
+                <View style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
+                  <WebView
+                    source={{ html: buildChatVideoHtml(item.img) }}
+                    style={[styles.chatVideo, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
+                    allowsFullscreenVideo
+                    mediaPlaybackRequiresUserAction
+                    scrollEnabled={false}
+                    showsVerticalScrollIndicator={false}
+                    showsHorizontalScrollIndicator={false}
+                    androidLayerType="hardware"
+                  />
+                </View>
+              );
+            })()
+          ) : null}
 
           <View
             style={[
@@ -1592,14 +1770,6 @@ const ChatScreen = ({ route, navigation }: any) => {
     );
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
   const Wrapper: any = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
   const wrapperProps =
     Platform.OS === 'ios'
@@ -1630,28 +1800,28 @@ const ChatScreen = ({ route, navigation }: any) => {
         <TouchableOpacity
           style={styles.headerInfo}
           onPress={() => {
-            if (isGroup || groupConversation?.isGroup) {
+            if (isGroup || activeGroupConversation?.isGroup) {
               navigation.navigate('GroupInfo', {
-                conversation: groupConversation || { _id: conversationId, groupName, isGroup: true, participants: [] },
+                conversation: activeGroupConversation || { _id: conversationId, groupName, isGroup: true, participants: [] },
               });
             }
           }}
-          activeOpacity={(isGroup || groupConversation?.isGroup) ? 0.7 : 1}
+          activeOpacity={(isGroup || activeGroupConversation?.isGroup) ? 0.7 : 1}
         >
           <View style={styles.headerTitleRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>
-              {(isGroup || groupConversation?.isGroup) ? (groupName || groupConversation?.groupName || 'Group') : (otherUser?.name || 'User')}
+              {(isGroup || activeGroupConversation?.isGroup) ? (groupName || activeGroupConversation?.groupName || 'Group') : (otherUser?.name || 'User')}
             </Text>
-            {!(isGroup || groupConversation?.isGroup) && isPartnerBusy && (
+            {!(isGroup || activeGroupConversation?.isGroup) && isPartnerBusy && (
               <View style={[styles.headerOnlineDot, { backgroundColor: '#E53E3E', marginLeft: 4 }]} />
             )}
-            {!(isGroup || groupConversation?.isGroup) && !isPartnerBusy && isPartnerOnline && (
+            {!(isGroup || activeGroupConversation?.isGroup) && !isPartnerBusy && isPartnerOnline && (
               <View style={[styles.headerOnlineDot, { backgroundColor: colors.success }]} />
             )}
           </View>
           <Text style={[styles.headerSubtitle, { color: isPartnerBusy ? '#E53E3E' : colors.textGray }]} numberOfLines={1}>
-            {(isGroup || groupConversation?.isGroup)
-              ? `${groupConversation?.participants?.length || '...'} members · tap for info`
+            {(isGroup || activeGroupConversation?.isGroup)
+              ? `${activeGroupConversation?.participants?.length || '...'} members · tap for info`
               : isPartnerBusy
                 ? (t('busy') || 'Busy')
                 : (isPartnerOnline ? t('online') : t('offline'))}
@@ -1670,15 +1840,15 @@ const ChatScreen = ({ route, navigation }: any) => {
           </>
         )}
         {/* Group call button — group chats only */}
-        {(isGroup || groupConversation?.isGroup) && (
+        {(isGroup || activeGroupConversation?.isGroup) && (
           <TouchableOpacity
             style={[styles.callButton, groupCallActive && { opacity: 0.4 }]}
             disabled={groupCallActive}
             onPress={() => {
-              const convId = String(conversationId || groupConversation?._id || '');
+              const convId = String(conversationId || activeGroupConversation?._id || '');
               if (!convId) return;
               // Pre-flight busy check before navigating to call screen
-              const participants: any[] = groupConversation?.participants || [];
+              const participants: any[] = activeGroupConversation?.participants || [];
               const myIdStr = String(user?._id || '');
               const others = participants.filter((p: any) => String(p?._id || '') !== myIdStr);
               const busyCount = others.filter((p: any) => isUserBusy(String(p?._id || ''))).length;
@@ -1704,14 +1874,17 @@ const ChatScreen = ({ route, navigation }: any) => {
       <FlatList
         ref={messagesEndRef}
         inverted
-        // Backend returns chronological (oldest -> newest). For inverted lists we feed newest-first
-        // so the newest message sticks to the bottom (WhatsApp-like).
-        data={[...messages].reverse()}
-        extraData={messages.length}
+        data={listData}
+        extraData={reactionTargetId}
         renderItem={renderMessage}
-        keyExtractor={(item, index) => item._id || index.toString()}
+        keyExtractor={messageKeyExtractor}
         contentContainerStyle={styles.messagesList}
         maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={5}
+        updateCellsBatchingPeriod={50}
+        removeClippedSubviews
         // With inverted lists, `onEndReached` is the natural "load older" trigger.
         onEndReached={() => {
           if (hasMoreMessages && !loadingMoreMessages && messages.length > 0) {
@@ -1719,7 +1892,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           }
         }}
         onEndReachedThreshold={0.2}
-        scrollEventThrottle={16}
+        scrollEventThrottle={32}
         onScrollBeginDrag={() => {
           shouldAutoScrollRef.current = false;
         }}
@@ -1729,6 +1902,13 @@ const ChatScreen = ({ route, navigation }: any) => {
           lastScrollOffsetRef.current = y;
           shouldAutoScrollRef.current = y < 80;
         }}
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.chatEmptyLoading}>
+              <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+          ) : null
+        }
         ListHeaderComponent={
           loadingMoreMessages ? (
             <View style={styles.loadMoreIndicator}>
@@ -1985,6 +2165,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  chatEmptyLoading: {
+    flexGrow: 1,
+    minHeight: 280,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
   loadMoreIndicator: {
     paddingVertical: 12,
     alignItems: 'center',
@@ -2207,6 +2394,11 @@ const styles = StyleSheet.create({
   },
   chatVideo: {
     backgroundColor: '#000',
+  },
+  chatVideoPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111',
   },
   sharedPostCard: {
     marginTop: 8,

@@ -3,6 +3,7 @@ import {
   View,
   Text,
   FlatList,
+  SectionList,
   StyleSheet,
   TouchableOpacity,
   Image,
@@ -23,12 +24,26 @@ import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import StoryOrProfileSheet from '../../components/StoryOrProfileSheet';
+import ConversationListItem from './ConversationListItem';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { liveSharePreviewText } from '../../utils/liveShareMessage';
 
 const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
 const LIST_RING_STROKE = 2;
+const CONVERSATIONS_PAGE_SIZE = 8;
+
+const conversationIdKey = (conversation: any): string =>
+  conversation?._id?.toString?.() ?? String(conversation?._id ?? '');
+
+/** Refresh first page without dropping conversations the user already scrolled to load. */
+const mergeConversationRefresh = (existing: any[], freshPage: any[]): any[] => {
+  if (!existing.length) return freshPage;
+  if (!freshPage.length) return existing;
+  const freshIds = new Set(freshPage.map(conversationIdKey));
+  const tail = existing.filter((c) => !freshIds.has(conversationIdKey(c)));
+  return [...freshPage, ...tail];
+};
 
 /** Keep list titles/previews left-aligned next to the avatar even for Arabic/RTL scripts. */
 const LTR_TEXT = {
@@ -69,8 +84,11 @@ const MessagesScreen = ({ navigation }: any) => {
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const isFetchingConversationsRef = useRef(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchConversationResults, setSearchConversationResults] = useState<any[]>([]);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestIdRef = useRef(0);
   const [followingUsers, setFollowingUsers] = useState<any[]>([]);
   const isFirstLoadRef = useRef(true);
   /** userId -> story ring (same source as feed post avatars) */
@@ -90,11 +108,14 @@ const MessagesScreen = ({ navigation }: any) => {
   const lastPresenceRefreshAtRef = useRef(0);
   const FOLLOWING_REFETCH_FOCUS_MIN_MS = 45_000;
   const PRESENCE_REFRESH_FOCUS_MIN_MS = 12_000;
-  /** Skip redundant list+story API when bouncing Messages ↔ Chat within a few seconds (socket still updates rows). */
+  /** Skip redundant list+story API when bouncing Messages ↔ Chat (socket still updates rows). */
   const lastConvListAndStoryFetchAtRef = useRef(0);
-  const CONV_LIST_STORY_FOCUS_MIN_MS = 5_000;
+  const CONV_LIST_STORY_FOCUS_MIN_MS = 30_000;
+  /** Promote opened chat to top on return without waiting for a full list refetch. */
+  const lastOpenedConversationIdRef = useRef<string | null>(null);
   /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
   const lastPresenceWatchKeyRef = useRef('');
+  const convCursorRef = useRef<string | null>(null);
 
   useEffect(() => {
     lastFollowingFetchAtRef.current = 0;
@@ -149,7 +170,14 @@ const MessagesScreen = ({ navigation }: any) => {
             : (isConversationOpen ? 0 : (prevConvos[existingIndex].unreadCount || 0)),
         };
 
-        // Move to top WITHOUT full re-sort (new message => most recent)
+        // If this conversation is currently open in Chat, keep its position (no visual jump).
+        if (isConversationOpen) {
+          const updated = [...prevConvos];
+          updated[existingIndex] = updatedConversation;
+          return updated;
+        }
+
+        // Otherwise move to top WITHOUT full re-sort (new message => most recent)
         return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
       } else {
         // New conversation - fetch it from API to get full conversation data
@@ -284,7 +312,18 @@ const MessagesScreen = ({ navigation }: any) => {
         lastConvListAndStoryFetchAtRef.current = now;
         fetchStoryStrip();
         fetchConversations(false, { silent: !first });
+      } else {
+        const openedId = lastOpenedConversationIdRef.current?.toString();
+        if (openedId) {
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c._id?.toString() === openedId);
+            if (idx <= 0) return prev;
+            const conv = prev[idx];
+            return [conv, ...prev.filter((_, i) => i !== idx)];
+          });
+        }
       }
+      lastOpenedConversationIdRef.current = null;
 
       if (now - lastFollowingFetchAtRef.current >= FOLLOWING_REFETCH_FOCUS_MIN_MS) {
         lastFollowingFetchAtRef.current = now;
@@ -304,46 +343,61 @@ const MessagesScreen = ({ navigation }: any) => {
     // Prevent duplicate requests (but allow the very first fetch even if loading=true initially)
     if (isFetchingConversationsRef.current) return;
     if (loadMore && (loadingMoreConversations || !hasMoreConversations)) return;
+    if (loadMore && !convCursorRef.current) return;
 
     if (loadMore) {
       setLoadingMoreConversations(true);
     } else {
-      // Only show full-page spinner on first load; otherwise refresh silently
+      // Only reset pagination cursor on a true first load — keep cursor after user scrolled.
+      if (conversations.length === 0) {
+        convCursorRef.current = null;
+      }
       const shouldShowSpinner = !opts.silent && conversations.length === 0;
       if (shouldShowSpinner) setLoading(true);
     }
 
     try {
       isFetchingConversationsRef.current = true;
-      const beforeId = loadMore && conversations.length > 0
-        ? conversations[conversations.length - 1]?._id
-        : null;
+      let url = `${ENDPOINTS.GET_CONVERSATIONS}?limit=${CONVERSATIONS_PAGE_SIZE}`;
+      if (loadMore && convCursorRef.current) {
+        url += `&cursor=${encodeURIComponent(convCursorRef.current)}`;
+      }
 
-      const url = `${ENDPOINTS.GET_CONVERSATIONS}?limit=20${beforeId ? `&beforeId=${beforeId}` : ''}`;
-      
       const data = await apiService.get(url);
 
       const convos = data?.conversations || data || [];
       const hasMore = data?.hasMore === true;
 
-      setHasMoreConversations(hasMore);
-
       if (loadMore) {
-        // Append, dedupe by _id (preserve order: existing first, then new)
+        if (data?.nextCursor != null && String(data.nextCursor).trim() !== '') {
+          convCursorRef.current = String(data.nextCursor);
+        } else {
+          convCursorRef.current = null;
+        }
+        setHasMoreConversations(hasMore);
         setConversations((prev) => {
           const map = new Map<string, any>();
-          prev.forEach((c) => map.set(c._id?.toString?.() ?? String(c._id), c));
-          convos.forEach((c: any) => map.set(c._id?.toString?.() ?? String(c._id), c));
+          prev.forEach((c) => map.set(conversationIdKey(c), c));
+          convos.forEach((c: any) => map.set(conversationIdKey(c), c));
           return Array.from(map.values());
         });
-      } else {
-        // Backend already sorts by updatedAt desc
+      } else if (conversations.length === 0) {
+        if (data?.nextCursor != null && String(data.nextCursor).trim() !== '') {
+          convCursorRef.current = String(data.nextCursor);
+        } else {
+          convCursorRef.current = null;
+        }
+        setHasMoreConversations(hasMore);
         setConversations(convos);
+      } else {
+        // Smart refresh: update top page + keep older loaded rows and load-more cursor.
+        setHasMoreConversations(hasMore || !!convCursorRef.current);
+        setConversations((prev) => mergeConversationRefresh(prev, convos));
       }
     } catch (error: any) {
       console.error('❌ [MessagesScreen] fetchConversations: Error', error);
       if (!loadMore) {
-        setConversations([]);
+        setConversations((prev) => (prev.length > 0 ? prev : []));
       }
     } finally {
       isFetchingConversationsRef.current = false;
@@ -366,8 +420,7 @@ const MessagesScreen = ({ navigation }: any) => {
     return () => sub.remove();
   }, []);
 
-  // Watch presence for all users in current conversations so status updates in real time
-  // without needing to open an individual chat first.
+  // Watch presence for all loaded 1:1 conversations (reliable online dots on the list).
   useEffect(() => {
     if (!user?._id) {
       lastPresenceWatchKeyRef.current = '';
@@ -377,6 +430,7 @@ const MessagesScreen = ({ navigation }: any) => {
 
     const myId = user._id?.toString?.() ?? String(user._id);
     const partnerIds = conversations
+      .filter((conversation: any) => !conversation?.isGroup)
       .map((conversation: any) => {
         const participants = Array.isArray(conversation?.participants) ? conversation.participants : [];
         const other = participants.find((p: any) => {
@@ -419,35 +473,70 @@ const MessagesScreen = ({ navigation }: any) => {
     }
   };
 
-  const handleSearch = async (query: string) => {
+  useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, []);
+
+  const handleSearch = (query: string) => {
     setSearchQuery(query);
 
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+
     if (!query.trim()) {
+      setSearchConversationResults([]);
       setSearchResults([]);
+      setSearching(false);
       return;
     }
 
     setSearching(true);
-    try {
-      const searchTerm = query.toLowerCase();
-      // Search through following users (client-side filter for better UX)
+    searchDebounceRef.current = setTimeout(async () => {
+      const requestId = ++searchRequestIdRef.current;
+      const q = query.trim();
+      const searchTerm = q.toLowerCase();
 
-      const filtered = followingUsers.filter((u: any) => {
-        const name = (u.name || '').toLowerCase();
-        const username = (u.username || '').toLowerCase();
-        const nameMatch = name.includes(searchTerm);
-        const usernameMatch = username.includes(searchTerm);
-        const matches = nameMatch || usernameMatch;
-        return matches;
-      });
+      try {
+        const data = await apiService.get(
+          `${ENDPOINTS.SEARCH_CONVERSATIONS}?q=${encodeURIComponent(q)}&limit=20`,
+        );
+        if (requestId !== searchRequestIdRef.current) return;
 
-      setSearchResults(filtered);
-    } catch (error: any) {
-      console.error('❌ [MessagesScreen] handleSearch: Error:', error);
-      setSearchResults([]);
-    } finally {
-      setSearching(false);
-    }
+        const convos = data?.conversations || [];
+        setSearchConversationResults(convos);
+
+        const existingPartnerIds = new Set<string>();
+        for (const conv of convos) {
+          if (conv?.isGroup) continue;
+          const other = conv?.participants?.[0];
+          const pid = other?._id?.toString?.() ?? (other != null ? String(other) : '');
+          if (pid) existingPartnerIds.add(pid);
+        }
+
+        const filtered = followingUsers.filter((u: any) => {
+          const uid = u._id?.toString?.() ?? String(u._id);
+          if (existingPartnerIds.has(uid)) return false;
+          const name = (u.name || '').toLowerCase();
+          const username = (u.username || '').toLowerCase();
+          return name.includes(searchTerm) || username.includes(searchTerm);
+        });
+
+        setSearchResults(filtered);
+      } catch (error: any) {
+        if (requestId !== searchRequestIdRef.current) return;
+        console.error('❌ [MessagesScreen] handleSearch: Error:', error);
+        setSearchConversationResults([]);
+        setSearchResults([]);
+      } finally {
+        if (requestId === searchRequestIdRef.current) {
+          setSearching(false);
+        }
+      }
+    }, 300);
   };
 
   const handleStartConversation = async (selectedUser: any) => {
@@ -462,6 +551,7 @@ const MessagesScreen = ({ navigation }: any) => {
       });
 
       if (existingConvo) {
+        lastOpenedConversationIdRef.current = existingConvo._id?.toString?.() ?? String(existingConvo._id);
         // Navigate to existing conversation
         navigation.navigate('ChatScreen', {
           conversationId: existingConvo._id,
@@ -478,19 +568,20 @@ const MessagesScreen = ({ navigation }: any) => {
       
       // Clear search
       setSearchQuery('');
+      setSearchConversationResults([]);
       setSearchResults([]);
     } catch (error: any) {
       console.error('Error starting conversation:', error);
     }
   };
 
-  const getOtherUser = (conversation: any) => {
+  const getOtherUser = useCallback((conversation: any) => {
     if (!conversation.participants || !user) return null;
     return conversation.participants.find((p: any) => {
       const pId = typeof p === 'string' ? p : p._id;
       return pId !== user._id;
     });
-  };
+  }, [user?._id]);
 
   const onMessagingAvatarPress = useCallback(
     (
@@ -515,22 +606,6 @@ const MessagesScreen = ({ navigation }: any) => {
     [navigation, storyByUserId, t],
   );
 
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMins / 60);
-    const diffDays = Math.floor(diffHours / 24);
-
-    if (diffMins < 1) return 'now';
-    if (diffMins < 60) return `${diffMins}m`;
-    if (diffHours < 24) return `${diffHours}h`;
-    if (diffDays < 7) return `${diffDays}d`;
-    return date.toLocaleDateString();
-  };
-
-  // Handle group socket events
   const handleGroupCreated = React.useCallback((conv: any) => {
     setConversations((prev) => {
       if (prev.some((c) => c._id?.toString() === conv._id?.toString())) return prev;
@@ -571,194 +646,164 @@ const MessagesScreen = ({ navigation }: any) => {
     };
   }, [socket, user?._id, handleGroupCreated, handleGroupMemberLeft, handleRemovedFromGroup]);
 
-  const renderConversation = ({ item }: { item: any }) => {
-    const isGroupConv = !!item.isGroup;
-    const otherUser = isGroupConv ? null : getOtherUser(item);
-    if (!isGroupConv && !otherUser) return null;
+  const handleOpenConversation = useCallback(
+    (item: any) => {
+      const isGroupConv = !!item.isGroup;
+      const otherUser = isGroupConv ? null : getOtherUser(item);
+      const otherUserData = !isGroupConv && otherUser && typeof otherUser !== 'string' ? otherUser : null;
+      const convId = toIdString(item._id);
+      lastOpenedConversationIdRef.current = convId || null;
+      navigation.navigate('ChatScreen', {
+        conversationId: convId,
+        otherUser: isGroupConv ? null : otherUserData,
+        isGroup: isGroupConv,
+        groupName: isGroupConv ? item.groupName : undefined,
+        conversation: item,
+      });
+    },
+    [navigation, getOtherUser],
+  );
 
-    const otherUserData = (!isGroupConv && typeof otherUser !== 'string') ? otherUser : null;
-    const otherUserId = (!isGroupConv && otherUser) ? (typeof otherUser === 'string' ? otherUser : otherUser?._id) : null;
-    const unreadCount = item.unreadCount || 0;
-    const isOnline = (!isGroupConv && otherUserId) ? isUserOnline(otherUserId) : false;
-
-    const confirmDeleteConversation = () => {
-      if (isGroupConv) {
-        Alert.alert('Leave Group', `Leave "${item.groupName || 'group'}"?`, [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Leave',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await apiService.post(`${ENDPOINTS.LEAVE_GROUP}/${item._id}/leave`, {});
-                setConversations((prev) => prev.filter((c) => c._id?.toString() !== item._id?.toString()));
-              } catch (e: any) {
-                Alert.alert('Error', e?.message || 'Failed to leave group');
-              }
-            },
-          },
-        ]);
-        return;
-      }
-      Alert.alert(
-        t('deleteConversationQuestion'),
-        t('deleteConversationWarning'),
-        [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('delete'),
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await apiService.delete(`${ENDPOINTS.DELETE_CONVERSATION}/${item._id}`);
-                setConversations((prev) =>
-                  prev.filter((c) => (c._id?.toString?.() ?? String(c._id)) !== (item._id?.toString?.() ?? String(item._id)))
-                );
-              } catch (e: any) {
-                console.error('❌ [MessagesScreen] delete conversation error:', e);
-                Alert.alert(t('error'), e?.message || t('failedToDeleteConversation'));
-              }
-            },
-          },
-        ]
-      );
-    };
-
-    const displayName = isGroupConv
-      ? (item.groupName || 'Group')
-      : (otherUserData?.name || t('unknown'));
-
-    return (
-      <TouchableOpacity
-        style={[styles.conversationItem, styles.rowLtr, { borderBottomColor: colors.border }]}
-        onPress={() => navigation.navigate('ChatScreen', { 
-          conversationId: toIdString(item._id),
-          otherUser: isGroupConv ? null : otherUserData,
-          isGroup: isGroupConv,
-          groupName: isGroupConv ? item.groupName : undefined,
-          conversation: item,
-        })}
-        onLongPress={confirmDeleteConversation}
-      >
-        <View style={styles.avatarContainer}>
-          {isGroupConv ? (
-            <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: '#1a4a8a' }]}>
-              <Text style={[styles.avatarText, { fontSize: 22 }]}>👥</Text>
-            </View>
-          ) : (
-            (() => {
-              const uid = otherUserId?.toString?.() ?? String(otherUserId);
-              const ring = storyByUserId[uid];
-              const showRing = !!ring?.storyId;
-              return (
-                <StoryAvatarRing
-                  visible={showRing}
-                  showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
-                  replayKey={storyRingReplayKey}
-                  ringOuterSize={LIST_RING_OUTER}
-                  avatarSize={LIST_AVATAR}
-                  strokeWidth={LIST_RING_STROKE}
-                >
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    onPress={() => onMessagingAvatarPress(uid, otherUserData)}
-                  >
-                    {otherUserData?.profilePic ? (
-                      <Image source={{ uri: otherUserData.profilePic }} style={styles.avatar} />
-                    ) : (
-                      <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                        <Text style={styles.avatarText}>
-                          {otherUserData?.name?.[0]?.toUpperCase() || '?'}
-                        </Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                </StoryAvatarRing>
-              );
-            })()
-          )}
-          {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
-        </View>
-        <View style={[styles.conversationInfo, styles.colLtr]}>
-          <View style={styles.conversationHeader}>
-            <View style={styles.conversationTitleCol}>
-              <View style={styles.userNameRow}>
-                <Text
-                  {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-                  style={[styles.userName, LTR_TEXT, { color: colors.text, flex: 1, minWidth: 0 }]}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                >
-                  {displayName}
-                </Text>
-                {isGroupConv && (
-                  <Text
-                    {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-                    style={{
-                      fontSize: 10,
-                      color: colors.primary,
-                      marginLeft: 4,
-                      fontWeight: '600',
-                      flexShrink: 0,
-                      ...LTR_TEXT,
-                    }}
-                  >
-                    GROUP
-                  </Text>
-                )}
-              </View>
-            </View>
-            <View style={styles.rightHeader}>
-              {item.lastMessage && (
-                <Text
-                  {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-                  style={[styles.time, LTR_TEXT, { color: colors.textGray }]}
-                >
-                  {formatTime(item.lastMessage.createdAt || item.updatedAt)}
-                </Text>
-              )}
-              <TouchableOpacity
-                onPress={confirmDeleteConversation}
-                style={styles.deleteBtn}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Text style={styles.deleteIcon}>{isGroupConv ? '🚪' : '🗑️'}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          {isGroupConv && (
-            <Text
-              {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-              style={[styles.lastMessage, LTR_TEXT, { color: colors.textGray, fontSize: 12, marginBottom: 2 }]}
-              numberOfLines={1}
-            >
-              {item.participants?.length || 0} members
-            </Text>
-          )}
-          <View style={styles.lastMessageRow}>
-            <Text
-              {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-              style={[
-                styles.lastMessage,
-                LTR_TEXT,
-                { color: colors.textGray },
-                unreadCount > 0 && styles.unreadMessage,
-                unreadCount > 0 && { color: colors.text },
-              ]}
-              numberOfLines={1}
-            >
-              {item.lastMessage?.text || t('noMessagesYet')}
-            </Text>
-            {unreadCount > 0 && (
-              <View style={[styles.unreadBadge, { backgroundColor: colors.primary }]}>
-                <Text style={styles.unreadText}>{unreadCount}</Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </TouchableOpacity>
+  const handleConversationRemoved = useCallback((conversationId: string) => {
+    setConversations((prev) =>
+      prev.filter((c) => (c._id?.toString?.() ?? String(c._id)) !== conversationId),
     );
-  };
+  }, []);
+
+  const renderConversation = useCallback(
+    ({ item }: { item: any }) => {
+      const isGroupConv = !!item.isGroup;
+      const otherUser = isGroupConv ? null : getOtherUser(item);
+      const otherUserId = !isGroupConv && otherUser
+        ? (typeof otherUser === 'string' ? otherUser : otherUser?._id)
+        : null;
+      const uid = otherUserId?.toString?.() ?? (otherUserId != null ? String(otherUserId) : '');
+      const ring = uid ? storyByUserId[uid] : undefined;
+
+      return (
+        <ConversationListItem
+          item={item}
+          borderColor={colors.border}
+          textColor={colors.text}
+          textGray={colors.textGray}
+          primaryColor={colors.primary}
+          avatarBg={colors.avatarBg}
+          successColor={colors.success}
+          backgroundColor={colors.background}
+          isOnline={!!uid && isUserOnline(uid)}
+          hasStory={!!ring?.storyId}
+          hasUnviewedStory={!!ring?.storyId && !!ring?.hasUnviewed}
+          unknownLabel={t('unknown')}
+          noMessagesLabel={t('noMessagesYet')}
+          deleteTitle={t('deleteConversationQuestion')}
+          deleteWarning={t('deleteConversationWarning')}
+          cancelLabel={t('cancel')}
+          deleteLabel={t('delete')}
+          errorLabel={t('error')}
+          deleteFailedLabel={t('failedToDeleteConversation')}
+          onOpen={handleOpenConversation}
+          onAvatarPress={onMessagingAvatarPress}
+          onRemoved={handleConversationRemoved}
+          getOtherUser={getOtherUser}
+        />
+      );
+    },
+    [
+      colors,
+      storyByUserId,
+      isUserOnline,
+      t,
+      handleOpenConversation,
+      onMessagingAvatarPress,
+      handleConversationRemoved,
+      getOtherUser,
+    ],
+  );
+
+  const conversationKeyExtractor = useCallback((item: any, index: number) => {
+    const id = item._id?.toString?.() ?? String(item._id);
+    return id || `conversation-${index}`;
+  }, []);
+
+  const searchSections = React.useMemo(() => {
+    const sections: Array<{ key: string; title: string; data: any[] }> = [];
+    if (searchConversationResults.length > 0) {
+      sections.push({ key: 'chats', title: t('messages'), data: searchConversationResults });
+    }
+    if (searchResults.length > 0) {
+      sections.push({ key: 'people', title: t('searchUsers'), data: searchResults });
+    }
+    return sections;
+  }, [searchConversationResults, searchResults, t]);
+
+  const renderSearchUser = useCallback(
+    ({ item }: { item: any }) => {
+      const isOnline = item._id ? isUserOnline(item._id) : false;
+      const uid = item._id?.toString?.() ?? String(item._id);
+      const ring = storyByUserId[uid];
+      const showRing = !!ring?.storyId;
+      return (
+        <TouchableOpacity
+          style={[styles.searchResultItem, styles.rowLtr, { borderBottomColor: colors.border }]}
+          onPress={() => handleStartConversation(item)}
+        >
+          <View style={styles.avatarContainer}>
+            <StoryAvatarRing
+              visible={showRing}
+              showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
+              replayKey={storyRingReplayKey}
+              ringOuterSize={LIST_RING_OUTER}
+              avatarSize={LIST_AVATAR}
+              strokeWidth={LIST_RING_STROKE}
+            >
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => onMessagingAvatarPress(uid, item)}
+              >
+                {item.profilePic ? (
+                  <Image source={{ uri: item.profilePic }} style={styles.avatar} />
+                ) : (
+                  <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                    <Text style={styles.avatarText}>
+                      {item.name?.[0]?.toUpperCase() || '?'}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </StoryAvatarRing>
+            {isOnline ? (
+              <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />
+            ) : null}
+          </View>
+          <View style={[styles.searchResultInfo, styles.colLtr]}>
+            <View style={styles.userNameRow}>
+              <Text
+                {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+                style={[styles.userName, LTR_TEXT, { color: colors.text }]}
+              >
+                {item.name || t('unknown')}
+              </Text>
+            </View>
+            <Text
+              {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
+              style={[styles.userUsername, LTR_TEXT, { color: colors.textGray }]}
+            >
+              @{item.username}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [
+      colors,
+      storyByUserId,
+      storyRingReplayKey,
+      isUserOnline,
+      handleStartConversation,
+      onMessagingAvatarPress,
+      t,
+    ],
+  );
 
   if (loading) {
     return (
@@ -798,69 +843,22 @@ const MessagesScreen = ({ navigation }: any) => {
             <View style={styles.searchLoading}>
               <ActivityIndicator size="small" color={colors.primary} />
             </View>
-          ) : searchResults.length > 0 ? (
-            <FlatList
-              data={searchResults}
-              keyExtractor={(item) => item._id?.toString() || String(item._id)}
-              renderItem={({ item }) => {
-                const isOnline = item._id ? isUserOnline(item._id) : false;
-                return (
-                  <TouchableOpacity
-                    style={[styles.searchResultItem, styles.rowLtr, { borderBottomColor: colors.border }]}
-                    onPress={() => handleStartConversation(item)}
-                  >
-                    <View style={styles.avatarContainer}>
-                      {(() => {
-                        const uid = item._id?.toString?.() ?? String(item._id);
-                        const ring = storyByUserId[uid];
-                        const showRing = !!ring?.storyId;
-                        return (
-                          <StoryAvatarRing
-                            visible={showRing}
-                            showAnimatedRedFill={!!ring?.storyId && !!ring?.hasUnviewed}
-                            replayKey={storyRingReplayKey}
-                            ringOuterSize={LIST_RING_OUTER}
-                            avatarSize={LIST_AVATAR}
-                            strokeWidth={LIST_RING_STROKE}
-                          >
-                            <TouchableOpacity
-                              activeOpacity={0.7}
-                              onPress={() => onMessagingAvatarPress(uid, item)}
-                            >
-                              {item.profilePic ? (
-                                <Image source={{ uri: item.profilePic }} style={styles.avatar} />
-                              ) : (
-                                <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                                  <Text style={styles.avatarText}>
-                                    {item.name?.[0]?.toUpperCase() || '?'}
-                                  </Text>
-                                </View>
-                              )}
-                            </TouchableOpacity>
-                          </StoryAvatarRing>
-                        );
-                      })()}
-                      {isOnline && <View style={[styles.onlineDot, { backgroundColor: colors.success, borderColor: colors.background }]} />}
-                    </View>
-                    <View style={[styles.searchResultInfo, styles.colLtr]}>
-                      <View style={styles.userNameRow}>
-                        <Text
-                          {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-                          style={[styles.userName, LTR_TEXT, { color: colors.text }]}
-                        >
-                          {item.name || t('unknown')}
-                        </Text>
-                      </View>
-                      <Text
-                        {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
-                        style={[styles.userUsername, LTR_TEXT, { color: colors.textGray }]}
-                      >
-                        @{item.username}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              }}
+          ) : searchSections.length > 0 ? (
+            <SectionList
+              sections={searchSections}
+              keyExtractor={(item, index) => item._id?.toString?.() ?? String(item._id ?? index)}
+              renderSectionHeader={({ section }) => (
+                <Text style={[styles.searchSectionTitle, { color: colors.textGray, backgroundColor: colors.background }]}>
+                  {section.title}
+                </Text>
+              )}
+              renderItem={({ item, section }) =>
+                section.key === 'chats'
+                  ? renderConversation({ item })
+                  : renderSearchUser({ item })
+              }
+              stickySectionHeadersEnabled={false}
+              keyboardShouldPersistTaps="handled"
             />
           ) : (
             <View style={styles.searchEmpty}>
@@ -875,13 +873,10 @@ const MessagesScreen = ({ navigation }: any) => {
         <FlatList
           data={conversations}
           renderItem={renderConversation}
-          keyExtractor={(item, index) => {
-            const id = item._id?.toString?.() ?? String(item._id);
-            return id || `conversation-${index}`;
-          }}
-          windowSize={10}
-          maxToRenderPerBatch={8}
-          initialNumToRender={12}
+          keyExtractor={conversationKeyExtractor}
+          windowSize={5}
+          maxToRenderPerBatch={6}
+          initialNumToRender={6}
           updateCellsBatchingPeriod={50}
           removeClippedSubviews={Platform.OS === 'android'}
           onEndReached={() => {
@@ -1095,9 +1090,16 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
   },
   searchResultsContainer: {
-    maxHeight: 300,
+    flex: 1,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+  },
+  searchSectionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    paddingHorizontal: 15,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   searchLoading: {
     padding: 20,

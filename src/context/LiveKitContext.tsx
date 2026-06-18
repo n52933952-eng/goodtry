@@ -105,6 +105,17 @@ const sortedRoomName = (a: string, b: string) => {
   return `call_${ids[0]}_${ids[1]}`;
 };
 
+const isIntentionalDisconnectError = (err: unknown): boolean => {
+  const msg = (err as { message?: string })?.message || String(err ?? '');
+  return /client initiated disconnect|connection (?:was )?abort|user initiated disconnect|cancel/i.test(msg);
+};
+
+const isCallSessionAborted = (
+  sessionId: number,
+  endedId: number,
+  currentId: number,
+): boolean => endedId === sessionId || currentId !== sessionId;
+
 // ─── Provider ────────────────────────────────────────────────────────────────
 export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user }  = useUser();
@@ -412,6 +423,14 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await lkRoom.localParticipant.setCameraEnabled(true);
         syncLocalVideoFromParticipant();
     }
+    } catch (err: unknown) {
+      if (
+        isCallSessionAborted(connectSessionId, endedCallSessionIdRef.current, callSessionIdRef.current)
+        || isIntentionalDisconnectError(err)
+      ) {
+        return;
+      }
+      throw err;
     } finally {
       isConnectingRoomRef.current = false;
     }
@@ -579,6 +598,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!call.from) return;
     if (callAcceptedRef.current || answerCallInFlightRef.current) return;
     if (roomRef.current?.state === ConnectionState.Connected) return;
+    const sessionId = callSessionIdRef.current;
     answerCallInFlightRef.current = true;
     try {
       notificationAnswerCallerIdRef.current = null;
@@ -607,10 +627,19 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         token = bundle.token;
         livekitUrl = bundle.livekitUrl;
       }
+      if (isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)) return;
       await connectRoom(token, livekitUrl, type);
+      if (isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)) return;
       setCall(prev => ({ ...prev, isReceivingCall: false }));
-    } catch (err: any) {
-      console.error('❌ [LiveKit Mobile] answerCall error:', err?.message);
+    } catch (err: unknown) {
+      if (
+        isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)
+        || isIntentionalDisconnectError(err)
+      ) {
+        console.log('⏸️ [LiveKit Mobile] answerCall stopped — call ended');
+        return;
+      }
+      console.error('❌ [LiveKit Mobile] answerCall error:', (err as Error)?.message);
       setCallAccepted(false);
       callAcceptedRef.current = false;
       await disconnectRoom();
