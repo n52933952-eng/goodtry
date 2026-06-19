@@ -105,7 +105,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           .filter((id: string) => /^[0-9a-fA-F]{24}$/.test(id))
       )
     );
+    const watchKey = normalized.slice().sort().join('|');
+    const prevKey = presenceWatchUserIdsRef.current.slice().sort().join('|');
     presenceWatchUserIdsRef.current = normalized;
+    if (watchKey === prevKey) return;
     setPresenceWatchUserIdsState(normalized);
   }, []);
   

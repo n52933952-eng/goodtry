@@ -97,6 +97,8 @@ const FeedScreen = ({ navigation }: any) => {
   const activeVideoPostIdRef = useRef<string | null>(null);
   const pendingVideoSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedListRef = useRef<FlatList>(null);
+  const lastFeedFocusRefreshAtRef = useRef(0);
+  const FEED_FOCUS_REFRESH_MIN_MS = 30_000;
   const LOAD_MORE_DEBOUNCE_MS = 2000;
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 65,
@@ -151,15 +153,17 @@ const FeedScreen = ({ navigation }: any) => {
     useCallback(() => {
       setStoryRingReplayKey((k) => k + 1);
       refreshNotificationCount?.();
-      // Refresh feed (e.g. live cards) when returning to the tab
-      if (!loading && !isFetchingRef.current) {
-        console.log('🔄 [FeedScreen] useFocusEffect: Refreshing feed for live updates');
+      fetchStoryStrip();
+
+      const now = Date.now();
+      const feedStale = now - lastFeedFocusRefreshAtRef.current >= FEED_FOCUS_REFRESH_MIN_MS;
+      if (feedStale && !isFetchingRef.current) {
+        lastFeedFocusRefreshAtRef.current = now;
         fetchFeed();
       }
-      fetchStoryStrip();
-      // fetchFeed is intentionally omitted from deps (same as before) to avoid re-registering every render
+      // fetchFeed intentionally omitted — use refs above to avoid focus-loop on loading/state changes
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fetchStoryStrip, loading, refreshNotificationCount])
+    }, [fetchStoryStrip, refreshNotificationCount])
   );
 
   useEffect(() => {

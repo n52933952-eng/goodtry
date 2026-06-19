@@ -13,6 +13,8 @@ import {
   AppState,
   DeviceEventEmitter,
   Platform,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
@@ -35,15 +37,6 @@ const CONVERSATIONS_PAGE_SIZE = 8;
 
 const conversationIdKey = (conversation: any): string =>
   conversation?._id?.toString?.() ?? String(conversation?._id ?? '');
-
-/** Refresh first page without dropping conversations the user already scrolled to load. */
-const mergeConversationRefresh = (existing: any[], freshPage: any[]): any[] => {
-  if (!existing.length) return freshPage;
-  if (!freshPage.length) return existing;
-  const freshIds = new Set(freshPage.map(conversationIdKey));
-  const tail = existing.filter((c) => !freshIds.has(conversationIdKey(c)));
-  return [...freshPage, ...tail];
-};
 
 /** Keep list titles/previews left-aligned next to the avatar even for Arabic/RTL scripts. */
 const LTR_TEXT = {
@@ -116,13 +109,56 @@ const MessagesScreen = ({ navigation }: any) => {
   /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
   const lastPresenceWatchKeyRef = useRef('');
   const convCursorRef = useRef<string | null>(null);
+  /** Block onEndReached until the user scrolls — stops auto-loading every page on mount. */
+  const userHasScrolledListRef = useRef(false);
+  const lastLoadMoreAtRef = useRef(0);
+  const conversationListRef = useRef<FlatList>(null);
+  const conversationsLenRef = useRef(0);
+  conversationsLenRef.current = conversations.length;
+  const hasMoreConversationsRef = useRef(false);
+  hasMoreConversationsRef.current = hasMoreConversations;
+  const loadingMoreConversationsRef = useRef(false);
+  loadingMoreConversationsRef.current = loadingMoreConversations;
+
+  const scrollConversationListToTop = useCallback(() => {
+    requestAnimationFrame(() => {
+      conversationListRef.current?.scrollToOffset({ offset: 0, animated: false });
+    });
+  }, []);
+
+  /** Tab focus: first page only + scroll to top (instant, no delayed jump). Returns true if list was trimmed. */
+  const resetConversationListToFirstPage = useCallback((): boolean => {
+    userHasScrolledListRef.current = false;
+    lastLoadMoreAtRef.current = 0;
+
+    let trimmed = false;
+    setConversations((prev) => {
+      if (prev.length <= CONVERSATIONS_PAGE_SIZE) return prev;
+      trimmed = true;
+      return prev.slice(0, CONVERSATIONS_PAGE_SIZE);
+    });
+    if (trimmed) {
+      setHasMoreConversations(true);
+      hasMoreConversationsRef.current = true;
+    }
+    scrollConversationListToTop();
+    return trimmed;
+  }, [scrollConversationListToTop]);
+
+  const resetConversationPagination = useCallback(() => {
+    convCursorRef.current = null;
+    userHasScrolledListRef.current = false;
+    lastLoadMoreAtRef.current = 0;
+    setHasMoreConversations(false);
+  }, []);
 
   useEffect(() => {
     lastFollowingFetchAtRef.current = 0;
     lastPresenceRefreshAtRef.current = 0;
     lastConvListAndStoryFetchAtRef.current = 0;
     lastPresenceWatchKeyRef.current = '';
-  }, [user?._id]);
+    resetConversationPagination();
+  }, [user?._id, resetConversationPagination]);
 
   // Update selectedConversationId ref whenever it changes
   useEffect(() => {
@@ -298,59 +334,20 @@ const MessagesScreen = ({ navigation }: any) => {
     return () => sub.remove();
   }, [fetchStoryStrip]);
 
-  // Refresh conversations and following users when screen comes into focus 
-  // (e.g., when returning from ChatScreen or after following a new user)
-  useFocusEffect(
-    React.useCallback(() => {
-      const first = isFirstLoadRef.current;
-      if (first) isFirstLoadRef.current = false;
-
-      const now = Date.now();
-      const listStale =
-        first || now - lastConvListAndStoryFetchAtRef.current >= CONV_LIST_STORY_FOCUS_MIN_MS;
-      if (listStale) {
-        lastConvListAndStoryFetchAtRef.current = now;
-        fetchStoryStrip();
-        fetchConversations(false, { silent: !first });
-      } else {
-        const openedId = lastOpenedConversationIdRef.current?.toString();
-        if (openedId) {
-          setConversations((prev) => {
-            const idx = prev.findIndex((c) => c._id?.toString() === openedId);
-            if (idx <= 0) return prev;
-            const conv = prev[idx];
-            return [conv, ...prev.filter((_, i) => i !== idx)];
-          });
-        }
-      }
-      lastOpenedConversationIdRef.current = null;
-
-      if (now - lastFollowingFetchAtRef.current >= FOLLOWING_REFETCH_FOCUS_MIN_MS) {
-        lastFollowingFetchAtRef.current = now;
-        fetchFollowingUsers();
-      }
-      if (now - lastPresenceRefreshAtRef.current >= PRESENCE_REFRESH_FOCUS_MIN_MS) {
-        lastPresenceRefreshAtRef.current = now;
-        refreshPresenceSubscription();
-      }
-    }, [refreshPresenceSubscription, fetchStoryStrip])
-  );
-
   const fetchConversations = async (
     loadMore = false,
     opts: { silent?: boolean } = {}
   ) => {
     // Prevent duplicate requests (but allow the very first fetch even if loading=true initially)
     if (isFetchingConversationsRef.current) return;
-    if (loadMore && (loadingMoreConversations || !hasMoreConversations)) return;
+    if (loadMore && (loadingMoreConversationsRef.current || !hasMoreConversationsRef.current)) return;
     if (loadMore && !convCursorRef.current) return;
 
     if (loadMore) {
       setLoadingMoreConversations(true);
     } else {
-      // Only reset pagination cursor on a true first load — keep cursor after user scrolled.
       if (conversations.length === 0) {
-        convCursorRef.current = null;
+        resetConversationPagination();
       }
       const shouldShowSpinner = !opts.silent && conversations.length === 0;
       if (shouldShowSpinner) setLoading(true);
@@ -375,24 +372,22 @@ const MessagesScreen = ({ navigation }: any) => {
           convCursorRef.current = null;
         }
         setHasMoreConversations(hasMore);
+        hasMoreConversationsRef.current = hasMore;
         setConversations((prev) => {
-          const map = new Map<string, any>();
-          prev.forEach((c) => map.set(conversationIdKey(c), c));
-          convos.forEach((c: any) => map.set(conversationIdKey(c), c));
-          return Array.from(map.values());
+          const seen = new Set(prev.map(conversationIdKey));
+          const appended = convos.filter((c: any) => !seen.has(conversationIdKey(c)));
+          return appended.length ? [...prev, ...appended] : prev;
         });
-      } else if (conversations.length === 0) {
+      } else {
         if (data?.nextCursor != null && String(data.nextCursor).trim() !== '') {
           convCursorRef.current = String(data.nextCursor);
         } else {
           convCursorRef.current = null;
         }
         setHasMoreConversations(hasMore);
+        hasMoreConversationsRef.current = hasMore;
         setConversations(convos);
-      } else {
-        // Smart refresh: update top page + keep older loaded rows and load-more cursor.
-        setHasMoreConversations(hasMore || !!convCursorRef.current);
-        setConversations((prev) => mergeConversationRefresh(prev, convos));
+        userHasScrolledListRef.current = false;
       }
     } catch (error: any) {
       console.error('❌ [MessagesScreen] fetchConversations: Error', error);
@@ -405,11 +400,74 @@ const MessagesScreen = ({ navigation }: any) => {
       setLoadingMoreConversations(false);
     }
   };
-  
+  fetchConversationsRef.current = fetchConversations;
+
   // Assign fetchConversations to ref so handleNewMessage can use it
   useEffect(() => {
     fetchConversationsRef.current = fetchConversations;
   }, [fetchConversations]);
+
+  // Refresh conversations when screen comes into focus (tab return or back from chat).
+  useFocusEffect(
+    React.useCallback(() => {
+      const first = isFirstLoadRef.current;
+      if (first) isFirstLoadRef.current = false;
+
+      const openedId = lastOpenedConversationIdRef.current?.toString();
+      lastOpenedConversationIdRef.current = null;
+
+      let needsCursorRefresh = false;
+      if (!first) {
+        if (openedId) {
+          userHasScrolledListRef.current = false;
+          lastLoadMoreAtRef.current = 0;
+          let hadMore = false;
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c._id?.toString() === openedId);
+            const ordered =
+              idx > 0
+                ? [prev[idx], ...prev.filter((_, i) => i !== idx)]
+                : prev;
+            if (ordered.length > CONVERSATIONS_PAGE_SIZE) {
+              hadMore = true;
+            }
+            return ordered.slice(0, CONVERSATIONS_PAGE_SIZE);
+          });
+          if (hadMore) {
+            setHasMoreConversations(true);
+            hasMoreConversationsRef.current = true;
+          }
+          needsCursorRefresh = hadMore;
+          scrollConversationListToTop();
+        } else {
+          needsCursorRefresh = resetConversationListToFirstPage();
+        }
+      }
+
+      const now = Date.now();
+      const listStale =
+        first ||
+        conversationsLenRef.current === 0 ||
+        now - lastConvListAndStoryFetchAtRef.current >= CONV_LIST_STORY_FOCUS_MIN_MS;
+      if (listStale) {
+        lastConvListAndStoryFetchAtRef.current = now;
+        fetchStoryStrip();
+        fetchConversationsRef.current?.(false, { silent: !first });
+      } else if (needsCursorRefresh) {
+        // Restore nextCursor after trim — only when we dropped pages locally.
+        fetchConversationsRef.current?.(false, { silent: true });
+      }
+
+      if (now - lastFollowingFetchAtRef.current >= FOLLOWING_REFETCH_FOCUS_MIN_MS) {
+        lastFollowingFetchAtRef.current = now;
+        fetchFollowingUsers();
+      }
+      if (now - lastPresenceRefreshAtRef.current >= PRESENCE_REFRESH_FOCUS_MIN_MS) {
+        lastPresenceRefreshAtRef.current = now;
+        refreshPresenceSubscription();
+      }
+    }, [refreshPresenceSubscription, fetchStoryStrip, resetConversationListToFirstPage, scrollConversationListToTop])
+  );
 
   // When returning from background, refresh conversations (push may arrive while offline/reconnecting).
   useEffect(() => {
@@ -725,6 +783,26 @@ const MessagesScreen = ({ navigation }: any) => {
     return id || `conversation-${index}`;
   }, []);
 
+  const onConversationListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (e.nativeEvent.contentOffset.y > 8) {
+      userHasScrolledListRef.current = true;
+    }
+  }, []);
+
+  const onConversationListScrollBeginDrag = useCallback(() => {
+    userHasScrolledListRef.current = true;
+  }, []);
+
+  const onConversationListEndReached = useCallback(() => {
+    if (!userHasScrolledListRef.current) return;
+    if (loadingMoreConversationsRef.current || !hasMoreConversationsRef.current) return;
+    if (!convCursorRef.current) return;
+    const now = Date.now();
+    if (now - lastLoadMoreAtRef.current < 600) return;
+    lastLoadMoreAtRef.current = now;
+    fetchConversationsRef.current?.(true);
+  }, []);
+
   const searchSections = React.useMemo(() => {
     const sections: Array<{ key: string; title: string; data: any[] }> = [];
     if (searchConversationResults.length > 0) {
@@ -871,6 +949,7 @@ const MessagesScreen = ({ navigation }: any) => {
       {/* Conversations List */}
       {!searchQuery.trim() && (
         <FlatList
+          ref={conversationListRef}
           data={conversations}
           renderItem={renderConversation}
           keyExtractor={conversationKeyExtractor}
@@ -879,15 +958,19 @@ const MessagesScreen = ({ navigation }: any) => {
           initialNumToRender={6}
           updateCellsBatchingPeriod={50}
           removeClippedSubviews={Platform.OS === 'android'}
-          onEndReached={() => {
-            if (loadingMoreConversations || !hasMoreConversations) return;
-            fetchConversations(true);
-          }}
-          onEndReachedThreshold={0.5}
+          onScroll={onConversationListScroll}
+          onScrollBeginDrag={onConversationListScrollBeginDrag}
+          scrollEventThrottle={16}
+          onEndReached={onConversationListEndReached}
+          onEndReachedThreshold={0.2}
           ListFooterComponent={
             loadingMoreConversations ? (
-              <View style={{ paddingVertical: 16 }}>
+              <View style={{ paddingVertical: 16, alignItems: 'center' }}>
                 <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : hasMoreConversations && conversations.length >= CONVERSATIONS_PAGE_SIZE ? (
+              <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+                <Text style={{ color: colors.textGray, fontSize: 12 }}>{t('scrollForMore') || 'Scroll for more'}</Text>
               </View>
             ) : null
           }

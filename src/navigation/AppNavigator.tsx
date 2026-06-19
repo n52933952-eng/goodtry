@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable } from 'react-native';
 import { NavigationContainer, DarkTheme, DefaultTheme, CommonActions } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -92,20 +92,28 @@ const AuthStack = () => {
 // Feed Stack (nested stack for Feed tab to include PostDetail)
 const FeedStack = () => {
   const { colors } = useTheme();
-  
+  const feedStackScreenOptions = useMemo(
+    () => ({
+      headerShown: false as const,
+      cardStyle: { backgroundColor: colors.background },
+    }),
+    [colors.background],
+  );
+  const feedPostDetailOptions = useMemo(
+    () => postDetailHeaderOptions(colors),
+    [colors.background, colors.backgroundLight, colors.text],
+  );
+
   return (
     <Stack.Navigator
       detachInactiveScreens={true}
-      screenOptions={{
-        headerShown: false,
-        cardStyle: { backgroundColor: colors.background },
-      }}
+      screenOptions={feedStackScreenOptions}
     >
       <Stack.Screen name="FeedScreen" component={FeedScreen} />
       <Stack.Screen
         name="PostDetail"
         component={PostDetailScreen}
-        options={postDetailHeaderOptions(colors)}
+        options={feedPostDetailOptions}
       />
     </Stack.Navigator>
   );
@@ -257,6 +265,7 @@ const MainTabs = () => {
     detachInactiveScreens={true}
     screenOptions={{
       lazy: true,
+      animation: 'none',
       headerShown: false,
       sceneStyle: { backgroundColor: colors.background },
       tabBarShowLabel: false, // Remove text labels below icons
