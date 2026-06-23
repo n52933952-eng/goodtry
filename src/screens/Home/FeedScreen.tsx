@@ -630,7 +630,9 @@ const FeedScreen = ({ navigation }: any) => {
       >
         <TouchableOpacity
           style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
-          onPress={() => navigation.navigate('Notifications')}
+          onPress={() =>
+            navigation.navigate('Notifications', { screen: 'NotificationsMain' })
+          }
         >
           <View style={styles.notificationIconContainer}>
             <Text style={styles.quickAccessIcon}>🔔</Text>

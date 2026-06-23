@@ -250,6 +250,7 @@ const NotificationsStack = () => {
           headerRight: () => <View style={{ width: 44 }} />,
         }}
       />
+      <Stack.Screen name="FollowList" component={FollowListScreen} />
     </Stack.Navigator>
   );
 };
