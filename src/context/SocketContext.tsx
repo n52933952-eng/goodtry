@@ -480,6 +480,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       DeviceEventEmitter.emit('messageDelivered', payload);
     });
 
+    socketService.on('messagesSeen', (payload: any) => {
+      DeviceEventEmitter.emit('messagesSeen', payload);
+    });
+
     // Legacy: global online list — filter out explicit clientPresence-offline (see server `getOnlineUser` + ref)
     socketService.on('getOnlineUser', (users) => {
       const incoming = Array.isArray(users) ? users : [];

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,12 +6,14 @@ import {
   SectionList,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   Image,
   ActivityIndicator,
   TextInput,
   Alert,
   AppState,
   DeviceEventEmitter,
+  Keyboard,
   Platform,
   NativeSyntheticEvent,
   NativeScrollEvent,
@@ -29,6 +31,16 @@ import StoryOrProfileSheet from '../../components/StoryOrProfileSheet';
 import ConversationListItem from './ConversationListItem';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { liveSharePreviewText } from '../../utils/liveShareMessage';
+import { isLastMessageFromUser, normalizeConversationLastMessage } from '../../utils/messageDeliveryTicks';
+import {
+  mergeUsersById,
+  normalizeMessagesSearchQuery,
+  userMatchesMessagesSearchQuery,
+} from '../../utils/messagesSearchQuery';
+import {
+  searchRecentFollowProfiles,
+  subscribeRecentFollowProfiles,
+} from '../../utils/recentFollowProfiles';
 
 const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
@@ -80,9 +92,13 @@ const MessagesScreen = ({ navigation }: any) => {
   const [searchConversationResults, setSearchConversationResults] = useState<any[]>([]);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
+  const [refreshingMessages, setRefreshingMessages] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRequestIdRef = useRef(0);
-  const [followingUsers, setFollowingUsers] = useState<any[]>([]);
+  const isMessagesRefreshingRef = useRef(false);
+  const lastMessagesRefreshAtRef = useRef(0);
+  const MESSAGES_REFRESH_MIN_MS = 3000;
+  const [recentFollowTick, setRecentFollowTick] = useState(0);
   const isFirstLoadRef = useRef(true);
   /** userId -> story ring (same source as feed post avatars) */
   const [storyByUserId, setStoryByUserId] = useState<
@@ -97,9 +113,7 @@ const MessagesScreen = ({ navigation }: any) => {
   // Ref to fetchConversations function so it can be called from handleNewMessage
   const fetchConversationsRef = useRef<any>(null);
   /** Throttle expensive aux work when bouncing Messages ↔ Chat ↔ other tabs (conversations still refresh every focus). */
-  const lastFollowingFetchAtRef = useRef(0);
   const lastPresenceRefreshAtRef = useRef(0);
-  const FOLLOWING_REFETCH_FOCUS_MIN_MS = 45_000;
   const PRESENCE_REFRESH_FOCUS_MIN_MS = 12_000;
   /** Skip redundant list+story API when bouncing Messages ↔ Chat (socket still updates rows). */
   const lastConvListAndStoryFetchAtRef = useRef(0);
@@ -153,7 +167,6 @@ const MessagesScreen = ({ navigation }: any) => {
   }, []);
 
   useEffect(() => {
-    lastFollowingFetchAtRef.current = 0;
     lastPresenceRefreshAtRef.current = 0;
     lastConvListAndStoryFetchAtRef.current = 0;
     lastPresenceWatchKeyRef.current = '';
@@ -193,11 +206,14 @@ const MessagesScreen = ({ navigation }: any) => {
         
         const updatedConversation = {
           ...prevConvos[existingIndex],
-          lastMessage: {
+          lastMessage: normalizeConversationLastMessage({
             text: lastMessageText,
             createdAt: messageData.createdAt,
             sender: messageData.sender,
-          },
+            messageId: messageData._id,
+            delivered: isOwnMessage ? false : undefined,
+            seen: isOwnMessage ? false : undefined,
+          }),
           updatedAt: messageData.conversationUpdatedAt || messageData.createdAt || new Date(),
           // Only increment unread count if message is from other user
           // And only if this conversation isn't currently open
@@ -243,7 +259,7 @@ const MessagesScreen = ({ navigation }: any) => {
     );
   }, []);
 
-  const handleMessagesSeen = React.useCallback((data: any) => {
+  const handleConversationMarkedRead = React.useCallback((data: any) => {
     const conversationId = data.conversationId?.toString();
     if (!conversationId) return;
 
@@ -268,6 +284,96 @@ const MessagesScreen = ({ navigation }: any) => {
     });
   }, []);
 
+  const patchOutgoingLastMessage = React.useCallback(
+    (
+      conversationId: string,
+      patch: { delivered?: boolean; seen?: boolean },
+      messageId?: string,
+    ) => {
+      const myId = user?._id?.toString?.() ?? String(user?._id ?? '');
+      if (!myId) return;
+      setConversations((prevConvos) => {
+        const existingIndex = prevConvos.findIndex(
+          (conv) => conv._id?.toString() === conversationId,
+        );
+        if (existingIndex < 0) return prevConvos;
+        const conv = prevConvos[existingIndex];
+        if (!isLastMessageFromUser(conv.lastMessage, myId)) return prevConvos;
+        if (messageId) {
+          const lastMid =
+            conv.lastMessage?.messageId?.toString?.() ??
+            (conv.lastMessage?.messageId != null ? String(conv.lastMessage.messageId) : '');
+          if (lastMid && lastMid !== String(messageId)) return prevConvos;
+        }
+        const updated = [...prevConvos];
+        updated[existingIndex] = {
+          ...conv,
+          lastMessage: normalizeConversationLastMessage({ ...conv.lastMessage, ...patch }),
+        };
+        return updated;
+      });
+    },
+    [user?._id],
+  );
+
+  const handleMessageDelivered = React.useCallback(
+    (data: any) => {
+      const conversationId = data?.conversationId?.toString();
+      if (!conversationId) return;
+      patchOutgoingLastMessage(
+        conversationId,
+        { delivered: true },
+        data?.messageId?.toString?.() ?? (data?.messageId != null ? String(data.messageId) : undefined),
+      );
+    },
+    [patchOutgoingLastMessage],
+  );
+
+  const handleMessagesSeenByRecipient = React.useCallback(
+    (data: any) => {
+      const conversationId = data?.conversationId?.toString();
+      if (!conversationId) return;
+
+      const markedIds = new Set(
+        (Array.isArray(data?.messageIds) ? data.messageIds : [])
+          .map((id: any) => String(id).trim())
+          .filter(Boolean),
+      );
+      // Legacy payloads without messageIds: don't guess — refetch server truth (avoids false blue flash).
+      if (markedIds.size === 0) {
+        fetchConversationsRef.current?.(false, { silent: true });
+        return;
+      }
+
+      const myId = user?._id?.toString?.() ?? String(user?._id ?? '');
+      setConversations((prevConvos) => {
+        const existingIndex = prevConvos.findIndex(
+          (conv) => conv._id?.toString() === conversationId,
+        );
+        if (existingIndex < 0) return prevConvos;
+        const conv = prevConvos[existingIndex];
+        if (!isLastMessageFromUser(conv.lastMessage, myId)) return prevConvos;
+
+        const lastMid =
+          conv.lastMessage?.messageId?.toString?.() ??
+          (conv.lastMessage?.messageId != null ? String(conv.lastMessage.messageId) : '');
+        if (!lastMid || !markedIds.has(lastMid)) return prevConvos;
+
+        const updated = [...prevConvos];
+        updated[existingIndex] = {
+          ...conv,
+          lastMessage: normalizeConversationLastMessage({
+            ...conv.lastMessage,
+            delivered: true,
+            seen: true,
+          }),
+        };
+        return updated;
+      });
+    },
+    [user?._id],
+  );
+
   // Re-bind after every new Socket.IO instance: connect() replaces the client and drops old listeners,
   // but this effect’s deps don’t change — without this, list only updates after focus refetch.
   useEffect(() => {
@@ -277,13 +383,17 @@ const MessagesScreen = ({ navigation }: any) => {
       if (!socket.getSocket?.()) return;
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
-      socket.off('conversationMarkedRead', handleMessagesSeen);
+      socket.off('conversationMarkedRead', handleConversationMarkedRead);
+      socket.off('messageDelivered', handleMessageDelivered);
+      socket.off('messagesSeen', handleMessagesSeenByRecipient);
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
       socket.off('conversationDeleted', handleConversationDeleted);
       socket.on('newMessage', handleNewMessage);
       socket.on('unreadCountUpdate', handleUnreadCountUpdate);
-      socket.on('conversationMarkedRead', handleMessagesSeen);
+      socket.on('conversationMarkedRead', handleConversationMarkedRead);
+      socket.on('messageDelivered', handleMessageDelivered);
+      socket.on('messagesSeen', handleMessagesSeenByRecipient);
       socket.on('liveShareExpired', handleLiveShareCleanup);
       socket.on('livekit:streamEnded', handleLiveShareCleanup);
       socket.on('conversationDeleted', handleConversationDeleted);
@@ -298,12 +408,31 @@ const MessagesScreen = ({ navigation }: any) => {
       removeConnect();
       socket.off('newMessage', handleNewMessage);
       socket.off('unreadCountUpdate', handleUnreadCountUpdate);
-      socket.off('conversationMarkedRead', handleMessagesSeen);
+      socket.off('conversationMarkedRead', handleConversationMarkedRead);
+      socket.off('messageDelivered', handleMessageDelivered);
+      socket.off('messagesSeen', handleMessagesSeenByRecipient);
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
       socket.off('conversationDeleted', handleConversationDeleted);
     };
-  }, [socket, user?._id, handleNewMessage, handleUnreadCountUpdate, handleMessagesSeen, handleLiveShareCleanup, handleConversationDeleted]);
+  }, [
+    socket,
+    user?._id,
+    handleNewMessage,
+    handleUnreadCountUpdate,
+    handleConversationMarkedRead,
+    handleMessageDelivered,
+    handleMessagesSeenByRecipient,
+    handleLiveShareCleanup,
+    handleConversationDeleted,
+  ]);
+
+  useEffect(() => {
+    const subDelivered = DeviceEventEmitter.addListener('messageDelivered', handleMessageDelivered);
+    return () => {
+      subDelivered.remove();
+    };
+  }, [handleMessageDelivered]);
 
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;
@@ -362,7 +491,10 @@ const MessagesScreen = ({ navigation }: any) => {
 
       const data = await apiService.get(url);
 
-      const convos = data?.conversations || data || [];
+      const convos = (data?.conversations || data || []).map((conv: any) => ({
+        ...conv,
+        lastMessage: normalizeConversationLastMessage(conv.lastMessage),
+      }));
       const hasMore = data?.hasMore === true;
 
       if (loadMore) {
@@ -458,10 +590,6 @@ const MessagesScreen = ({ navigation }: any) => {
         fetchConversationsRef.current?.(false, { silent: true });
       }
 
-      if (now - lastFollowingFetchAtRef.current >= FOLLOWING_REFETCH_FOCUS_MIN_MS) {
-        lastFollowingFetchAtRef.current = now;
-        fetchFollowingUsers();
-      }
       if (now - lastPresenceRefreshAtRef.current >= PRESENCE_REFRESH_FOCUS_MIN_MS) {
         lastPresenceRefreshAtRef.current = now;
         refreshPresenceSubscription();
@@ -514,28 +642,135 @@ const MessagesScreen = ({ navigation }: any) => {
     return () => sub.remove();
   }, []);
 
-  const fetchFollowingUsers = async () => {
-    if (!user?._id) {
-      return;
-    }
-
-    try {
-      // Scalable: backend already provides a dedicated endpoint returning user objects (limited to 30)
-      const data = await apiService.get(ENDPOINTS.GET_FOLLOWING_USERS);
-      const users = Array.isArray(data) ? data : (data?.users || []);
-
-      setFollowingUsers(users);
-    } catch (error: any) {
-      console.error('❌ [MessagesScreen] fetchFollowingUsers: Error:', error);
-      setFollowingUsers([]);
-    }
-  };
-
   useEffect(() => {
     return () => {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     };
   }, []);
+
+  useEffect(() => subscribeRecentFollowProfiles(() => setRecentFollowTick((n) => n + 1)), []);
+
+  const sessionFollowingKey = useMemo(
+    () =>
+      (user?.following || [])
+        .map((id: any) => toIdString(id))
+        .filter(Boolean)
+        .sort()
+        .join('|'),
+    [user?.following],
+  );
+
+  const executeMessagesSearch = useCallback(async (query: string) => {
+    const q = normalizeMessagesSearchQuery(query);
+    if (!q) {
+      setSearchConversationResults([]);
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    const requestId = ++searchRequestIdRef.current;
+
+    let convos: any[] = [];
+    let followingPage: any[] = [];
+
+    try {
+      await Promise.all([
+        apiService
+          .get(`${ENDPOINTS.SEARCH_CONVERSATIONS}?q=${encodeURIComponent(q)}&limit=20`)
+          .then((convData) => {
+            convos = convData?.conversations || [];
+          })
+          .catch((error) => {
+            console.error('❌ [MessagesScreen] conversation search failed:', error);
+            convos = [];
+          }),
+        apiService
+          .get(`${ENDPOINTS.GET_FOLLOWING_USERS}?q=${encodeURIComponent(q)}&limit=20`)
+          .then((followingData) => {
+            followingPage = Array.isArray(followingData)
+              ? followingData
+              : followingData?.users || [];
+          })
+          .catch((error) => {
+            console.error('❌ [MessagesScreen] following search failed:', error);
+            followingPage = [];
+          }),
+      ]);
+      if (requestId !== searchRequestIdRef.current) return;
+
+      setSearchConversationResults(convos);
+
+      const myId = user?._id?.toString?.() ?? String(user?._id ?? '');
+      const existingPartnerIds = new Set<string>();
+      for (const conv of convos) {
+        if (conv?.isGroup) continue;
+        const participants = Array.isArray(conv?.participants) ? conv.participants : [];
+        const other = participants.find((p: any) => {
+          const pid = p?._id?.toString?.() ?? (typeof p === 'string' ? p : p != null ? String(p) : '');
+          return pid && pid !== myId;
+        });
+        const pid = other?._id?.toString?.() ?? (other != null ? String(other) : '');
+        if (pid) existingPartnerIds.add(pid);
+      }
+
+      const followingFromApi = followingPage.filter((u) => userMatchesMessagesSearchQuery(u, q));
+      const recentMatches = searchRecentFollowProfiles(q);
+      let mergedFollowing = mergeUsersById(followingFromApi, recentMatches);
+
+      // Fallback only when server following search is empty — filter global hits by session follow ids.
+      if (mergedFollowing.length === 0) {
+        const followingSet = new Set(
+          (user?.following || []).map((id: any) => toIdString(id)).filter(Boolean),
+        );
+        if (followingSet.size > 0) {
+          try {
+            const globalData = await apiService.get(
+              `${ENDPOINTS.SEARCH_USERS}?search=${encodeURIComponent(q)}`,
+            );
+            const arr = Array.isArray(globalData) ? globalData : [];
+            const fallbackHits = arr.filter((u: any) => {
+              const id = toIdString(u?._id);
+              return (
+                id &&
+                followingSet.has(id) &&
+                userMatchesMessagesSearchQuery(u, q)
+              );
+            });
+            mergedFollowing = mergeUsersById(mergedFollowing, fallbackHits);
+          } catch (error) {
+            console.error('❌ [MessagesScreen] following search fallback failed:', error);
+          }
+        }
+      }
+      if (requestId !== searchRequestIdRef.current) return;
+
+      const filtered = mergedFollowing.filter((u: any) => {
+        const uid = u._id?.toString?.() ?? String(u._id);
+        return uid && !existingPartnerIds.has(uid);
+      });
+
+      setSearchResults(filtered);
+    } catch (error: any) {
+      if (requestId !== searchRequestIdRef.current) return;
+      console.error('❌ [MessagesScreen] executeMessagesSearch: Error:', error);
+      setSearchConversationResults([]);
+      setSearchResults([]);
+    } finally {
+      if (requestId === searchRequestIdRef.current) {
+        setSearching(false);
+      }
+    }
+  }, [user?._id, user?.following]);
+
+  // Re-search when follow ids or recent-follow cache change (just followed on Search / Profile).
+  useEffect(() => {
+    const q = normalizeMessagesSearchQuery(searchQuery);
+    if (!q) return;
+    void executeMessagesSearch(searchQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionFollowingKey, recentFollowTick, executeMessagesSearch]);
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -553,49 +788,51 @@ const MessagesScreen = ({ navigation }: any) => {
     }
 
     setSearching(true);
-    searchDebounceRef.current = setTimeout(async () => {
-      const requestId = ++searchRequestIdRef.current;
-      const q = query.trim();
-      const searchTerm = q.toLowerCase();
-
-      try {
-        const data = await apiService.get(
-          `${ENDPOINTS.SEARCH_CONVERSATIONS}?q=${encodeURIComponent(q)}&limit=20`,
-        );
-        if (requestId !== searchRequestIdRef.current) return;
-
-        const convos = data?.conversations || [];
-        setSearchConversationResults(convos);
-
-        const existingPartnerIds = new Set<string>();
-        for (const conv of convos) {
-          if (conv?.isGroup) continue;
-          const other = conv?.participants?.[0];
-          const pid = other?._id?.toString?.() ?? (other != null ? String(other) : '');
-          if (pid) existingPartnerIds.add(pid);
-        }
-
-        const filtered = followingUsers.filter((u: any) => {
-          const uid = u._id?.toString?.() ?? String(u._id);
-          if (existingPartnerIds.has(uid)) return false;
-          const name = (u.name || '').toLowerCase();
-          const username = (u.username || '').toLowerCase();
-          return name.includes(searchTerm) || username.includes(searchTerm);
-        });
-
-        setSearchResults(filtered);
-      } catch (error: any) {
-        if (requestId !== searchRequestIdRef.current) return;
-        console.error('❌ [MessagesScreen] handleSearch: Error:', error);
-        setSearchConversationResults([]);
-        setSearchResults([]);
-      } finally {
-        if (requestId === searchRequestIdRef.current) {
-          setSearching(false);
-        }
-      }
+    searchDebounceRef.current = setTimeout(() => {
+      void executeMessagesSearch(query);
     }, 300);
   };
+
+  const clearSearch = useCallback(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    searchRequestIdRef.current += 1;
+    setSearchQuery('');
+    setSearchConversationResults([]);
+    setSearchResults([]);
+    setSearching(false);
+    Keyboard.dismiss();
+  }, []);
+
+  /** Light refresh: first page of chats + re-run active search (server-side `q` only). */
+  const handleMessagesRefresh = useCallback(async () => {
+    const now = Date.now();
+    if (isMessagesRefreshingRef.current) return;
+    if (now - lastMessagesRefreshAtRef.current < MESSAGES_REFRESH_MIN_MS) return;
+
+    isMessagesRefreshingRef.current = true;
+    lastMessagesRefreshAtRef.current = now;
+    setRefreshingMessages(true);
+
+    try {
+      resetConversationPagination();
+      const activeQuery = searchQuery.trim();
+      await Promise.all([
+        fetchConversationsRef.current?.(false, { silent: true }),
+        activeQuery ? executeMessagesSearch(activeQuery) : Promise.resolve(),
+      ]);
+      if (!activeQuery) {
+        scrollConversationListToTop();
+      }
+    } catch (_) {
+      /* ignore */
+    } finally {
+      isMessagesRefreshingRef.current = false;
+      setRefreshingMessages(false);
+    }
+  }, [searchQuery, executeMessagesSearch, resetConversationPagination, scrollConversationListToTop]);
 
   const handleStartConversation = async (selectedUser: any) => {
     try {
@@ -759,6 +996,7 @@ const MessagesScreen = ({ navigation }: any) => {
           deleteLabel={t('delete')}
           errorLabel={t('error')}
           deleteFailedLabel={t('failedToDeleteConversation')}
+          currentUserId={user?._id?.toString?.() ?? String(user?._id ?? '')}
           onOpen={handleOpenConversation}
           onAvatarPress={onMessagingAvatarPress}
           onRemoved={handleConversationRemoved}
@@ -771,6 +1009,7 @@ const MessagesScreen = ({ navigation }: any) => {
       storyByUserId,
       isUserOnline,
       t,
+      user?._id,
       handleOpenConversation,
       onMessagingAvatarPress,
       handleConversationRemoved,
@@ -883,35 +1122,77 @@ const MessagesScreen = ({ navigation }: any) => {
     ],
   );
 
-  if (loading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('messages')}</Text>
-        <TouchableOpacity
-          onPress={() => navigation.navigate('CreateGroup', { followingUsers })}
-          style={{ padding: 4 }}
-        >
-          <Text style={{ fontSize: 22, color: colors.primary }}>👥+</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.refreshBtn, refreshingMessages && styles.refreshBtnDisabled]}
+            onPress={() => void handleMessagesRefresh()}
+            disabled={refreshingMessages}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={t('refreshMessages') || 'Refresh messages'}
+          >
+            {refreshingMessages ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text style={[styles.refreshIcon, { color: colors.primary }]}>↻</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('CreateGroup')}
+            style={styles.headerIconBtn}
+            accessibilityRole="button"
+            accessibilityLabel={t('createGroup') || 'Create group'}
+          >
+            <Text style={{ fontSize: 22, color: colors.primary }}>👥+</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Search Input */}
       <View style={[styles.searchContainer, { borderBottomColor: colors.border }]}>
-        <TextInput
-          style={[styles.searchInput, { backgroundColor: colors.backgroundLight, color: colors.text, borderColor: colors.border }]}
-          placeholder={t('searchUsers')}
-          placeholderTextColor={colors.textGray}
-          value={searchQuery}
-          onChangeText={handleSearch}
-        />
+        <View
+          style={[
+            styles.searchInputRow,
+            { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+          ]}
+        >
+          <TextInput
+            style={[
+              styles.searchInput,
+              LTR_TEXT,
+              {
+                color: colors.text,
+                paddingRight: searchQuery.length > 0 ? 48 : 15,
+              },
+            ]}
+            placeholder={t('searchUsers')}
+            placeholderTextColor={colors.textGray}
+            value={searchQuery}
+            onChangeText={handleSearch}
+            autoCapitalize="none"
+            returnKeyType="search"
+          />
+          {searchQuery.length > 0 ? (
+            <Pressable
+              onPress={clearSearch}
+              style={({ pressed }) => [
+                styles.searchClearBtn,
+                pressed && styles.searchClearBtnPressed,
+              ]}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel={t('clearSearch') || 'Clear search'}
+            >
+              <View style={[styles.searchClearBtnInner, { backgroundColor: colors.border }]}>
+                <Text style={[styles.searchClearBtnText, { color: colors.text }]}>✕</Text>
+              </View>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       {/* Search Results */}
@@ -975,10 +1256,16 @@ const MessagesScreen = ({ navigation }: any) => {
             ) : null
           }
           ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Text style={[styles.emptyText, { color: colors.text }]}>{t('noConversations')}</Text>
-              <Text style={[styles.emptySubtext, { color: colors.textGray }]}>{t('startConversation')}</Text>
-            </View>
+            loading ? (
+              <View style={styles.inlineListLoading}>
+                <ActivityIndicator size="large" color={colors.primary} />
+              </View>
+            ) : (
+              <View style={styles.emptyContainer}>
+                <Text style={[styles.emptyText, { color: colors.text }]}>{t('noConversations')}</Text>
+                <Text style={[styles.emptySubtext, { color: colors.textGray }]}>{t('startConversation')}</Text>
+              </View>
+            )
           }
         />
       )}
@@ -1015,6 +1302,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  inlineListLoading: {
+    paddingVertical: 48,
+    alignItems: 'center',
+  },
   header: {
     padding: 15,
     borderBottomWidth: 1,
@@ -1027,6 +1318,28 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  headerIconBtn: {
+    padding: 4,
+  },
+  refreshBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refreshBtnDisabled: {
+    opacity: 0.6,
+  },
+  refreshIcon: {
+    fontSize: 23,
+    fontWeight: '700',
   },
   conversationItem: {
     flexDirection: 'row',
@@ -1162,15 +1475,46 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
-  searchInput: {
-    backgroundColor: COLORS.backgroundLight,
+  searchInputRow: {
+    position: 'relative',
+    borderWidth: 1,
     borderRadius: 20,
+    minHeight: 44,
+    justifyContent: 'center',
+    direction: 'ltr',
+  },
+  searchInput: {
     paddingHorizontal: 15,
     paddingVertical: 10,
     fontSize: 16,
-    color: COLORS.text,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  searchClearBtn: {
+    position: 'absolute',
+    right: 6,
+    top: 0,
+    bottom: 0,
+    width: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+    elevation: 10,
+  },
+  searchClearBtnPressed: {
+    opacity: 0.65,
+  },
+  searchClearBtnInner: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchClearBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 17,
   },
   searchResultsContainer: {
     flex: 1,

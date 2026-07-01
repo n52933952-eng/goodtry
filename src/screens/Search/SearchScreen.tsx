@@ -20,6 +20,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { isFollowedInSessionList, toUserIdStr } from '../../utils/followState';
+import { rememberFollowProfile, removeFollowProfile } from '../../utils/recentFollowProfiles';
 
 /** Keep search text on the left (same as English) when typing Arabic on RTL devices. */
 const SEARCH_INPUT_LTR = {
@@ -265,7 +266,10 @@ const SearchScreen = ({ navigation }: any) => {
 
       // Remove from suggestions when newly followed
       if (newFollowState) {
+        rememberFollowProfile(targetUser);
         setSuggestedUsers((prev) => prev.filter((u) => u?._id?.toString() !== targetId));
+      } else {
+        removeFollowProfile(targetId);
       }
 
       showToast(

@@ -3,12 +3,15 @@ import {
   View,
   ActivityIndicator,
   StyleSheet,
+  Image,
 } from 'react-native';
 import { createThumbnail } from 'react-native-create-thumbnail';
 import SafeImage from './SafeImage';
 
-const uriCache = new Map<string, string>();
-const inflight = new Map<string, Promise<string | null>>();
+type ThumbResult = { uri: string; width: number; height: number };
+
+const uriCache = new Map<string, ThumbResult>();
+const inflight = new Map<string, Promise<ThumbResult | null>>();
 /**
  * Negative cache: video URLs that failed every timestamp. Stops a broken video
  * (e.g. asset on a deleted remote account) from triggering 8 native
@@ -21,7 +24,7 @@ function toFileUri(path: string): string {
   return path.startsWith('file://') ? path : `file://${path}`;
 }
 
-function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<string | null> {
+function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<ThumbResult | null> {
   const base = Math.max(0, Math.floor(preferredTimeMs || 0));
   const cacheKey = `${videoUrl}#t=${base}`;
   const hit = uriCache.get(cacheKey);
@@ -52,12 +55,16 @@ function loadLocalThumbnail(videoUrl: string, preferredTimeMs: number): Promise<
             timeStamp: ms,
             format: 'jpeg',
             maxWidth: 960,
-            maxHeight: 540,
+            maxHeight: 960,
           });
-          const uri = toFileUri(res.path);
-          uriCache.set(cacheKey, uri);
+          const result: ThumbResult = {
+            uri: toFileUri(res.path),
+            width: Number(res.width) || 0,
+            height: Number(res.height) || 0,
+          };
+          uriCache.set(cacheKey, result);
           inflight.delete(cacheKey);
-          return uri;
+          return result;
         } catch (e: any) {
           // Try next timestamp — early frames are often black.
           if (ms === timeStamps[timeStamps.length - 1]) {
@@ -81,6 +88,8 @@ type Props = {
   placeholderColor: string;
   spinnerColor: string;
   resizeMode?: 'cover' | 'contain' | 'stretch' | 'repeat' | 'center';
+  /** Reports the poster's real aspect ratio (width / height) once known. */
+  onAspectRatio?: (aspect: number) => void;
 };
 
 /**
@@ -93,6 +102,7 @@ const VideoFeedPreview: React.FC<Props> = ({
   placeholderColor,
   spinnerColor,
   resizeMode = 'contain',
+  onAspectRatio,
 }) => {
   const server = serverThumbnail?.trim() || '';
   const [uri, setUri] = useState<string | null>(server || null);
@@ -103,6 +113,16 @@ const VideoFeedPreview: React.FC<Props> = ({
     if (thumb) {
       setUri(thumb);
       setGenerating(false);
+      // Server thumbnail: read its natural size to derive aspect ratio.
+      if (onAspectRatio) {
+        Image.getSize(
+          thumb,
+          (w, h) => {
+            if (w > 0 && h > 0) onAspectRatio(w / h);
+          },
+          () => {},
+        );
+      }
       return;
     }
 
@@ -111,7 +131,10 @@ const VideoFeedPreview: React.FC<Props> = ({
     loadLocalThumbnail(videoUrl, preferredTimeMs).then((local) => {
       if (cancelled) return;
       if (local) {
-        setUri(local);
+        setUri(local.uri);
+        if (onAspectRatio && local.width > 0 && local.height > 0) {
+          onAspectRatio(local.width / local.height);
+        }
       }
       setGenerating(false);
     });
@@ -119,7 +142,7 @@ const VideoFeedPreview: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [videoUrl, serverThumbnail, preferredTimeMs]);
+  }, [videoUrl, serverThumbnail, preferredTimeMs, onAspectRatio]);
 
   return (
     <>

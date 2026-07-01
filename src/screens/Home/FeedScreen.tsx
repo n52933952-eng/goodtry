@@ -10,8 +10,12 @@ import {
   TouchableOpacity,
   Modal,
   DeviceEventEmitter,
+  Animated,
+  Dimensions,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { usePost } from '../../context/PostContext';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
@@ -23,7 +27,9 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
 import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
 import { pruneStaleLiveFeedPosts } from '../../utils/pruneStaleLiveFeedPosts';
+import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
 import { useShowToast } from '../../hooks/useShowToast';
+import Svg, { Path } from 'react-native-svg';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
 import ChannelsModal from '../../components/ChannelsModal';
@@ -106,6 +112,94 @@ const FeedScreen = ({ navigation }: any) => {
   }).current;
   const VIDEO_SWITCH_DELAY_MS = 220;
   const VIDEO_CLEAR_DELAY_MS = 420;
+  const VIDEO_AUTOPLAY_RESUME_MS = 600;
+
+  const isScreenFocused = useIsFocused();
+  const [videoAutoplayReady, setVideoAutoplayReady] = useState(true);
+  const videoAutoplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Floating "scroll to top" button + "new posts" pill state. */
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [hasNewPosts, setHasNewPosts] = useState(false);
+  const scrollOffsetRef = useRef(0);
+  const lastScrollYRef = useRef(0);
+  /** Accumulated scroll distance in the current direction; debounces momentum jitter. */
+  const scrollDirAccumRef = useRef(0);
+  /** True once we're scrolled past the 3rd post (set by viewability). Gates the button. */
+  const pastThresholdRef = useRef(false);
+  const prevTopIdRef = useRef<string | null>(null);
+  const knownPostIdsRef = useRef<Set<string>>(new Set());
+  const scrollTopBtnAnim = useRef(new Animated.Value(0)).current;
+  const NEW_POSTS_MIN_OFFSET = 300;
+
+  const scrollFeedToTop = useCallback(() => {
+    const list = feedListRef.current;
+    if (list) {
+      const y = scrollOffsetRef.current;
+      const winH = Dimensions.get('window').height;
+      // Very far down: jump instantly. Animating a scroll would render every row in between
+      // and freeze/crash on a long feed (e.g. 500 posts). Only animate when we're close.
+      list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
+    }
+    setShowScrollTop(false);
+    setHasNewPosts(false);
+    scrollOffsetRef.current = 0;
+  }, []);
+
+  const handleFeedScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y;
+      const dy = y - lastScrollYRef.current;
+      lastScrollYRef.current = y;
+      scrollOffsetRef.current = y;
+
+      // Accumulate distance in the current direction so a single jittery frame
+      // (momentum wobble) can't toggle the button. Reset the accumulator whenever
+      // the direction flips.
+      const accum = scrollDirAccumRef.current;
+      scrollDirAccumRef.current = Math.sign(dy) === Math.sign(accum) ? accum + dy : dy;
+
+      // Twitter style: hide after a real upward drag; show while scrolling down
+      // once we're past the 3rd post. ~14px sustained movement is needed to flip.
+      if (scrollDirAccumRef.current < -14) {
+        setShowScrollTop((prev) => (prev ? false : prev));
+      } else if (scrollDirAccumRef.current > 14 && pastThresholdRef.current) {
+        setShowScrollTop((prev) => (prev ? prev : true));
+      }
+
+      if (y < 40 && hasNewPosts) setHasNewPosts(false);
+    },
+    [hasNewPosts],
+  );
+
+  // Flag "new posts" only when a genuinely new post lands at the very top while scrolled down.
+  useEffect(() => {
+    const list = visiblePosts;
+    const currentTopId = list[0]?._id != null ? String(list[0]._id) : null;
+    const prevTop = prevTopIdRef.current;
+    const prevKnown = knownPostIdsRef.current;
+    if (
+      prevTop &&
+      currentTopId &&
+      currentTopId !== prevTop &&
+      !prevKnown.has(currentTopId) &&
+      scrollOffsetRef.current > NEW_POSTS_MIN_OFFSET
+    ) {
+      setHasNewPosts(true);
+    }
+    prevTopIdRef.current = currentTopId;
+    knownPostIdsRef.current = new Set(list.map((p: any) => String(p._id)));
+  }, [visiblePosts]);
+
+  // Fade the floating button in/out.
+  useEffect(() => {
+    const visible = showScrollTop || hasNewPosts;
+    Animated.timing(scrollTopBtnAnim, {
+      toValue: visible ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [showScrollTop, hasNewPosts, scrollTopBtnAnim]);
 
   useEffect(() => {
     feedSessionUserIdRef.current = user?._id;
@@ -113,10 +207,10 @@ const FeedScreen = ({ navigation }: any) => {
 
   useEffect(() => {
     const unsub = navigation.addListener('scrollToTop', () => {
-      feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+      scrollFeedToTop();
     });
     return unsub;
-  }, [navigation]);
+  }, [navigation, scrollFeedToTop]);
 
   useEffect(() => {
     activeVideoPostIdRef.current = activeVideoPostId;
@@ -151,6 +245,20 @@ const FeedScreen = ({ navigation }: any) => {
 
   useFocusEffect(
     useCallback(() => {
+      // Kill any in-flight WebView audio immediately (create post cancel, profile, etc.).
+      pauseAllFeedVideos();
+      setActiveVideoPostId(null);
+      activeVideoPostIdRef.current = null;
+      setVideoAutoplayReady(false);
+      if (videoAutoplayTimerRef.current) {
+        clearTimeout(videoAutoplayTimerRef.current);
+        videoAutoplayTimerRef.current = null;
+      }
+      videoAutoplayTimerRef.current = setTimeout(() => {
+        setVideoAutoplayReady(true);
+        videoAutoplayTimerRef.current = null;
+      }, VIDEO_AUTOPLAY_RESUME_MS);
+
       setStoryRingReplayKey((k) => k + 1);
       refreshNotificationCount?.();
       fetchStoryStrip();
@@ -161,6 +269,21 @@ const FeedScreen = ({ navigation }: any) => {
         lastFeedFocusRefreshAtRef.current = now;
         fetchFeed();
       }
+
+      return () => {
+        pauseAllFeedVideos();
+        if (videoAutoplayTimerRef.current) {
+          clearTimeout(videoAutoplayTimerRef.current);
+          videoAutoplayTimerRef.current = null;
+        }
+        if (pendingVideoSwitchTimerRef.current) {
+          clearTimeout(pendingVideoSwitchTimerRef.current);
+          pendingVideoSwitchTimerRef.current = null;
+        }
+        setActiveVideoPostId(null);
+        activeVideoPostIdRef.current = null;
+        setVideoAutoplayReady(false);
+      };
       // fetchFeed intentionally omitted — use refs above to avoid focus-loop on loading/state changes
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fetchStoryStrip, refreshNotificationCount])
@@ -418,6 +541,8 @@ const FeedScreen = ({ navigation }: any) => {
     setHasMore(true);
     feedCursorRef.current = null;
     setStoryRingReplayKey((k) => k + 1);
+    setHasNewPosts(false);
+    scrollOffsetRef.current = 0;
     feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
     fetchStoryStrip();
     fetchFeed(false); // Reset and fetch from beginning
@@ -584,12 +709,15 @@ const FeedScreen = ({ navigation }: any) => {
         feedWideCard
         storyRing={ring}
         storyRingReplayKey={storyRingReplayKey}
-        autoPlayMedia={!!postId && activeVideoPostId === postId}
+        screenFocused={isScreenFocused}
+        autoPlayMedia={
+          !!postId && activeVideoPostId === postId && videoAutoplayReady && isScreenFocused
+        }
       />
     );
   };
 
-  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean }> }) => {
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean; index?: number | null }> }) => {
     const visibleVideos = viewableItems.filter((entry) => {
       if (!entry?.isViewable) return false;
       const p = entry?.item;
@@ -620,6 +748,33 @@ const FeedScreen = ({ navigation }: any) => {
       pendingVideoSwitchTimerRef.current = null;
     }, delayMs);
   }).current;
+
+  // Dedicated viewability for the button: fires instantly (0% / 0ms) so it isn't delayed by the
+  // video config. Show once the 4th post (index 3) is the topmost visible; hysteresis avoids flicker.
+  const onButtonViewable = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ isViewable?: boolean; index?: number | null }> }) => {
+      const idxs = viewableItems
+        .filter((v) => v?.isViewable && typeof v.index === 'number')
+        .map((v) => v.index as number);
+      if (idxs.length === 0) return;
+      const firstVisible = Math.min(...idxs);
+      if (firstVisible >= 3) {
+        // Eligible to appear — actual show happens on downward scroll (Twitter style).
+        pastThresholdRef.current = true;
+      } else if (firstVisible <= 1) {
+        pastThresholdRef.current = false;
+        setShowScrollTop((prev) => (prev ? false : prev));
+      }
+    },
+  ).current;
+
+  const viewabilityPairs = useRef([
+    { viewabilityConfig, onViewableItemsChanged },
+    {
+      viewabilityConfig: { itemVisiblePercentThreshold: 0, minimumViewTime: 0 },
+      onViewableItemsChanged: onButtonViewable,
+    },
+  ]).current;
 
   const quickActionsHeader = (
     <View style={styles.quickAccessHeaderContainer}>
@@ -765,8 +920,9 @@ const FeedScreen = ({ navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
-        onViewableItemsChanged={onViewableItemsChanged}
-        viewabilityConfig={viewabilityConfig}
+        onScroll={handleFeedScroll}
+        scrollEventThrottle={16}
+        viewabilityConfigCallbackPairs={viewabilityPairs}
         ListHeaderComponent={
           <View>
             {quickActionsHeader}
@@ -793,6 +949,55 @@ const FeedScreen = ({ navigation }: any) => {
           ) : null
         }
       />
+
+      {/* Floating scroll-to-top / new posts button (always mounted; visibility is animated) */}
+      {(
+        <Animated.View
+          pointerEvents={showScrollTop || hasNewPosts ? 'box-none' : 'none'}
+          style={[
+            styles.scrollTopWrap,
+            {
+              opacity: scrollTopBtnAnim,
+              transform: [
+                {
+                  translateY: scrollTopBtnAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [24, 0],
+                  }),
+                },
+                {
+                  scale: scrollTopBtnAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.8, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={scrollFeedToTop}
+            accessibilityRole="button"
+            accessibilityLabel={hasNewPosts ? 'See new posts' : 'Scroll to top'}
+            style={[
+              hasNewPosts ? styles.newPostsPill : styles.scrollTopButton,
+              { backgroundColor: colors.primary },
+            ]}
+          >
+            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+              <Path
+                d="M6 15l6-6 6 6"
+                stroke="#FFFFFF"
+                strokeWidth={2.4}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </Svg>
+            {hasNewPosts && <Text style={styles.newPostsText}>New posts</Text>}
+          </TouchableOpacity>
+        </Animated.View>
+      )}
 
       {/* Channels Modal */}
       <ChannelsModal
@@ -1094,6 +1299,41 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  scrollTopWrap: {
+    position: 'absolute',
+    bottom: 20,
+    alignSelf: 'center',
+  },
+  scrollTopButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 6,
+  },
+  newPostsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 6,
+  },
+  newPostsText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   quickAccessHeaderContainer: {
     paddingVertical: 10,

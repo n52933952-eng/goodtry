@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,8 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useSocket } from '../../context/SocketContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+
+const FOLLOWING_PAGE_SIZE = 30;
 
 const idStr = (v: any): string => {
   if (!v) return '';
@@ -89,6 +91,11 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
   const [addMembersVisible, setAddMembersVisible] = useState(false);
   const [followingUsers, setFollowingUsers] = useState<any[]>([]);
   const [loadingFollowing, setLoadingFollowing] = useState(false);
+  const [loadingMoreFollowing, setLoadingMoreFollowing] = useState(false);
+  const followingCursorRef = useRef<string | null>(null);
+  const hasMoreFollowingRef = useRef(false);
+  const loadingMoreFollowingRef = useRef(false);
+  const seenFollowingIdsRef = useRef<Set<string>>(new Set());
   const [addingMemberId, setAddingMemberId] = useState<string | null>(null);
 
   const myId = idStr(user?._id);
@@ -99,27 +106,70 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
     (conversation.participants || []).map((p: any) => idStr(p._id || p))
   );
 
-  const fetchFollowingUsers = useCallback(async () => {
-    setLoadingFollowing(true);
+  const fetchFollowingPage = useCallback(async (loadMore: boolean) => {
+    if (loadMore) {
+      if (!hasMoreFollowingRef.current || loadingMoreFollowingRef.current || !followingCursorRef.current) return;
+      loadingMoreFollowingRef.current = true;
+      setLoadingMoreFollowing(true);
+    } else {
+      setLoadingFollowing(true);
+      followingCursorRef.current = null;
+      seenFollowingIdsRef.current = new Set();
+      hasMoreFollowingRef.current = false;
+    }
+
     try {
-      // Backend: GET /api/user/following — session user (optional ?userId= for other profiles).
-      // Do NOT use /following/:id path (that route does not exist → load fails).
-      const data = await apiService.get(ENDPOINTS.GET_FOLLOWING_USERS);
-      const list = Array.isArray(data)
-        ? data
-        : data?.following || data?.users || [];
-      setFollowingUsers(list);
+      const parts = [`limit=${FOLLOWING_PAGE_SIZE}`];
+      if (loadMore && followingCursorRef.current) {
+        parts.push(`cursor=${encodeURIComponent(followingCursorRef.current)}`);
+      }
+      const data = await apiService.get(`${ENDPOINTS.GET_FOLLOWING_USERS}?${parts.join('&')}`);
+      const page: any[] = Array.isArray(data) ? data : data?.users || data?.following || [];
+      followingCursorRef.current = data?.nextCursor ?? null;
+      hasMoreFollowingRef.current = !!data?.hasMore && !!followingCursorRef.current;
+
+      if (loadMore) {
+        setFollowingUsers((prev) => {
+          const merged = [...prev];
+          for (const u of page) {
+            const id = idStr(u._id || u);
+            if (!id || seenFollowingIdsRef.current.has(id)) continue;
+            seenFollowingIdsRef.current.add(id);
+            merged.push(u);
+          }
+          return merged;
+        });
+      } else {
+        const next: any[] = [];
+        const seen = new Set<string>();
+        for (const u of page) {
+          const id = idStr(u._id || u);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          next.push(u);
+        }
+        seenFollowingIdsRef.current = seen;
+        setFollowingUsers(next);
+      }
     } catch (_) {
+      if (!loadMore) setFollowingUsers([]);
       Alert.alert(t('error'), t('couldNotLoadFollowingList'));
     } finally {
-      setLoadingFollowing(false);
+      loadingMoreFollowingRef.current = false;
+      if (loadMore) setLoadingMoreFollowing(false);
+      else setLoadingFollowing(false);
     }
   }, [t]);
 
+  const addableFollowingUsers = useMemo(
+    () => followingUsers.filter((u: any) => !currentParticipantIds.has(idStr(u._id || u))),
+    [followingUsers, conversation.participants],
+  );
+
   const handleOpenAddMembers = useCallback(() => {
     setAddMembersVisible(true);
-    fetchFollowingUsers();
-  }, [fetchFollowingUsers]);
+    fetchFollowingPage(false);
+  }, [fetchFollowingPage]);
 
   const handleAddMember = useCallback(async (newUserId: string) => {
     setAddingMemberId(newUserId);
@@ -441,12 +491,19 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
             </View>
             {loadingFollowing ? (
               <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 32 }} />
-            ) : followingUsers.length === 0 ? (
+            ) : addableFollowingUsers.length === 0 ? (
               <Text style={[styles.emptyFollowing, { color: colors.textGray }]}>{t('noOneToAddFromFollowing')}</Text>
             ) : (
               <FlatList
-                data={followingUsers.filter((u: any) => !currentParticipantIds.has(idStr(u._id || u)))}
+                data={addableFollowingUsers}
                 keyExtractor={(item) => idStr(item._id || item)}
+                onEndReached={() => fetchFollowingPage(true)}
+                onEndReachedThreshold={0.35}
+                ListFooterComponent={
+                  loadingMoreFollowing ? (
+                    <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 16 }} />
+                  ) : null
+                }
                 renderItem={({ item }) => {
                   const uid = idStr(item._id || item);
                   const adding = addingMemberId === uid;

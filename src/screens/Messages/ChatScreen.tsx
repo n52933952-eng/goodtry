@@ -35,6 +35,10 @@ import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
 import { parseLiveShareMessage } from '../../utils/liveShareMessage';
 import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
+import {
+  getOutgoingDeliveryTicks,
+  normalizeOutgoingDeliveryFields,
+} from '../../utils/messageDeliveryTicks';
 
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
@@ -82,11 +86,14 @@ const extractSharedPostId = (text?: string) => {
   return match?.[1] || null;
 };
 
-/** `delivered` only after recipient app acks (WhatsApp-style). Missing field should stay conservative (sent). */
-function isOutgoingDeliveredForTicks(item: any) {
-  if (item.delivered === true) return true;
-  if (item.delivered === false) return false;
-  return false;
+function normalizeMessagesFromServer(messagesData: any[], currentUserIdStr: string, getSenderId: (s: any) => string) {
+  return messagesData.map((m) => {
+    const sid = getSenderId(m?.sender);
+    if (sid && sid === currentUserIdStr) {
+      return normalizeOutgoingDeliveryFields(m);
+    }
+    return m;
+  });
 }
 
 function collectUndeliveredIncomingIds(
@@ -163,6 +170,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const messagesEndRef = useRef<FlatList>(null);
+  const messageInputRef = useRef<TextInput>(null);
   const isCallInProgressRef = useRef(false); // Prevent duplicate calls
   const initiatedCallAtRef = useRef<number>(0); // When we set ref true (avoid reset during 300ms delay)
   const shouldAutoScrollRef = useRef(true);
@@ -175,6 +183,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const messageCursorRef = useRef<string | null>(null);
 
   const lastScrollOffsetRef = useRef(0);
+  const CHAT_NEAR_BOTTOM_THRESHOLD = 80;
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
   const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
   const estimatedMessageHeight = 72; // For scroll position after prepending (same as web pagination)
@@ -391,7 +400,7 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   // Real-time: message deleted – backend emits messageDeleted with { conversationId, messageId } (same as web)
   const handleMessagesSeen = useCallback(
-    (data: { conversationId?: string }) => {
+    (data: { conversationId?: string; messageIds?: string[] }) => {
       const cid = data?.conversationId != null ? String(data.conversationId) : '';
       const myConv =
         (currentConversationIdRef.current ?? conversationId) != null
@@ -399,11 +408,22 @@ const ChatScreen = ({ route, navigation }: any) => {
           : '';
       if (cid && myConv && cid !== myConv) return;
 
+      const markedIds = new Set(
+        (Array.isArray(data?.messageIds) ? data.messageIds : [])
+          .map((id) => String(id).trim())
+          .filter(Boolean),
+      );
+      if (markedIds.size === 0) {
+        fetchMessagesRef.current?.(false, { silent: true });
+        return;
+      }
+
       setMessages((prev) =>
         prev.map((msg) => {
           const sid = getSenderId(msg.sender);
-          if (sid === currentUserIdStr && !msg.seen) {
-            return { ...msg, seen: true };
+          const mid = msg._id?.toString?.() ?? (msg._id != null ? String(msg._id) : '');
+          if (sid === currentUserIdStr && mid && markedIds.has(mid)) {
+            return normalizeOutgoingDeliveryFields({ ...msg, seen: true, delivered: true });
           }
           return msg;
         })
@@ -500,7 +520,9 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       setMessages((prev) =>
         prev.map((m) =>
-          (m._id?.toString?.() ?? String(m._id)) === mid ? { ...m, delivered: true } : m
+          (m._id?.toString?.() ?? String(m._id)) === mid
+            ? normalizeOutgoingDeliveryFields({ ...m, delivered: true })
+            : m
         )
       );
     },
@@ -650,6 +672,39 @@ const ChatScreen = ({ route, navigation }: any) => {
     [socket, user?._id, otherUser?._id, userId, routeConversationIdStr, routeGroupConversationIdStr, isGroup, groupConversation?.isGroup, emitTypingStop, toIdString]
   );
 
+  const isNearLatestMessages = useCallback(() => {
+    return shouldAutoScrollRef.current || lastScrollOffsetRef.current < CHAT_NEAR_BOTTOM_THRESHOLD;
+  }, []);
+
+  const scrollToLatestMessages = useCallback((animated = false) => {
+    try {
+      (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated });
+    } catch (_) {
+      // ignore
+    }
+  }, []);
+
+  const toggleEmojiPicker = useCallback(() => {
+    setAttachOpen(false);
+    setEmojiOpen((open) => {
+      const next = !open;
+      if (next) {
+        Keyboard.dismiss();
+        messageInputRef.current?.blur();
+      }
+      return next;
+    });
+  }, []);
+
+  const appendChatEmoji = useCallback((emoji: string) => {
+    setNewMessage((prev) => `${prev}${emoji}`);
+  }, []);
+
+  const toggleAttachMenu = useCallback(() => {
+    setEmojiOpen(false);
+    setAttachOpen((open) => !open);
+  }, []);
+
   // Join conversation socket room so messageDeleted / live card removal arrives in real time.
   useEffect(() => {
     const convId =
@@ -788,7 +843,8 @@ const ChatScreen = ({ route, navigation }: any) => {
         return;
       }
 
-      setMessages(messagesData);
+      const normalizedPage = normalizeMessagesFromServer(messagesData, currentUserIdStr, getSenderId);
+      setMessages(normalizedPage);
       const ackIds = collectUndeliveredIncomingIds(messagesData, currentUserIdStr, getSenderId);
       if (socket && ackIds.length) {
         socket.emit('ackMessageDelivered', { messageIds: ackIds });
@@ -797,7 +853,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       if (existingConversationId) {
         writeChatMessagesCache(
           String(existingConversationId),
-          messagesData,
+          normalizedPage,
           hasMore,
           messageCursorRef.current,
         );
@@ -997,6 +1053,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         },
         createdAt: new Date().toISOString(),
         seen: false,
+        delivered: false,
         ...(replySnapshot?._id ? { replyTo: replySnapshot } : {}),
         ...(mediaSnapshot?.uri ? { img: mediaSnapshot.uri } : {}),
       };
@@ -1008,11 +1065,14 @@ const ChatScreen = ({ route, navigation }: any) => {
       setNewMessage('');
       setPendingMedia(null);
       setReplyingTo(null);
+      // Always show the sent message at the bottom — instant jump, no scroll animation.
+      shouldAutoScrollRef.current = true;
+      requestAnimationFrame(() => scrollToLatestMessages(false));
+      setTimeout(() => scrollToLatestMessages(false), 50);
     }
 
     setSending(true);
     isSendingRef.current = true;
-    shouldAutoScrollRef.current = true;
     try {
       let response: any = null;
 
@@ -1050,16 +1110,18 @@ const ChatScreen = ({ route, navigation }: any) => {
       }
 
       if (response) {
-        const messageWithSender = {
+        const messageWithSender = normalizeOutgoingDeliveryFields({
           ...response,
           _pending: false,
+          delivered: response.delivered === true,
+          seen: response.seen === true,
           sender: response.sender || {
             _id: user?._id,
             name: user?.name,
             username: user?.username,
             profilePic: user?.profilePic,
           },
-        };
+        });
 
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m._clientMsgId === clientMsgId);
@@ -1078,12 +1140,10 @@ const ChatScreen = ({ route, navigation }: any) => {
           setCurrentConversationId(response.conversationId);
         }
 
-        // Inverted list: keep newest visible at offset 0 (bottom)
-        setTimeout(() => {
-          try {
-            (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
-          } catch (_) {}
-        }, 120);
+        // Inverted list: snap to newest after server ack (instant, even if user was reading history).
+        shouldAutoScrollRef.current = true;
+        requestAnimationFrame(() => scrollToLatestMessages(false));
+        setTimeout(() => scrollToLatestMessages(false), 80);
       }
     } catch (error) {
       const maxAttempts = 3;
@@ -1445,7 +1505,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       ? (user?.name || user?.username) 
       : (item.sender?.name || item.sender?.username || otherUser?.name || otherUser?.username);
 
-    const outgoingDelivered = isOutgoingDeliveredForTicks(item);
+    const outgoingTicks = isOwn ? getOutgoingDeliveryTicks(item) : null;
     const liveShare = parseLiveShareMessage(item?.text);
     const sharedPostId = liveShare ? null : extractSharedPostId(item?.text);
     const sharedPost = sharedPostId ? (sharedPostMap[sharedPostId] ?? sharedPostCache.get(sharedPostId) ?? undefined) : undefined;
@@ -1721,23 +1781,23 @@ const ChatScreen = ({ route, navigation }: any) => {
             >
               {formatTime(item.createdAt)}
             </Text>
-            {isSenderLeft ? (
+            {isSenderLeft && outgoingTicks ? (
               <Text
                 style={[
                   styles.deliveryTicks,
-                  item.seen === true ? { color: WA.tickRead } : { color: WA.tickUnseen },
+                  { color: outgoingTicks.color },
                 ]}
                 accessibilityLabel={
-                  item._pending
+                  outgoingTicks.state === 'sending'
                     ? 'Sending'
-                    : item.seen === true
+                    : outgoingTicks.state === 'read'
                       ? 'Read'
-                      : outgoingDelivered
+                      : outgoingTicks.state === 'delivered'
                         ? 'Delivered'
                         : 'Sent'
                 }
               >
-                {item._pending || (item.seen !== true && !outgoingDelivered) ? '✓' : '✓✓'}
+                {outgoingTicks.ticks}
               </Text>
             ) : null}
           </View>
@@ -1900,7 +1960,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           // With inverted lists, being "at the bottom" means contentOffset.y is near 0.
           const y = e?.nativeEvent?.contentOffset?.y ?? 0;
           lastScrollOffsetRef.current = y;
-          shouldAutoScrollRef.current = y < 80;
+          shouldAutoScrollRef.current = y < CHAT_NEAR_BOTTOM_THRESHOLD;
         }}
         ListEmptyComponent={
           loading ? (
@@ -2005,11 +2065,16 @@ const ChatScreen = ({ route, navigation }: any) => {
 
       {emojiOpen && (
         <View style={[styles.emojiComposer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.emojiComposerRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="always"
+            contentContainerStyle={styles.emojiComposerRow}
+          >
             {CHAT_EMOJIS.map((e) => (
               <TouchableOpacity
                 key={e}
-                onPress={() => setNewMessage((prev) => `${prev}${e}`)}
+                onPress={() => appendChatEmoji(e)}
                 style={styles.emojiComposerBtn}
                 activeOpacity={0.8}
               >
@@ -2021,17 +2086,18 @@ const ChatScreen = ({ route, navigation }: any) => {
       )}
 
       <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
-        <TouchableOpacity onPress={() => setAttachOpen((v) => !v)} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
+        <TouchableOpacity onPress={toggleAttachMenu} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
           <Text style={[styles.attachIcon, { color: colors.text }]}>＋</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={() => setEmojiOpen((v) => !v)}
+          onPressIn={toggleEmojiPicker}
           style={[styles.attachBtn, { backgroundColor: colors.border }]}
           activeOpacity={0.85}
         >
           <Text style={[styles.attachIcon, { color: colors.text }]}>😊</Text>
         </TouchableOpacity>
         <TextInput
+          ref={messageInputRef}
           style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
           placeholder={t('typeMessage')}
           placeholderTextColor={colors.textGray}
@@ -2040,21 +2106,11 @@ const ChatScreen = ({ route, navigation }: any) => {
           multiline
           onFocus={() => {
             setEmojiOpen(false);
-            // Inverted list: keep latest message visible when keyboard opens.
-            // Offset 0 is the "bottom" (newest) for inverted FlatList.
-            shouldAutoScrollRef.current = true;
-            requestAnimationFrame(() => {
-              try {
-                (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
-              } catch (_) {}
-            });
-            // When keyboard opens, ensure input and latest message are visible
-            shouldAutoScrollRef.current = true;
-            setTimeout(() => {
-              try {
-                (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
-              } catch (_) {}
-            }, 120);
+            // Only snap to latest when user was already near the bottom — don't yank them down while reading history.
+            if (isNearLatestMessages()) {
+              shouldAutoScrollRef.current = true;
+              requestAnimationFrame(() => scrollToLatestMessages(false));
+            }
           }}
         />
         <TouchableOpacity

@@ -301,34 +301,16 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     const prev = userRef.current;
     if (!prev?._id) return;
     try {
-      const [meData, followingList] = await Promise.all([
-        apiService.get(ENDPOINTS.GET_ME).catch(() => null),
-        apiService.get(ENDPOINTS.GET_FOLLOWING_USERS).catch(() => null),
-      ]);
+      const data = await apiService.get(ENDPOINTS.GET_ME).catch(() => null);
+      if (!data?._id || data?.error) return;
 
-      const data = meData && !meData?.error && meData?._id ? meData : null;
-
-      // Follow collection via /following (same source as web); /me may lag until backend deploy.
-      let following: string[] = prev.following;
-      if (Array.isArray(followingList) && followingList.length > 0) {
-        following = followingList
-          .map((u: { _id?: string }) => u?._id)
-          .filter((id): id is string => Boolean(id));
-      } else if (data && Array.isArray(data.following)) {
-        following = data.following;
-      }
-
-      let followers: string[] = prev.followers;
-      if (data && Array.isArray(data.followers)) {
-        followers = data.followers;
-      }
-
-      if (!data?._id && following === prev.following) return;
+      const following = Array.isArray(data.following) ? data.following : prev.following;
+      const followers = Array.isArray(data.followers) ? data.followers : prev.followers;
 
       setUser({
         ...prev,
-        ...(data || {}),
-        _id: data?._id || data?.id || prev._id,
+        ...data,
+        _id: data._id || data.id || prev._id,
         following,
         followers,
       });

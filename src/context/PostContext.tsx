@@ -9,6 +9,20 @@ import { ENDPOINTS } from '../utils/constants';
 const feedHiddenStorageKey = (userId: string) => `feed_hidden_post_ids_${userId}`;
 const feedHiddenSourcesKey = (userId: string) => `feed_hidden_sources_${userId}`;
 
+/** Max posts kept in memory while scrolling — prevents FlatList from growing forever (RAM / jank). */
+export const FEED_IN_MEMORY_MAX_POSTS = 300;
+
+const trimFeedPostsToMax = (list: Post[]): Post[] => {
+  const safe = Array.isArray(list) ? list : [];
+  if (safe.length <= FEED_IN_MEMORY_MAX_POSTS) return safe;
+  // Newest-first: keep the top window, drop oldest scrolled past at the bottom.
+  const live = safe.filter((p) => (p as any)?.isLive);
+  const normal = safe.filter((p) => !(p as any)?.isLive);
+  const maxNormal = FEED_IN_MEMORY_MAX_POSTS - live.length;
+  if (maxNormal <= 0) return live.slice(0, FEED_IN_MEMORY_MAX_POSTS);
+  return [...live, ...normal.slice(0, maxNormal)];
+};
+
 export interface Post {
   _id: string;
   postedBy: {
@@ -23,6 +37,17 @@ export interface Post {
   isCollaborative?: boolean;
   contributors?: any[];
   likes: string[];
+  /** Denormalized like count (source of truth; the raw `likes` array is stripped server-side). */
+  likeCount?: number;
+  /** Whether the current viewer liked this post. */
+  likedByMe?: boolean;
+  /** Most-recent liker preview for the inline "liked by [avatar]" UI. */
+  likePreview?: {
+    _id: string;
+    username?: string;
+    name?: string;
+    profilePic?: string | null;
+  } | null;
   replies: any[];
   createdAt: string;
   updatedAt: string;
@@ -96,22 +121,18 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const sortPostsNewestFirst = useCallback(
     (list: Post[]) => {
       const safe = Array.isArray(list) ? list : [];
-      const uid = user?._id != null ? String(user._id) : '';
-      // Home feed no longer injects Football/Weather — only user-added channel cards get a pinned strip.
-      const isPinnedFeedCard = (p: any) =>
-        !!p && p.channelAddedBy != null && String(p.channelAddedBy) === uid;
+      // Only live pseudo-posts stay pinned on top. Channel cards sort by time with normals
+      // (they still only arrive on the first page from the backend, so they stay in the first block).
       const live: Post[] = [];
-      const pinned: Post[] = [];
       const normal: Post[] = [];
       for (const p of safe) {
         if (p && (p as any).isLive) live.push(p);
-        else if (isPinnedFeedCard(p)) pinned.push(p);
         else normal.push(p);
       }
       normal.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
-      return [...live, ...pinned, ...normal];
+      return [...live, ...normal];
     },
-    [user?._id],
+    [],
   );
 
   useEffect(() => {
@@ -358,7 +379,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         updated.sort((a: any, b: any) => {
         return getSortTimeMs(b) - getSortTimeMs(a);
         });
-        return updated;
+        return trimFeedPostsToMax(updated);
       }
 
       const fromSameAuthor: any[] = [];
@@ -381,7 +402,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         return getSortTimeMs(b) - getSortTimeMs(a);
       });
 
-      return updated;
+      return trimFeedPostsToMax(updated);
     });
   }, []);
 
@@ -508,7 +529,13 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       return safeArray.map((post) =>
         post._id === postId
-          ? { ...post, likes: [...(post.likes || []), userId] }
+          ? {
+              ...post,
+              likes: [...(post.likes || []), userId],
+              // likeCount is the source of truth (server strips the `likes` array).
+              likeCount: (post.likeCount ?? post.likes?.length ?? 0) + 1,
+              likedByMe: true,
+            }
           : post
       );
     });
@@ -520,7 +547,12 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       return safeArray.map((post) =>
         post._id === postId
-          ? { ...post, likes: (post.likes || []).filter((id) => id !== userId) }
+          ? {
+              ...post,
+              likes: (post.likes || []).filter((id) => id !== userId),
+              likeCount: Math.max(0, (post.likeCount ?? post.likes?.length ?? 0) - 1),
+              likedByMe: false,
+            }
           : post
       );
     });
@@ -533,8 +565,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       const fresh = (Array.isArray(newPosts) ? newPosts : []).filter(
         (p) => p?._id && !existingIds.has(String(p._id))
       );
-      // Keep existing order intact, only append fresh posts at end
-      return filterPostsForFeed([...safeArray, ...fresh]);
+      // Keep existing order intact, only append fresh posts at end; cap total in memory.
+      return trimFeedPostsToMax(filterPostsForFeed([...safeArray, ...fresh]));
     });
   }, [filterPostsForFeed]);
 
@@ -557,7 +589,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         setPosts: (next) =>
           setPosts((prev) => {
             const computed = typeof next === 'function' ? (next as (p: Post[]) => Post[])(prev) : next;
-            return sortPostsNewestFirst(filterPostsForFeed(computed));
+            return trimFeedPostsToMax(sortPostsNewestFirst(filterPostsForFeed(computed)));
           }),
         appendPosts,
         addPost,

@@ -59,6 +59,8 @@ export const ENDPOINTS = {
   DELETE_POST: '/api/post',
   // Backend route is /api/post/likes/:id
   LIKE_POST: '/api/post/likes',
+  // Backend route is /api/post/likes-list/:id (paginated "who liked" list)
+  GET_POST_LIKES: '/api/post/likes-list',
   GET_POST: '/api/post',
   GET_USER_POSTS: '/api/post/user',
   

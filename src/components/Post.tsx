@@ -41,6 +41,7 @@ import FootballMatchCard from './FootballMatchCard';
 import SafeImage from './SafeImage';
 import PinchZoomImageModal from './PinchZoomImageModal';
 import FeedPostImageZoom from './FeedPostImageZoom';
+import PostLikesModal from './PostLikesModal';
 import { navigateToMainStack } from '../utils/navigationHelpers';
 import {
   isGoFishFeedPost,
@@ -51,6 +52,7 @@ import {
 } from '../utils/gameFeedPostUtils';
 import { useFeedCardMetrics } from '../utils/feedCardLayout';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
+import { FEED_VIDEO_PAUSE_ALL } from '../utils/feedVideoPlayback';
 
 const INLINE_VIDEO_CONTAIN_CSS = `
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -68,12 +70,27 @@ const INLINE_VIDEO_CONTAIN_CSS = `
   }
 `;
 
+/** Compact counts: 999 → "999", 1200 → "1.2k", 15000 → "15k". */
+function formatCompactCount(count: number): string {
+  const n = Math.max(0, Math.floor(count));
+  if (n < 1000) return String(n);
+  if (n < 10000) {
+    const val = Math.round((n / 1000) * 10) / 10;
+    return val % 1 === 0 ? `${val}k` : `${val.toFixed(1)}k`;
+  }
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  const val = Math.round((n / 1_000_000) * 10) / 10;
+  return val % 1 === 0 ? `${val}m` : `${val.toFixed(1)}m`;
+}
+
 interface PostProps {
   post: any;
   disableNavigation?: boolean; // If true, disable navigation to PostDetail (for PostDetailScreen)
   fromScreen?: string; // Screen name where Post is rendered (e.g., 'UserProfile')
   userProfileParams?: any; // Params to pass when navigating back to UserProfile
   autoPlayMedia?: boolean; // Force media autoplay (used in PostDetail)
+  /** Parent screen focus — false while another screen is on top (feed/profile/detail). */
+  screenFocused?: boolean;
   /** When the post is updated in-place (e.g. contributors), parent can sync local state (Post detail). */
   onPostUpdated?: (updated: any) => void;
   /** Feed: active story for this author (for ring + tap menu). */
@@ -96,6 +113,7 @@ const Post: React.FC<PostProps> = ({
   fromScreen,
   userProfileParams,
   autoPlayMedia = false,
+  screenFocused = true,
   onPostUpdated,
   storyRing,
   storyRingReplayKey = 0,
@@ -329,34 +347,52 @@ const Post: React.FC<PostProps> = ({
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
   const [isFeedVideoPlaying, setIsFeedVideoPlaying] = useState(false);
+  const [feedVideoPreviewTimeMs, setFeedVideoPreviewTimeMs] = useState(1000);
   /** Once the in-feed video errors (e.g. dead remote URL), keep the WebView un-mounted so it doesn't keep retrying and pressuring memory across long feeds. */
   const [feedVideoErrored, setFeedVideoErrored] = useState(false);
+  /** Real video aspect ratio (width / height) so portrait clips aren't shown tiny in a 16:9 box. */
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
-  const autoPlayMediaRef = useRef(autoPlayMedia);
-  autoPlayMediaRef.current = autoPlayMedia;
+  const mediaShouldPlay = autoPlayMedia && screenFocused;
+  const mediaShouldPlayRef = useRef(mediaShouldPlay);
+  mediaShouldPlayRef.current = mediaShouldPlay;
   const lastFeedVideoTimeRef = useRef(0);
+  const lastFeedVideoTimeUpdateRef = useRef(0);
 
   const pauseDetailVideo = useCallback(() => {
-    detailVideoWebViewRef.current?.injectJavaScript(`
-      (function () {
-        var v = document.querySelector('video');
-        if (!v) return;
-        try { v.pause(); v.removeAttribute('src'); v.load(); } catch (_) {}
-      })();
-      true;
-    `);
+    try {
+      detailVideoWebViewRef.current?.injectJavaScript(`
+        (function () {
+          var v = document.querySelector('video');
+          if (!v) return;
+          try { v.pause(); v.muted = true; v.removeAttribute('src'); v.load(); } catch (_) {}
+        })();
+        true;
+      `);
+      detailVideoWebViewRef.current?.stopLoading?.();
+    } catch (_) {}
   }, []);
 
-  useEffect(() => {
-    if (!disableNavigation) return;
-    if (!autoPlayMedia) {
-      pauseDetailVideo();
-      setYoutubePlaying(false);
-    }
-  }, [disableNavigation, autoPlayMedia, pauseDetailVideo]);
-  const lastFeedVideoTimeUpdateRef = useRef(0);
-  const [feedVideoPreviewTimeMs, setFeedVideoPreviewTimeMs] = useState(1000);
+  const stopFeedVideoWebView = useCallback(() => {
+    try {
+      feedVideoWebViewRef.current?.injectJavaScript(`
+        (function () {
+          var v = document.getElementById('v');
+          if (!v) return;
+          try { v.pause(); v.muted = true; v.removeAttribute('src'); v.load(); } catch (_) {}
+        })();
+        true;
+      `);
+      feedVideoWebViewRef.current?.stopLoading?.();
+    } catch (_) {}
+  }, []);
+
+  const pauseFeedVideo = useCallback(() => {
+    stopFeedVideoWebView();
+    setIsFeedVideoPlaying(false);
+  }, [stopFeedVideoWebView]);
+
   const resumeFeedVideo = () => {
     setIsFeedVideoPausedByUser(false);
     setIsFeedVideoPlaying(true);
@@ -388,9 +424,16 @@ const Post: React.FC<PostProps> = ({
   const [capsuleSealed, setCapsuleSealed] = useState(false);
   const [capsuleSelectedLabel, setCapsuleSelectedLabel] = useState('');
   const [youtubePlaying, setYoutubePlaying] = useState(true);
-  // Local state for optimistic like updates (like web)
-  const [localLiked, setLocalLiked] = useState(post.likes?.includes(user?._id));
-  const [localLikesCount, setLocalLikesCount] = useState(post.likes?.length || 0);
+  // Local state for optimistic like updates (like web).
+  // `likeCount`/`likedByMe` are the source of truth (server strips the raw `likes` array);
+  // fall back to the legacy array only for any un-migrated payloads.
+  const [localLiked, setLocalLiked] = useState(
+    post.likedByMe ?? post.likes?.includes(user?._id) ?? false,
+  );
+  const [localLikesCount, setLocalLikesCount] = useState(
+    post.likeCount ?? post.likes?.length ?? 0,
+  );
+  const [likesModalVisible, setLikesModalVisible] = useState(false);
   
   // Weather post state
   const isWeatherPost = post.postedBy?.username === 'Weather' && post.weatherData;
@@ -675,9 +718,9 @@ const Post: React.FC<PostProps> = ({
 
   // Update local state when post prop changes
   useEffect(() => {
-    setLocalLiked(post.likes?.includes(user?._id));
-    setLocalLikesCount(post.likes?.length || 0);
-  }, [post.likes, user?._id]);
+    setLocalLiked(post.likedByMe ?? post.likes?.includes(user?._id) ?? false);
+    setLocalLikesCount(post.likeCount ?? post.likes?.length ?? 0);
+  }, [post.likes, post.likeCount, post.likedByMe, user?._id]);
 
   useEffect(() => {
     // Default to muted in feed (Twitter/X style).
@@ -694,30 +737,46 @@ const Post: React.FC<PostProps> = ({
 
   useEffect(() => {
     // New post or leaving viewport should reset manual pause so auto-play feels consistent.
-    if (!autoPlayMedia) {
-      // Off-screen feed cell: hard pause WebView media and keep preview at last frame time.
-      try {
-        feedVideoWebViewRef.current?.injectJavaScript(`
-          (function () {
-            var v = document.getElementById('v');
-            if (!v) return;
-            try { v.pause(); } catch (_) {}
-          })();
-          true;
-        `);
-      } catch (_) {}
+    if (!mediaShouldPlay) {
+      pauseFeedVideo();
       setIsFeedVideoPausedByUser(false);
-      setIsFeedVideoPlaying(false);
       setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
     }
-  }, [autoPlayMedia, post?._id]);
+  }, [mediaShouldPlay, post?._id, pauseFeedVideo]);
+
+  useEffect(() => {
+    if (!disableNavigation) return;
+    if (!mediaShouldPlay) {
+      pauseDetailVideo();
+      setYoutubePlaying(false);
+    }
+  }, [disableNavigation, mediaShouldPlay, pauseDetailVideo]);
+
+  // Hard-stop any playing WebView media when this post cell unmounts (navigation away / list recycle).
+  useEffect(() => {
+    return () => {
+      stopFeedVideoWebView();
+      pauseDetailVideo();
+    };
+  }, [stopFeedVideoWebView, pauseDetailVideo]);
+
+  // Immediate hard-stop when any screen blurs — don't wait for React re-render (Android WebView audio).
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(FEED_VIDEO_PAUSE_ALL, () => {
+      stopFeedVideoWebView();
+      pauseDetailVideo();
+      setYoutubePlaying(false);
+      setIsFeedVideoPlaying(false);
+    });
+    return () => sub.remove();
+  }, [stopFeedVideoWebView, pauseDetailVideo]);
 
   // Ensure media starts playing when opening PostDetail.
   useEffect(() => {
-    if (disableNavigation && autoPlayMedia) {
+    if (disableNavigation && mediaShouldPlay) {
       setYoutubePlaying(true);
     }
-  }, [disableNavigation, autoPlayMedia, post?._id]);
+  }, [disableNavigation, mediaShouldPlay, post?._id]);
 
   // Load personalized weather data for weather posts
   useEffect(() => {
@@ -798,6 +857,19 @@ const Post: React.FC<PostProps> = ({
   }, [isWeatherPost, post?.weatherData, user?._id]);
 
   const isLiked = localLiked; // Use local state for immediate UI update
+
+  // Inline "liked by [avatar]" preview. If the current viewer liked it, they are the most
+  // recent liker, so show their own avatar optimistically; otherwise use the server preview.
+  const likePreviewPic = localLiked
+    ? (user?.profilePic || null)
+    : (post.likePreview?.profilePic || null);
+  const likePreviewInitial = (
+    (localLiked
+      ? (user?.name || user?.username || '')
+      : (post.likePreview?.name || post.likePreview?.username || '')) || '?'
+  )
+    .charAt(0)
+    .toUpperCase();
 
   const postedById =
     (typeof post.postedBy === 'string' ? post.postedBy : post.postedBy?._id)?.toString?.() ??
@@ -982,8 +1054,16 @@ const Post: React.FC<PostProps> = ({
     setIsLiking(true);
 
     try {
-      await apiService.put(`${ENDPOINTS.LIKE_POST}/${post._id}`);
-      
+      const res: any = await apiService.put(`${ENDPOINTS.LIKE_POST}/${post._id}`);
+
+      // Reconcile with the server's authoritative liked state + count (avoids optimistic drift).
+      if (res && typeof res.liked === 'boolean') {
+        setLocalLiked(res.liked);
+      }
+      if (res && typeof res.likeCount === 'number') {
+        setLocalLikesCount(Math.max(0, res.likeCount));
+      }
+
       // Update context after API call succeeds
       if (previousLiked) {
         unlikePost(post._id, user._id);
@@ -1329,6 +1409,9 @@ const Post: React.FC<PostProps> = ({
                 function send(name) {
                   window.ReactNativeWebView && window.ReactNativeWebView.postMessage(name);
                 }
+                v.addEventListener('loadedmetadata', function(){
+                  if (v.videoWidth > 0 && v.videoHeight > 0) send('dims:' + v.videoWidth + 'x' + v.videoHeight);
+                });
                 v.addEventListener('playing', function(){ send('playing'); });
                 v.addEventListener('pause', function(){ send('paused'); });
                 v.addEventListener('canplay', function(){ send('canplay'); });
@@ -1397,6 +1480,25 @@ const Post: React.FC<PostProps> = ({
   const videoContainerStyle = useFeedWideLayout
     ? [styles.videoContainer, feedMediaBleedStyle]
     : [styles.videoContainer, { height: feedMediaHeight }];
+
+  /**
+   * Dynamic height for uploaded (MP4) videos so they match the clip's real shape:
+   * landscape stays ~16:9, portrait gets taller so it isn't a tiny letterboxed strip.
+   * Clamped so nothing gets extreme (too short for ultrawide / too tall for 9:16).
+   */
+  const videoMediaWidth = useFeedWideLayout ? feedCard.screenWidth : width - 30;
+  const MIN_VIDEO_ASPECT = 0.75; // tallest allowed → up to 4:3 portrait (h = w / 0.75)
+  const MAX_VIDEO_ASPECT = 1.91; // widest allowed → ~1.91:1
+  const dynamicVideoHeight = useMemo(() => {
+    if (!videoAspect || !Number.isFinite(videoAspect) || videoAspect <= 0) {
+      return feedMediaHeight;
+    }
+    const clamped = Math.max(MIN_VIDEO_ASPECT, Math.min(videoAspect, MAX_VIDEO_ASPECT));
+    return Math.round(videoMediaWidth / clamped);
+  }, [videoAspect, feedMediaHeight, videoMediaWidth]);
+  const videoOnlyContainerStyle = useFeedWideLayout
+    ? [styles.videoContainer, feedMediaBleedStyle, { height: dynamicVideoHeight }]
+    : [styles.videoContainer, { height: dynamicVideoHeight }];
 
   const onAvatarPress = (e: any) => {
     e.stopPropagation();
@@ -1739,7 +1841,7 @@ const Post: React.FC<PostProps> = ({
 
       {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
-          autoPlayMedia ? (
+          mediaShouldPlay ? (
           <View style={videoContainerStyle}>
             <YoutubePlayer
             height={feedMediaHeight}
@@ -1810,9 +1912,10 @@ const Post: React.FC<PostProps> = ({
         )
       ) : post.img && isVideoPost ? (
         disableNavigation ? (
-          autoPlayMedia ? (
-          <View style={videoContainerStyle}>
+          mediaShouldPlay ? (
+          <View style={videoOnlyContainerStyle}>
             <WebView
+            key={`detail-vid-${String(post._id)}-${mediaShouldPlay ? 'on' : 'off'}`}
             ref={detailVideoWebViewRef}
             source={{
               html: `
@@ -1829,8 +1932,8 @@ const Post: React.FC<PostProps> = ({
                     <video
                       src="${displayVideoUrl}"
                       controls
-                      ${autoPlayMedia ? 'autoplay' : ''}
-                      ${autoPlayMedia ? '' : 'muted'}
+                      ${mediaShouldPlay ? 'autoplay' : ''}
+                      ${mediaShouldPlay ? '' : 'muted'}
                       playsinline
                       preload="auto"
                       controlsList="nodownload"
@@ -1843,12 +1946,17 @@ const Post: React.FC<PostProps> = ({
                           var p = v.play();
                           if (p && p.catch) p.catch(function(){});
                         }
-                        ${autoPlayMedia ? 'tryPlay();' : ''}
+                        v.addEventListener('loadedmetadata', function () {
+                          if (window.ReactNativeWebView && v.videoWidth > 0 && v.videoHeight > 0) {
+                            window.ReactNativeWebView.postMessage('dims:' + v.videoWidth + 'x' + v.videoHeight);
+                          }
+                        });
+                        ${mediaShouldPlay ? 'tryPlay();' : ''}
                         v.addEventListener('loadeddata', function () {
-                          ${autoPlayMedia ? 'tryPlay();' : ''}
+                          ${mediaShouldPlay ? 'tryPlay();' : ''}
                         });
                         v.addEventListener('canplay', function () {
-                          ${autoPlayMedia ? 'tryPlay();' : ''}
+                          ${mediaShouldPlay ? 'tryPlay();' : ''}
                         });
                       })();
                     </script>
@@ -1858,15 +1966,22 @@ const Post: React.FC<PostProps> = ({
             }}
             style={styles.videoWebView}
             allowsFullscreenVideo={true}
-            mediaPlaybackRequiresUserAction={!(disableNavigation && autoPlayMedia)}
+            mediaPlaybackRequiresUserAction={!(disableNavigation && mediaShouldPlay)}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             allowsInlineMediaPlayback={true}
             mixedContentMode="always"
             startInLoadingState={true}
             originWhitelist={['*']}
+            onMessage={(event) => {
+              const msg = String(event?.nativeEvent?.data || '');
+              if (msg.startsWith('dims:')) {
+                const [w, h] = msg.slice(5).split('x').map(Number);
+                if (w > 0 && h > 0) setVideoAspect(w / h);
+              }
+            }}
             onLoadEnd={() => {
-              if (!autoPlayMediaRef.current) {
+              if (!mediaShouldPlayRef.current) {
                 pauseDetailVideo();
                 return;
               }
@@ -1897,13 +2012,14 @@ const Post: React.FC<PostProps> = ({
           />
           </View>
           ) : (
-            <View style={videoContainerStyle}>
+            <View style={videoOnlyContainerStyle}>
               <VideoFeedPreview
                 videoUrl={thumbnailVideoUrl}
                 serverThumbnail={serverVideoThumbnail}
                 preferredTimeMs={feedVideoPreviewTimeMs}
                 placeholderColor={colors.background}
                 spinnerColor={colors.primary}
+                onAspectRatio={setVideoAspect}
               />
               <View style={styles.feedPreviewOverlay} pointerEvents="none">
                 <View style={styles.feedPreviewPlayButton}>
@@ -1913,8 +2029,8 @@ const Post: React.FC<PostProps> = ({
             </View>
           )
         ) : (
-          autoPlayMedia && !feedVideoErrored ? (
-            <View style={videoContainerStyle}>
+          mediaShouldPlay && !feedVideoErrored ? (
+            <View style={videoOnlyContainerStyle}>
               {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
                 <View style={styles.feedVideoPreviewOverlay}>
                   <VideoFeedPreview
@@ -1923,6 +2039,7 @@ const Post: React.FC<PostProps> = ({
                     preferredTimeMs={feedVideoPreviewTimeMs}
                     placeholderColor={colors.background}
                     spinnerColor={colors.primary}
+                    onAspectRatio={setVideoAspect}
                   />
                   {!isFeedVideoPlaying && (
                     <View style={styles.feedPreviewOverlay}>
@@ -1938,6 +2055,7 @@ const Post: React.FC<PostProps> = ({
                 </View>
               )}
               <WebView
+                key={`feed-vid-${String(post._id)}-${mediaShouldPlay ? 'on' : 'off'}`}
                 ref={feedVideoWebViewRef}
                 source={feedAutoPlaySource}
                 style={styles.videoWebView}
@@ -1965,6 +2083,11 @@ const Post: React.FC<PostProps> = ({
                 }}
                 onMessage={(event) => {
                   const msg = String(event?.nativeEvent?.data || '');
+                  if (msg.startsWith('dims:')) {
+                    const [w, h] = msg.slice(5).split('x').map(Number);
+                    if (w > 0 && h > 0) setVideoAspect(w / h);
+                    return;
+                  }
                   if (msg.startsWith('time:')) {
                     const sec = Number(msg.slice(5));
                     if (Number.isFinite(sec) && sec >= 0) {
@@ -2050,13 +2173,14 @@ const Post: React.FC<PostProps> = ({
           ) : (
             // Keep lightweight preview for off-screen posts.
             <TouchableOpacity onPress={() => navigateToPostDetail(post._id)} activeOpacity={0.9}>
-              <View style={videoContainerStyle}>
+              <View style={videoOnlyContainerStyle}>
                 <VideoFeedPreview
                   videoUrl={thumbnailVideoUrl}
                   serverThumbnail={serverVideoThumbnail}
                   preferredTimeMs={feedVideoPreviewTimeMs}
                   placeholderColor={colors.background}
                   spinnerColor={colors.primary}
+                  onAspectRatio={setVideoAspect}
                 />
                 <View style={styles.feedPreviewOverlay} pointerEvents="none">
                   <View style={styles.feedPreviewPlayButton}>
@@ -2382,17 +2506,59 @@ const Post: React.FC<PostProps> = ({
         !hideFootballFooterWhenNoMatchEmpty &&
         !hideGamePostFooter && (
         <View style={styles.footer} pointerEvents="box-none">
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={(e) => {
-              e.stopPropagation();
-              handleLike();
-            }}
-            disabled={isLiking}
-          >
-            <Text style={styles.actionIcon}>{isLiked ? '❤️' : '🤍'}</Text>
-            <Text style={[styles.actionText, { color: colors.textGray }]}>{localLikesCount}</Text>
-          </TouchableOpacity>
+          <View style={styles.likeActionCluster}>
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                handleLike();
+              }}
+              disabled={isLiking}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+              style={styles.likeHeartSlot}
+            >
+              <Text style={styles.actionIcon} includeFontPadding={false}>
+                {isLiked ? '❤️' : '🤍'}
+              </Text>
+            </TouchableOpacity>
+            {localLikesCount > 0 ? (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  if (post?._id) setLikesModalVisible(true);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                style={[
+                  styles.likeMetaSlot,
+                  localLikesCount > 1 && styles.likeMetaSlotWithCount,
+                ]}
+              >
+                <View style={styles.likePreviewAvatarWrap}>
+                  {likePreviewPic ? (
+                    <SafeImage source={{ uri: likePreviewPic }} style={styles.likePreviewAvatar} />
+                  ) : (
+                    <View
+                      style={[
+                        styles.likePreviewAvatar,
+                        styles.likePreviewAvatarPlaceholder,
+                        { backgroundColor: colors.avatarBg },
+                      ]}
+                    >
+                      <Text style={styles.likePreviewInitial}>{likePreviewInitial}</Text>
+                    </View>
+                  )}
+                </View>
+                {localLikesCount > 1 ? (
+                  <Text
+                    style={[styles.likeCountText, { color: colors.textGray }]}
+                    numberOfLines={1}
+                    includeFontPadding={false}
+                  >
+                    {formatCompactCount(localLikesCount)}
+                  </Text>
+                ) : null}
+              </TouchableOpacity>
+            ) : null}
+          </View>
 
           <TouchableOpacity
             style={styles.actionButton}
@@ -2576,6 +2742,13 @@ const Post: React.FC<PostProps> = ({
             ? () => navigateToUserProfile(storyMenu.username!)
             : undefined
         }
+      />
+      <PostLikesModal
+        visible={likesModalVisible}
+        postId={post?._id ? String(post._id) : null}
+        initialCount={localLikesCount}
+        onClose={() => setLikesModalVisible(false)}
+        onPressUser={(username) => navigateToUserProfile(username)}
       />
     </View>
   );
@@ -2984,12 +3157,60 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
   },
+  likeActionCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 28,
+  },
+  likeHeartSlot: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  likeMetaSlot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+    marginLeft: 4,
+  },
+  likeMetaSlotWithCount: {
+    minWidth: 56,
+  },
+  likePreviewAvatarWrap: {
+    width: 20,
+    height: 20,
+  },
   actionIcon: {
     fontSize: 18,
+    width: 22,
+    textAlign: 'center',
+    lineHeight: 22,
   },
   actionText: {
     fontSize: 14,
     color: COLORS.textGray,
+  },
+  likeCountText: {
+    fontSize: 14,
+    marginLeft: 5,
+    minWidth: 32,
+    textAlign: 'left',
+    fontVariant: ['tabular-nums'],
+  },
+  likePreviewAvatar: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+  },
+  likePreviewAvatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  likePreviewInitial: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
   },
   overlay: {
     flex: 1,

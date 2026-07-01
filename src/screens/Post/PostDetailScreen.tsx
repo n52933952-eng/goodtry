@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useIsFocused, useRoute } from '@react-navigation/native';
+import { useIsFocused, useRoute, useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -25,10 +25,20 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
+import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
 
 const PostDetailScreen = ({ route, navigation }: any) => {
   const navRoute = useRoute<any>();
   const isFocused = useIsFocused();
+
+  useFocusEffect(
+    React.useCallback(() => {
+      return () => {
+        pauseAllFeedVideos();
+      };
+    }, []),
+  );
+
   const { postId, fromScreen, userProfileParams, footballMatchId } =
     navRoute.params || route.params || {};
   const { user } = useUser();
@@ -427,6 +437,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         <Post
           post={post}
           disableNavigation={true}
+          screenFocused={isFocused}
           autoPlayMedia={isFocused}
           onPostUpdated={setPost}
           footballFocusMatchId={footballMatchId}

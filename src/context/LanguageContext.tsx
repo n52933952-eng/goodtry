@@ -44,6 +44,7 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Feed Screen
     'feed': 'Feed',
+    'refreshFeed': 'Refresh feed',
     'createPost': 'Create Post',
     'loggedOut': 'Logged Out',
     'youHaveBeenLoggedOut': 'You have been logged out',
@@ -65,6 +66,7 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Messages Screen
     'messages': 'Messages',
+    'refreshMessages': 'Refresh messages',
     'searchUsers': 'Search users...',
     'noConversations': 'No conversations',
     'startConversation': 'Start a conversation',
@@ -380,6 +382,7 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Feed Screen
     'feed': 'الخلاصة',
+    'refreshFeed': 'تحديث الخلاصة',
     'createPost': 'إنشاء منشور',
     'loggedOut': 'تم تسجيل الخروج',
     'youHaveBeenLoggedOut': 'تم تسجيل خروجك',
@@ -401,6 +404,7 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Messages Screen
     'messages': 'الرسائل',
+    'refreshMessages': 'تحديث الرسائل',
     'searchUsers': 'البحث عن المستخدمين...',
     'noConversations': 'لا توجد محادثات',
     'startConversation': 'ابدأ محادثة',

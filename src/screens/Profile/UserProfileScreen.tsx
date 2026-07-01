@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -17,6 +17,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Dimensions,
+  Animated,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -25,6 +28,7 @@ import { useShowToast } from '../../hooks/useShowToast';
 import Post from '../../components/Post';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import { apiService } from '../../services/api';
+import { rememberFollowProfile, removeFollowProfile } from '../../utils/recentFollowProfiles';
 import { API_URL, ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
@@ -37,6 +41,7 @@ import {
   isLivePseudoPostId,
   normalizeStreamerId,
 } from '../../utils/liveFeedPost';
+import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
 import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
@@ -80,6 +85,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const POSTS_PER_PAGE = 9;
   const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
   const activeVideoPostIdRef = useRef<string | null>(null);
+  const isScreenFocused = useIsFocused();
   /** Live status for this profile (API + socket); drives top LIVE card. */
   const [profileLiveMeta, setProfileLiveMeta] = useState<{ roomName: string } | null>(null);
 
@@ -94,6 +100,49 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     minimumViewTime: 180,
   }).current;
 
+  /** Floating "scroll to top" button (Twitter style: show scrolling down, hide scrolling up). */
+  const profileListRef = useRef<FlatList>(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const lastScrollYRef = useRef(0);
+  const scrollDirAccumRef = useRef(0);
+  const pastThresholdRef = useRef(false);
+  const scrollTopBtnAnim = useRef(new Animated.Value(0)).current;
+
+  const scrollProfileToTop = useCallback(() => {
+    const list = profileListRef.current;
+    if (list) {
+      const y = lastScrollYRef.current;
+      const winH = Dimensions.get('window').height;
+      // Very far down: jump instantly so a long list doesn't render every row and freeze.
+      list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
+    }
+    setShowScrollTop(false);
+  }, []);
+
+  const handleProfileScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y;
+      const dy = y - lastScrollYRef.current;
+      lastScrollYRef.current = y;
+      const accum = scrollDirAccumRef.current;
+      scrollDirAccumRef.current = Math.sign(dy) === Math.sign(accum) ? accum + dy : dy;
+      if (scrollDirAccumRef.current < -14) {
+        setShowScrollTop((prev) => (prev ? false : prev));
+      } else if (scrollDirAccumRef.current > 14 && pastThresholdRef.current) {
+        setShowScrollTop((prev) => (prev ? prev : true));
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    Animated.timing(scrollTopBtnAnim, {
+      toValue: showScrollTop ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [showScrollTop, scrollTopBtnAnim]);
+
   useEffect(() => {
     activeVideoPostIdRef.current = activeVideoPostId;
   }, [activeVideoPostId]);
@@ -102,6 +151,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   useFocusEffect(
     React.useCallback(() => {
       return () => {
+        pauseAllFeedVideos();
         setActiveVideoPostId(null);
         activeVideoPostIdRef.current = null;
       };
@@ -129,6 +179,32 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       activeVideoPostIdRef.current = nextId;
     }
   ).current;
+
+  // Dedicated viewability for the button: fires instantly (0% / 0ms) so it isn't delayed by the
+  // video config. Eligible once the 4th post (index 3) is topmost; hysteresis avoids flicker.
+  const onButtonViewable = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ isViewable?: boolean; index?: number | null }> }) => {
+      const idxs = viewableItems
+        .filter((v) => v?.isViewable && typeof v.index === 'number')
+        .map((v) => v.index as number);
+      if (idxs.length === 0) return;
+      const firstVisible = Math.min(...idxs);
+      if (firstVisible >= 3) {
+        pastThresholdRef.current = true;
+      } else if (firstVisible <= 1) {
+        pastThresholdRef.current = false;
+        setShowScrollTop((prev) => (prev ? false : prev));
+      }
+    },
+  ).current;
+
+  const viewabilityPairs = useRef([
+    { viewabilityConfig, onViewableItemsChanged },
+    {
+      viewabilityConfig: { itemVisiblePercentThreshold: 0, minimumViewTime: 0 },
+      onViewableItemsChanged: onButtonViewable,
+    },
+  ]).current;
 
   useEffect(() => {
     if (!username && usernameParam !== 'self') {
@@ -428,6 +504,12 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
       fetchUserProfile(sessionFollowing);
 
+      if (nextIsFollowing) {
+        rememberFollowProfile(profileUser);
+      } else {
+        removeFollowProfile(profileUserId);
+      }
+
       showToast(t('success'), isCurrentlyFollowing ? t('unfollowed') : t('following'), 'success');
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToFollowUnfollow'), 'error');
@@ -725,6 +807,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
+        ref={profileListRef}
         data={displayPosts}
         keyExtractor={(item, index) => {
           // Ensure unique keys by using both _id and index as fallback
@@ -750,8 +833,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
-        onViewableItemsChanged={onViewableItemsChanged}
-        viewabilityConfig={viewabilityConfig}
+        onScroll={handleProfileScroll}
+        scrollEventThrottle={16}
+        viewabilityConfigCallbackPairs={viewabilityPairs}
         ListHeaderComponent={
           <View>
             <View
@@ -928,7 +1012,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               feedWideCard
               fromScreen="UserProfile"
               userProfileParams={{ username }}
-              autoPlayMedia={String(item?._id || '') === activeVideoPostId}
+              screenFocused={isScreenFocused}
+              autoPlayMedia={
+                isScreenFocused && String(item?._id || '') === activeVideoPostId
+              }
               onPostUpdated={(updated) => {
                 if (!updated?._id) return;
                 setPosts((prev) =>
@@ -945,6 +1032,49 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           );
         }}
       />
+
+      {/* Floating scroll-to-top button (always mounted; visibility is animated) */}
+      <Animated.View
+        pointerEvents={showScrollTop ? 'box-none' : 'none'}
+        style={[
+          styles.scrollTopWrap,
+          {
+            opacity: scrollTopBtnAnim,
+            transform: [
+              {
+                translateY: scrollTopBtnAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [24, 0],
+                }),
+              },
+              {
+                scale: scrollTopBtnAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.8, 1],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={scrollProfileToTop}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to top"
+          style={[styles.scrollTopButton, { backgroundColor: colors.primary }]}
+        >
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+            <Path
+              d="M6 15l6-6 6 6"
+              stroke="#FFFFFF"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        </TouchableOpacity>
+      </Animated.View>
 
       <Modal
         visible={profilePicPreviewOpen && !!profileUser?.profilePic}
@@ -1071,6 +1201,23 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  scrollTopWrap: {
+    position: 'absolute',
+    bottom: 20,
+    alignSelf: 'center',
+  },
+  scrollTopButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 6,
   },
   loadingContainer: {
     flex: 1,

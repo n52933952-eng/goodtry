@@ -10,6 +10,10 @@ import {
 } from 'react-native';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import {
+  getOutgoingDeliveryTicks,
+  isLastMessageFromUser,
+} from '../../utils/messageDeliveryTicks';
 
 const LTR_TEXT = {
   textAlign: 'left' as const,
@@ -38,6 +42,7 @@ type Props = {
   deleteLabel: string;
   errorLabel: string;
   deleteFailedLabel: string;
+  currentUserId?: string;
   onOpen: (item: any) => void;
   onAvatarPress: (userId: string, user: any) => void;
   onRemoved: (conversationId: string) => void;
@@ -79,6 +84,7 @@ const ConversationListItem = ({
   deleteLabel,
   errorLabel,
   deleteFailedLabel,
+  currentUserId,
   onOpen,
   onAvatarPress,
   onRemoved,
@@ -97,6 +103,11 @@ const ConversationListItem = ({
   const timeLabel = item.lastMessage
     ? formatTime(item.lastMessage.createdAt || item.updatedAt)
     : '';
+  const showOutgoingTicks =
+    !isGroupConv && isLastMessageFromUser(item.lastMessage, currentUserId);
+  const deliveryTicks = showOutgoingTicks
+    ? getOutgoingDeliveryTicks(item.lastMessage)
+    : null;
 
   const storyRingStyle = useMemo(
     () => ({
@@ -236,6 +247,11 @@ const ConversationListItem = ({
           </Text>
         ) : null}
         <View style={styles.lastMessageRow}>
+          {deliveryTicks ? (
+            <Text style={[styles.listDeliveryTicks, { color: deliveryTicks.color }]}>
+              {deliveryTicks.ticks}
+            </Text>
+          ) : null}
           <Text
             {...(Platform.OS === 'android' ? { textDirection: 'ltr' as const } : {})}
             style={[
@@ -268,10 +284,13 @@ const areEqual = (prev: Props, next: Props) => {
     (p.unreadCount || 0) === (n.unreadCount || 0) &&
     p.lastMessage?.text === n.lastMessage?.text &&
     p.lastMessage?.createdAt === n.lastMessage?.createdAt &&
+    p.lastMessage?.delivered === n.lastMessage?.delivered &&
+    p.lastMessage?.seen === n.lastMessage?.seen &&
     p.updatedAt === n.updatedAt &&
     p.groupName === n.groupName &&
     (p.participants?.length || 0) === (n.participants?.length || 0) &&
     prev.isOnline === next.isOnline &&
+    prev.currentUserId === next.currentUserId &&
     prev.hasStory === next.hasStory &&
     prev.hasUnviewedStory === next.hasUnviewedStory &&
     prev.borderColor === next.borderColor &&
@@ -376,6 +395,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 4,
+  },
+  listDeliveryTicks: {
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 0,
+    marginRight: 2,
   },
   lastMessage: {
     fontSize: 14,
