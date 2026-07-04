@@ -21,7 +21,7 @@ const IncomingCallMiniBar = () => {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const { colors } = useTheme();
-  const { isLive, isMinimized, endLiveForCall } = useLiveBroadcast();
+  const { isLive, isMinimized } = useLiveBroadcast();
   const {
     call,
     callEnded,
@@ -95,16 +95,14 @@ const IncomingCallMiniBar = () => {
   const handleAnswer = useCallback(async () => {
     if (answeringRef.current) return;
     answeringRef.current = true;
+    openCallScreen();
     try {
-      await endLiveForCall();
-      const answerP = answerCall();
-      openCallScreen();
-      await answerP;
+      await answerCall();
     } catch (e) {
       console.warn('[IncomingCallMiniBar] answer failed:', e);
       answeringRef.current = false;
     }
-  }, [endLiveForCall, answerCall, openCallScreen]);
+  }, [answerCall, openCallScreen]);
 
   const handleDecline = useCallback(() => {
     leaveCall();

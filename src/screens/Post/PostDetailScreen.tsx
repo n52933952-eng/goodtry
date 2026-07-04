@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useIsFocused, useRoute, useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -8,13 +8,21 @@ import {
   ActivityIndicator,
   TextInput,
   TouchableOpacity,
+  Pressable,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
-  FlatList,
   Image,
   Keyboard,
+  Modal,
+  TouchableWithoutFeedback,
+  Dimensions,
+  Animated,
+  PanResponder,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
+import { ScrollView as GestureScrollView } from 'react-native-gesture-handler';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
@@ -26,6 +34,20 @@ import { ENDPOINTS } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
 import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
+
+const { height: SCREEN_H } = Dimensions.get('window');
+const SHEET_PARTIAL = Math.round(SCREEN_H * 0.72);
+const SHEET_FULL = Math.round(SCREEN_H * 0.94);
+const QUICK_EMOJIS = ['❤️', '🙌', '🔥', '👏', '😢', '😍', '😮', '😂'];
+const COMMENTS_PAGE_SIZE = 12;
+
+function mergeRepliesById(existing: any[], incoming: any[]) {
+  const map = new Map(existing.map((r) => [String(r._id), r]));
+  for (const r of incoming) map.set(String(r._id), r);
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+}
 
 const PostDetailScreen = ({ route, navigation }: any) => {
   const navRoute = useRoute<any>();
@@ -42,10 +64,10 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const { postId, fromScreen, userProfileParams, footballMatchId } =
     navRoute.params || route.params || {};
   const { user } = useUser();
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
-  const { deletePost } = usePost();
+  const { deletePost, updatePost } = usePost();
   
   // Customize back button behavior based on where we came from
   React.useEffect(() => {
@@ -84,10 +106,12 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const [replyText, setReplyText] = useState('');
   const [replying, setReplying] = useState(false);
   const [replyParentId, setReplyParentId] = useState<string | null>(null); // null = top-level comment
-  
-  // Pagination for comments
-  const COMMENTS_PER_PAGE = 20;
-  const [visibleCommentsCount, setVisibleCommentsCount] = useState(COMMENTS_PER_PAGE);
+
+  const [modalReplies, setModalReplies] = useState<any[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsLoadingMore, setCommentsLoadingMore] = useState(false);
+  const [commentsHasMore, setCommentsHasMore] = useState(false);
+  const commentsSkipRef = useRef(0);
   
   // Mention autocomplete state
   const [mentionSuggestions, setMentionSuggestions] = useState<any[]>([]);
@@ -96,17 +120,115 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const replyInputRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
+  const modalScrollRef = useRef<ScrollView>(null);
+  const [commentsVisible, setCommentsVisible] = useState(false);
+  const mentionSearchGenRef = useRef(0);
+  const sheetHeightAnim = useRef(new Animated.Value(SHEET_PARTIAL)).current;
+  const sheetExpandedRef = useRef(false);
+  const dragStartHeightRef = useRef(SHEET_PARTIAL);
+
+  const resetSheetPosition = useCallback(() => {
+    sheetHeightAnim.setValue(SHEET_PARTIAL);
+    sheetExpandedRef.current = false;
+    dragStartHeightRef.current = SHEET_PARTIAL;
+  }, [sheetHeightAnim]);
+
+  const clearMentionSuggestions = useCallback(() => {
+    mentionSearchGenRef.current += 1;
+    setShowSuggestions(false);
+    setMentionSuggestions([]);
+    setMentionStartIndex(-1);
+    setSelectedSuggestionIndex(0);
+  }, []);
+
+  const closeCommentsModal = useCallback(() => {
+    Keyboard.dismiss();
+    setCommentsVisible(false);
+    clearMentionSuggestions();
+    resetSheetPosition();
+  }, [clearMentionSuggestions, resetSheetPosition]);
+
+  const snapSheet = useCallback(
+    (toFull: boolean) => {
+      sheetExpandedRef.current = toFull;
+      const toValue = toFull ? SHEET_FULL : SHEET_PARTIAL;
+      dragStartHeightRef.current = toValue;
+      Animated.spring(sheetHeightAnim, {
+        toValue,
+        useNativeDriver: false,
+        tension: 72,
+        friction: 13,
+      }).start();
+    },
+    [sheetHeightAnim],
+  );
+
+  useEffect(() => {
+    if (commentsVisible) resetSheetPosition();
+  }, [commentsVisible, resetSheetPosition]);
+
+  const sheetPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          sheetHeightAnim.stopAnimation((value) => {
+            dragStartHeightRef.current =
+              typeof value === 'number' ? value : sheetExpandedRef.current ? SHEET_FULL : SHEET_PARTIAL;
+          });
+        },
+        onPanResponderMove: (_, g) => {
+          const next = dragStartHeightRef.current - g.dy;
+          const minH = SHEET_PARTIAL * 0.55;
+          sheetHeightAnim.setValue(Math.max(minH, Math.min(SHEET_FULL, next)));
+        },
+        onPanResponderRelease: (_, g) => {
+          const isTap = Math.abs(g.dy) < 12 && Math.abs(g.dx) < 12;
+          if (isTap) {
+            snapSheet(!sheetExpandedRef.current);
+            return;
+          }
+
+          const swipeUp = g.dy < -28 || g.vy < -0.25;
+          const swipeDown = g.dy > 28 || g.vy > 0.25;
+
+          if (swipeUp) {
+            snapSheet(true);
+            return;
+          }
+          if (swipeDown) {
+            if (sheetExpandedRef.current) snapSheet(false);
+            else closeCommentsModal();
+            return;
+          }
+
+          sheetHeightAnim.stopAnimation((value) => {
+            const v = typeof value === 'number' ? value : SHEET_PARTIAL;
+            const mid = (SHEET_PARTIAL + SHEET_FULL) / 2;
+            snapSheet(v >= mid);
+          });
+        },
+      }),
+    [sheetHeightAnim, snapSheet, closeCommentsModal],
+  );
 
   useEffect(() => {
     fetchPost();
   }, [postId]);
 
+  // Scroll comment list when mention suggestions open inside the modal
   useEffect(() => {
-    setVisibleCommentsCount(COMMENTS_PER_PAGE);
-  }, [postId, footballMatchId]);
+    if (!showSuggestions || mentionSuggestions.length === 0) return;
+    const t = setTimeout(() => {
+      modalScrollRef.current?.scrollToEnd({ animated: true });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [showSuggestions, mentionSuggestions.length]);
 
   const scopedReplies = useMemo(() => {
-    const all = Array.isArray(post?.replies) ? post.replies : [];
+    const all = Array.isArray(modalReplies) ? modalReplies : [];
     if (!footballMatchId) return all;
     const fid = String(footballMatchId);
     const roots = all.filter(
@@ -128,21 +250,90 @@ const PostDetailScreen = ({ route, navigation }: any) => {
       }
     }
     return all.filter((r: any) => inThread.has(String(r._id)));
-  }, [post?.replies, footballMatchId]);
+  }, [modalReplies, footballMatchId]);
 
   const topLevelScopedReplies = useMemo(
     () => scopedReplies.filter((r: any) => !r?.parentReplyId),
     [scopedReplies],
   );
 
+  const fetchCommentsPage = useCallback(
+    async (loadMore: boolean) => {
+      if (!postId) return;
+      if (loadMore) {
+        if (!commentsHasMore || commentsLoadingMore || commentsLoading) return;
+        setCommentsLoadingMore(true);
+      } else {
+        if (commentsLoading) return;
+        setCommentsLoading(true);
+        commentsSkipRef.current = 0;
+      }
+
+      try {
+        const skip = loadMore ? commentsSkipRef.current : 0;
+        const query = new URLSearchParams({
+          limit: String(COMMENTS_PAGE_SIZE),
+          skip: String(skip),
+        });
+        if (footballMatchId) query.set('footballMatchId', String(footballMatchId));
+
+        const data = await apiService.get(
+          `${ENDPOINTS.GET_POST}/${postId}/comments?${query.toString()}`,
+        );
+        const batch = Array.isArray(data?.replies) ? data.replies : [];
+
+        setModalReplies((prev) => (loadMore ? mergeRepliesById(prev, batch) : batch));
+        setCommentsHasMore(!!data?.hasMore);
+        commentsSkipRef.current = skip + COMMENTS_PAGE_SIZE;
+      } catch (error: any) {
+        console.error('❌ [PostDetail] Error fetching comments:', error);
+        if (!loadMore) setModalReplies([]);
+        showToast(t('error'), 'Failed to load comments', 'error');
+      } finally {
+        if (loadMore) setCommentsLoadingMore(false);
+        else setCommentsLoading(false);
+      }
+    },
+    [
+      postId,
+      footballMatchId,
+      commentsHasMore,
+      commentsLoadingMore,
+      commentsLoading,
+      showToast,
+      t,
+    ],
+  );
+
+  const openCommentsModal = useCallback(() => {
+    setCommentsVisible(true);
+  }, []);
+
+  useEffect(() => {
+    if (!commentsVisible || modalReplies.length > 0) return;
+    fetchCommentsPage(false);
+  }, [commentsVisible, postId, footballMatchId, modalReplies.length]);
+
+  const handleCommentsScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+      const nearBottom =
+        layoutMeasurement.height + contentOffset.y >= contentSize.height - 120;
+      if (!nearBottom || commentsLoadingMore || commentsLoading || !commentsHasMore) return;
+      fetchCommentsPage(true);
+    },
+    [commentsLoadingMore, commentsLoading, commentsHasMore, fetchCommentsPage],
+  );
+
   const fetchPost = async () => {
     try {
       console.log('📥 [PostDetail] Fetching post:', postId);
-      const data = await apiService.get(`${ENDPOINTS.GET_POST}/${postId}`);
+      const data = await apiService.get(`${ENDPOINTS.GET_POST}/${postId}?includeReplies=0`);
       console.log('✅ [PostDetail] Post fetched:', data?._id);
       setPost(data);
-      // Reset visible comments count when fetching a new post
-      setVisibleCommentsCount(COMMENTS_PER_PAGE);
+      setModalReplies([]);
+      setCommentsHasMore(false);
+      commentsSkipRef.current = 0;
     } catch (error: any) {
       console.error('❌ [PostDetail] Error fetching post:', error);
       console.error('❌ [PostDetail] Post ID:', postId);
@@ -188,8 +379,11 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   ];
 
   // Search users for mention autocomplete (exclude channels)
-  const searchMentionUsers = async (searchTerm: string) => {
+  const searchMentionUsers = async (searchTerm: string, requestGen: number) => {
+    if (requestGen !== mentionSearchGenRef.current) return;
+
     if (!searchTerm || searchTerm.length < 1) {
+      if (requestGen !== mentionSearchGenRef.current) return;
       setMentionSuggestions([]);
       setShowSuggestions(false);
       return;
@@ -197,15 +391,17 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
     try {
       const users = await apiService.get(`${ENDPOINTS.SEARCH_USERS}?search=${encodeURIComponent(searchTerm)}`);
-      // Filter out channels - only return regular users
+      if (requestGen !== mentionSearchGenRef.current) return;
+
       const filteredUsers = Array.isArray(users)
-        ? users.filter((user: any) => !channelUsernames.includes(user.username))
+        ? users.filter((u: any) => !channelUsernames.includes(u.username))
         : [];
       setMentionSuggestions(filteredUsers);
       setShowSuggestions(filteredUsers.length > 0);
       setSelectedSuggestionIndex(0);
     } catch (error) {
       console.error('Error searching users:', error);
+      if (requestGen !== mentionSearchGenRef.current) return;
       setMentionSuggestions([]);
       setShowSuggestions(false);
     }
@@ -214,32 +410,43 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   // Handle text input change and detect @mentions
   const handleReplyTextChange = (text: string) => {
     setReplyText(text);
-    
-    // Find the last @ symbol before cursor (we'll use the end of text as cursor position approximation)
+
+    if (!text || !text.trim()) {
+      clearMentionSuggestions();
+      return;
+    }
+
     const lastAtIndex = text.lastIndexOf('@');
-    
+
     if (lastAtIndex !== -1) {
-      // Get text after @
       const textAfterAt = text.substring(lastAtIndex + 1);
       const spaceIndex = textAfterAt.indexOf(' ');
       const newlineIndex = textAfterAt.indexOf('\n');
-      const endIndex = spaceIndex !== -1 || newlineIndex !== -1
-        ? Math.min(spaceIndex !== -1 ? spaceIndex : Infinity, newlineIndex !== -1 ? newlineIndex : Infinity)
-        : textAfterAt.length;
-      
+      const endIndex =
+        spaceIndex !== -1 || newlineIndex !== -1
+          ? Math.min(
+              spaceIndex !== -1 ? spaceIndex : Infinity,
+              newlineIndex !== -1 ? newlineIndex : Infinity,
+            )
+          : textAfterAt.length;
+
       const mentionTerm = textAfterAt.substring(0, endIndex);
-      
-      // If there's no space after @, we're typing a mention
-      if (endIndex === textAfterAt.length && mentionTerm.length >= 0) {
+
+      if (endIndex === textAfterAt.length) {
         setMentionStartIndex(lastAtIndex);
-        searchMentionUsers(mentionTerm);
+        const gen = ++mentionSearchGenRef.current;
+        if (!mentionTerm) {
+          mentionSearchGenRef.current += 1;
+          setMentionSuggestions([]);
+          setShowSuggestions(false);
+          return;
+        }
+        searchMentionUsers(mentionTerm, gen);
       } else {
-        setShowSuggestions(false);
-        setMentionSuggestions([]);
+        clearMentionSuggestions();
       }
     } else {
-      setShowSuggestions(false);
-      setMentionSuggestions([]);
+      clearMentionSuggestions();
     }
   };
 
@@ -257,9 +464,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     // Replace @mentionTerm with @username
     const newText = `${textBefore}@${selectedUser.username}${textAfterMention}`;
     setReplyText(newText);
-    setShowSuggestions(false);
-    setMentionSuggestions([]);
-    setMentionStartIndex(-1);
+    clearMentionSuggestions();
     
     // Focus back on input after selection
     setTimeout(() => {
@@ -287,31 +492,25 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         ...(!replyParentId && footballMatchId ? { footballMatchId: String(footballMatchId) } : {}),
       });
 
-      // Backend returns the new reply object; append it to post.replies like the web does.
-      const newReplyId = data?._id?.toString?.() ?? String(data?._id);
-      setPost((prev: any) => {
-        const prevReplies = Array.isArray(prev?.replies) ? prev.replies : [];
-        const replyWithLikes = { ...data, likes: data?.likes || [] };
-        return { ...prev, replies: [...prevReplies, replyWithLikes] };
-      });
+      const replyWithLikes = { ...data, likes: data?.likes || [] };
+      const nextReplyCount =
+        (typeof post?.replyCount === 'number' ? post.replyCount : 0) + 1;
+
+      setModalReplies((prev) => mergeRepliesById(prev, [replyWithLikes]));
+      setPost((prev: any) => ({ ...prev, replyCount: nextReplyCount }));
+      updatePost(String(postId), { replyCount: nextReplyCount });
       setReplyText('');
       setReplyParentId(null);
-      setShowSuggestions(false);
-      setMentionSuggestions([]);
+      clearMentionSuggestions();
       
       // Scroll to the newly posted comment after a delay to ensure it's rendered
       setTimeout(() => {
-        if (scrollViewRef.current) {
-          // Scroll to the bottom to show the new comment with extra offset
-          scrollViewRef.current.scrollToEnd({ animated: true });
-        }
+        modalScrollRef.current?.scrollToEnd({ animated: true });
       }, 100);
-      
+
       // Additional scroll after a longer delay to ensure smooth animation
       setTimeout(() => {
-        if (scrollViewRef.current) {
-          scrollViewRef.current.scrollToEnd({ animated: true });
-        }
+        modalScrollRef.current?.scrollToEnd({ animated: true });
       }, 500);
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToPostReply'), 'error');
@@ -353,9 +552,8 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     try {
       const data = await apiService.put(`${ENDPOINTS.LIKE_COMMENT}/${postId}/${replyId}`);
 
-      setPost((prev: any) => {
-        const prevReplies = Array.isArray(prev?.replies) ? prev.replies : [];
-        const updatedReplies = prevReplies.map((r: any) => {
+      setModalReplies((prev) => {
+        const updated = prev.map((r: any) => {
           const rId = r?._id?.toString?.() ?? String(r?._id);
           if (rId !== replyId) return r;
 
@@ -367,7 +565,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
 
           return { ...r, likes: nextLikes };
         });
-        return { ...prev, replies: updatedReplies };
+        return updated;
       });
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToLikeComment'), 'error');
@@ -383,10 +581,18 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     const replyId = reply?._id?.toString?.() ?? String(reply?._id);
     try {
       await apiService.delete(`${ENDPOINTS.DELETE_COMMENT}/${postId}/${replyId}`);
-      setPost((prev: any) => {
-        const prevReplies = Array.isArray(prev?.replies) ? prev.replies : [];
-        return { ...prev, replies: removeReplyAndDescendants(prevReplies, replyId) };
-      });
+      const filtered = removeReplyAndDescendants(modalReplies, replyId);
+      const removedCount = modalReplies.length - filtered.length;
+      setModalReplies(filtered);
+      if (removedCount > 0) {
+        const nextReplyCount = Math.max(
+          0,
+          (typeof post?.replyCount === 'number' ? post.replyCount : modalReplies.length) -
+            removedCount,
+        );
+        setPost((p: any) => ({ ...p, replyCount: nextReplyCount }));
+        updatePost(String(postId), { replyCount: nextReplyCount });
+      }
       showToast(t('success'), t('commentDeletedSuccessfully'), 'success');
     } catch (error: any) {
       showToast(t('error'), error.message || t('failedToDeleteComment'), 'error');
@@ -394,11 +600,36 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   };
 
   const handleReplyPress = (reply: any) => {
-    // Like web: prefill @username and reply to that comment (parentReplyId = reply._id)
     const username = reply?.username || '';
-    setReplyParentId(reply?._id?.toString?.() ?? String(reply?._id));
+    setReplyParentId(reply?._id?.toString?.() ?? String(reply._id));
     setReplyText(username ? `@${username} ` : '');
+    setCommentsVisible(true);
+    setTimeout(() => replyInputRef.current?.focus(), 300);
   };
+
+  const appendEmoji = (emoji: string) => {
+    setReplyText((prev) => `${prev}${emoji}`);
+    replyInputRef.current?.focus();
+  };
+
+  const postAuthorName =
+    post?.postedBy?.username || post?.postedBy?.name || 'this post';
+
+  const isDark = theme === 'dark';
+  const sheetUi = useMemo(
+    () => ({
+      bg: isDark ? '#1C1C1E' : '#FFFFFF',
+      footer: isDark ? '#1C1C1E' : '#FFFFFF',
+      inputFill: isDark ? '#2C2C2E' : '#F2F2F7',
+      inputBorder: isDark ? '#3A3A3C' : '#E5E5EA',
+      handle: isDark ? '#636366' : '#C7C7CC',
+      divider: isDark ? '#38383A' : '#EBEBEB',
+      backdrop: isDark ? 'rgba(0,0,0,0.78)' : 'rgba(0,0,0,0.48)',
+      muted: isDark ? '#98989F' : '#8E8E93',
+      accent: '#0095F6',
+    }),
+    [isDark],
+  );
 
   if (loading) {
     return (
@@ -415,6 +646,11 @@ const PostDetailScreen = ({ route, navigation }: any) => {
       </View>
     );
   }
+
+  const suggestionsListHeight = Math.min(Math.max(mentionSuggestions.length * 62, 120), 260);
+
+  const commentsCount =
+    typeof post?.replyCount === 'number' ? post.replyCount : topLevelScopedReplies.length;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -442,114 +678,223 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           onPostUpdated={setPost}
           footballFocusMatchId={footballMatchId}
           fullWidthCard
+          onCommentPress={openCommentsModal}
         />
 
-        <View style={styles.repliesSection}>
-          <Text style={[styles.repliesTitle, { color: colors.text }]}>
-            {t('comments')} ({scopedReplies.length || 0})
+        <TouchableOpacity
+          style={styles.viewCommentsRow}
+          onPress={openCommentsModal}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.viewCommentsText, { color: colors.textGray }]}>
+            {commentsCount > 0
+              ? `View all ${commentsCount} comments`
+              : 'Add a comment…'}
           </Text>
-
-          {topLevelScopedReplies.slice(0, visibleCommentsCount).map((reply: any) => (
-            <ThreadedComment
-              key={reply?._id?.toString?.() ?? String(reply?._id)}
-              reply={reply}
-              allReplies={scopedReplies}
-              postId={postId}
-              postOwnerId={post?.postedBy?._id?.toString?.() ?? String(post?.postedBy)}
-              currentUserId={user?._id?.toString?.() ?? String(user?._id)}
-              currentUserProfilePic={user?.profilePic}
-              onReplyPress={handleReplyPress}
-              onLikePress={handleLikeComment}
-              onDeletePress={handleDeleteComment}
-              onMentionPress={(username: string) => navigation.navigate('UserProfile', { username })}
-            />
-          ))}
-
-          {/* Load More button */}
-          {topLevelScopedReplies.length > visibleCommentsCount && (
-            <TouchableOpacity
-              style={[styles.loadMoreButton, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}
-              onPress={() => {
-                setVisibleCommentsCount((prev) => prev + COMMENTS_PER_PAGE);
-                setTimeout(() => {
-                  scrollViewRef.current?.scrollToEnd({ animated: true });
-                }, 100);
-              }}
-            >
-              <Text style={[styles.loadMoreText, { color: colors.primary }]}>
-                {t('loadMoreComments')} ({topLevelScopedReplies.length - visibleCommentsCount}{' '}
-                {t('remaining')})
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
+        </TouchableOpacity>
       </ScrollView>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      {/* Instagram-style comments bottom sheet */}
+      <Modal
+        visible={commentsVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={closeCommentsModal}
+        statusBarTranslucent
       >
-        <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
-        <View style={styles.inputWrapper}>
-          <TextInput
-            ref={replyInputRef}
-            style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
-            placeholder={replyParentId ? t('writeReplyToComment') : t('writeComment')}
-            placeholderTextColor={colors.textGray}
-            value={replyText}
-            onChangeText={handleReplyTextChange}
-            multiline
-          />
-          
-          {/* Mention suggestions dropdown */}
-          {showSuggestions && mentionSuggestions.length > 0 && (
-            <View style={[styles.suggestionsContainer, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
-              <FlatList
-                data={mentionSuggestions}
-                keyExtractor={(item) => item._id?.toString() || item.username || String(Math.random())}
-                renderItem={({ item, index }) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.suggestionItem,
-                      { backgroundColor: index === selectedSuggestionIndex ? colors.border : 'transparent' },
-                    ]}
-                    onPress={() => selectMentionUser(item)}
+        <View style={styles.sheetRoot}>
+          <TouchableWithoutFeedback onPress={closeCommentsModal}>
+            <View style={[styles.sheetBackdrop, { backgroundColor: sheetUi.backdrop }]} />
+          </TouchableWithoutFeedback>
+
+          <Animated.View style={[styles.sheetKav, { height: sheetHeightAnim }]}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.sheetKavInner}
+            >
+              <View style={[styles.sheet, styles.sheetShadow, { backgroundColor: sheetUi.bg, flex: 1 }]}>
+                <View style={styles.sheetDragZone} {...sheetPanResponder.panHandlers}>
+                  <View style={styles.sheetHandleWrap}>
+                    <View style={[styles.sheetHandle, { backgroundColor: sheetUi.handle }]} />
+                  </View>
+                  <View style={styles.sheetHeader}>
+                    <Text style={[styles.sheetTitle, { color: colors.text }]}>Comments</Text>
+                  </View>
+                  <View style={[styles.sheetDivider, { backgroundColor: sheetUi.divider }]} />
+                </View>
+
+              <ScrollView
+                ref={modalScrollRef}
+                style={styles.commentsScroll}
+                contentContainerStyle={styles.commentsScrollContent}
+                keyboardShouldPersistTaps="handled"
+                scrollEnabled={!showSuggestions}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={topLevelScopedReplies.length > 4}
+                scrollEventThrottle={16}
+                onScroll={handleCommentsScroll}
+              >
+                {commentsLoading && topLevelScopedReplies.length === 0 ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={sheetUi.accent}
+                    style={styles.commentsLoader}
+                  />
+                ) : topLevelScopedReplies.length === 0 ? (
+                  <Text style={[styles.noCommentsText, { color: sheetUi.muted }]}>
+                    No comments yet. Start the conversation.
+                  </Text>
+                ) : (
+                  topLevelScopedReplies.map((reply: any) => (
+                    <ThreadedComment
+                      key={reply?._id?.toString?.() ?? String(reply?._id)}
+                      reply={reply}
+                      allReplies={scopedReplies}
+                      postId={postId}
+                      postOwnerId={post?.postedBy?._id?.toString?.() ?? String(post?.postedBy)}
+                      currentUserId={user?._id?.toString?.() ?? String(user?._id)}
+                      currentUserProfilePic={user?.profilePic}
+                      onReplyPress={handleReplyPress}
+                      onLikePress={handleLikeComment}
+                      onDeletePress={handleDeleteComment}
+                      onMentionPress={(username: string) => {
+                        closeCommentsModal();
+                        navigation.navigate('UserProfile', { username });
+                      }}
+                    />
+                  ))
+                )}
+
+                {commentsLoadingMore && (
+                  <ActivityIndicator
+                    size="small"
+                    color={sheetUi.accent}
+                    style={styles.commentsLoaderMore}
+                  />
+                )}
+
+              </ScrollView>
+
+              {/* Mention suggestions above input */}
+              {showSuggestions && mentionSuggestions.length > 0 && (
+                <View
+                  style={[
+                    styles.suggestionsPanel,
+                    {
+                      backgroundColor: sheetUi.inputFill,
+                      borderColor: sheetUi.inputBorder,
+                      height: suggestionsListHeight,
+                    },
+                  ]}
+                >
+                  <GestureScrollView
+                    style={styles.suggestionsList}
+                    contentContainerStyle={styles.suggestionsListContent}
+                    keyboardShouldPersistTaps="always"
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator
+                    bounces={false}
+                    scrollEventThrottle={16}
                   >
-                    {item.profilePic ? (
-                      <Image source={{ uri: item.profilePic }} style={styles.suggestionAvatar} />
+                    {mentionSuggestions.map((item, index) => (
+                      <Pressable
+                        key={item._id?.toString() || item.username || String(index)}
+                        style={({ pressed }) => [
+                          styles.suggestionItem,
+                          {
+                            backgroundColor:
+                              index === selectedSuggestionIndex
+                                ? colors.border
+                                : pressed
+                                  ? colors.border
+                                  : 'transparent',
+                          },
+                        ]}
+                        onPress={() => selectMentionUser(item)}
+                      >
+                        {item.profilePic ? (
+                          <Image source={{ uri: item.profilePic }} style={styles.suggestionAvatar} />
+                        ) : (
+                          <View style={[styles.suggestionAvatar, styles.suggestionAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                            <Text style={styles.suggestionAvatarText}>
+                              {(item.username || '?')[0]?.toUpperCase() || '?'}
+                            </Text>
+                          </View>
+                        )}
+                        <View style={styles.suggestionInfo}>
+                          <Text style={[styles.suggestionUsername, { color: colors.text }]}>{item.username}</Text>
+                          {item.name ? (
+                            <Text style={[styles.suggestionName, { color: colors.textGray }]} numberOfLines={1}>
+                              {item.name}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    ))}
+                  </GestureScrollView>
+                </View>
+              )}
+
+              {/* Quick emoji row — Instagram style */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={[styles.emojiRow, { borderTopColor: sheetUi.divider, backgroundColor: sheetUi.footer }]}
+                contentContainerStyle={styles.emojiRowContent}
+                keyboardShouldPersistTaps="handled"
+              >
+                {QUICK_EMOJIS.map((emoji) => (
+                  <TouchableOpacity
+                    key={emoji}
+                    style={styles.emojiBtn}
+                    onPress={() => appendEmoji(emoji)}
+                    hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                  >
+                    <Text style={styles.emojiChar}>{emoji}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              <View style={[styles.inputContainer, { backgroundColor: sheetUi.footer, borderTopColor: sheetUi.divider }]}>
+                {user?.profilePic ? (
+                  <Image source={{ uri: user.profilePic }} style={styles.inputAvatar} />
+                ) : (
+                  <View style={[styles.inputAvatar, styles.inputAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                    <Text style={styles.inputAvatarText}>
+                      {(user?.username || '?')[0]?.toUpperCase() || '?'}
+                    </Text>
+                  </View>
+                )}
+                <View style={[styles.inputPill, { borderColor: sheetUi.inputBorder, backgroundColor: sheetUi.inputFill }]}>
+                  <TextInput
+                    ref={replyInputRef}
+                    style={[styles.input, { color: colors.text }]}
+                    placeholder={
+                      replyParentId
+                        ? t('writeReplyToComment')
+                        : `Add a comment for ${postAuthorName}…`
+                    }
+                    placeholderTextColor={sheetUi.muted}
+                    value={replyText}
+                    onChangeText={handleReplyTextChange}
+                    multiline
+                  />
+                </View>
+                {replyText.trim().length > 0 && (
+                  <TouchableOpacity style={styles.postButton} onPress={handleReply} disabled={replying}>
+                    {replying ? (
+                      <ActivityIndicator size="small" color={sheetUi.accent} />
                     ) : (
-                      <View style={[styles.suggestionAvatar, styles.suggestionAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                        <Text style={styles.suggestionAvatarText}>
-                          {(item.username || '?')[0]?.toUpperCase() || '?'}
-                        </Text>
-                      </View>
+                      <Text style={[styles.postButtonText, { color: sheetUi.accent }]}>Post</Text>
                     )}
-                    <View style={styles.suggestionInfo}>
-                      <Text style={[styles.suggestionUsername, { color: colors.text }]}>{item.username}</Text>
-                      {item.name && <Text style={[styles.suggestionName, { color: colors.textGray }]}>{item.name}</Text>}
-                    </View>
                   </TouchableOpacity>
                 )}
-                style={styles.suggestionsList}
-                keyboardShouldPersistTaps="handled"
-              />
+              </View>
             </View>
-          )}
+            </KeyboardAvoidingView>
+          </Animated.View>
         </View>
-        
-        <TouchableOpacity
-          style={[styles.sendButton, { backgroundColor: colors.primary }, replying && styles.sendButtonDisabled]}
-          onPress={handleReply}
-          disabled={replying || !replyText.trim()}
-        >
-          {replying ? (
-            <ActivityIndicator color={colors.buttonText} />
-          ) : (
-            <Text style={[styles.sendButtonText, { color: colors.buttonText }]}>Send</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-      </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 };
@@ -569,7 +914,113 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
-    paddingBottom: 150, // Extra padding to ensure new comments are fully visible when scrolled
+    paddingBottom: 24,
+  },
+  viewCommentsRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  viewCommentsText: {
+    fontSize: 14,
+    fontWeight: '400',
+  },
+  sheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  sheetShadow: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 28,
+  },
+  sheetKav: {
+    width: '100%',
+  },
+  sheetKavInner: {
+    flex: 1,
+  },
+  sheet: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    overflow: 'hidden',
+    flexDirection: 'column',
+    flex: 1,
+    minHeight: 0,
+  },
+  sheetDragZone: {
+    width: '100%',
+    paddingBottom: 2,
+  },
+  sheetHandleWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    paddingTop: 10,
+    paddingBottom: 14,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    opacity: 0.35,
+  },
+  sheetHeader: {
+    alignItems: 'center',
+    paddingBottom: 12,
+  },
+  sheetTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  sheetDivider: {
+    height: StyleSheet.hairlineWidth,
+  },
+  commentsScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  commentsScrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  noCommentsText: {
+    textAlign: 'center',
+    fontSize: 14,
+    paddingVertical: 40,
+  },
+  commentsLoader: {
+    paddingVertical: 32,
+  },
+  commentsLoaderMore: {
+    paddingVertical: 16,
+  },
+  loadMoreInline: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  emojiRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    maxHeight: 44,
+  },
+  emojiRowContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    gap: 2,
+    alignItems: 'center',
+  },
+  emojiBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  emojiChar: {
+    fontSize: 22,
   },
   errorText: {
     fontSize: 16,
@@ -604,46 +1055,75 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flexDirection: 'row',
-    padding: 15,
-    paddingBottom: Platform.OS === 'ios' ? 15 : 10,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  inputAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+  },
+  inputAvatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inputAvatarText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  inputPill: {
+    flex: 1,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+    minHeight: 40,
+    justifyContent: 'center',
   },
   inputWrapper: {
     flex: 1,
     marginRight: 10,
-    position: 'relative',
   },
   input: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    color: COLORS.text,
-    maxHeight: 100,
+    fontSize: 14,
+    lineHeight: 18,
+    padding: 0,
+    margin: 0,
+    maxHeight: 80,
   },
-  suggestionsContainer: {
-    position: 'absolute',
-    bottom: '100%',
-    left: 0,
-    right: 0,
-    marginBottom: 8,
-    backgroundColor: COLORS.background,
+  postButton: {
+    paddingLeft: 10,
+    justifyContent: 'center',
+    minWidth: 44,
+    alignItems: 'center',
+  },
+  postButtonText: {
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  suggestionsPanel: {
+    marginHorizontal: 15,
+    marginTop: 8,
+    marginBottom: 4,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    maxHeight: 200,
+    overflow: 'hidden',
+    elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 5,
-    zIndex: 1000,
+    shadowRadius: 6,
   },
   suggestionsList: {
-    maxHeight: 200,
+    flex: 1,
+  },
+  suggestionsListContent: {
+    flexGrow: 0,
   },
   suggestionItem: {
     flexDirection: 'row',

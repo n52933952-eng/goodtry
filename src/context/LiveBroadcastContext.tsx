@@ -358,6 +358,19 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [syncLocalTrack]);
 
+  const stopMediaForCallHandoff = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+    // Free the camera first — Android needs exclusive access before the call can publish video.
+    await room.localParticipant.setCameraEnabled(false).catch(() => {});
+    await Promise.all([
+      room.localParticipant.setScreenShareEnabled(false).catch(() => {}),
+      room.localParticipant.setMicrophoneEnabled(false).catch(() => {}),
+    ]);
+    isSharingRef.current = false;
+    setIsSharing(false);
+  }, []);
+
   const stopAllPublishedTracks = useCallback(async () => {
 
     const room = roomRef.current;
@@ -378,9 +391,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
 
-  const disconnect = useCallback(async () => {
+  const disconnect = useCallback(async (opts?: { skipTrackStop?: boolean }) => {
 
-    await stopAllPublishedTracks();
+    if (!opts?.skipTrackStop) {
+      await stopAllPublishedTracks();
+    }
 
     try { stopOngoingCallNative(); } catch (_) {}
 
@@ -717,46 +732,63 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
 
-  const teardownLiveSession = useCallback(async (opts?: { backgroundDisconnect?: boolean }) => {
+  const teardownInFlightRef = useRef<Promise<void> | null>(null);
+
+  const teardownLiveSession = useCallback(async (opts?: { forCallHandoff?: boolean }) => {
+    if (teardownInFlightRef.current) {
+      await teardownInFlightRef.current;
+      return;
+    }
     if (!roomRef.current && !isLive) return;
 
-    liveBroadcastNav.suppressGameCleanupNav = true;
-    setIsLive(false);
-    setIsMinimized(false);
-    isMinimizedRef.current = false;
-    setIsLiveControlsFocused(false);
-    DeviceEventEmitter.emit(LIVE_BAR_RESIGN_GAME, { leaveGameScreen: false });
+    const run = async () => {
+      liveBroadcastNav.suppressGameCleanupNav = true;
+      setIsLive(false);
+      setIsMinimized(false);
+      isMinimizedRef.current = false;
+      setIsLiveControlsFocused(false);
+      DeviceEventEmitter.emit(LIVE_BAR_RESIGN_GAME, { leaveGameScreen: false });
 
-    if (socket && user?._id) {
-      socket.emit('livekit:leaveLiveWatch', { streamerId: String(user._id) });
-      if (roomNameRef.current && !liveEndedRef.current) {
-        liveEndedRef.current = true;
-        socket.emit('livekit:endLive', {
-          streamerId: String(user._id),
-          roomName: roomNameRef.current,
-        });
+      if (socket && user?._id) {
+        socket.emit('livekit:leaveLiveWatch', { streamerId: String(user._id) });
+        if (roomNameRef.current && !liveEndedRef.current) {
+          liveEndedRef.current = true;
+          socket.emit('livekit:endLive', {
+            streamerId: String(user._id),
+            roomName: roomNameRef.current,
+          });
+        }
       }
+
+      roomNameRef.current = '';
+      setLiveRoomName('');
+      setIsMicMuted(false);
+      clearLiveChatMessages();
+
+      if (opts?.forCallHandoff) {
+        // Stop camera first, then fully disconnect the live room BEFORE the 1:1 call
+        // connects — overlapping WebRTC sessions causes "unable to set offer" on Android.
+        await stopMediaForCallHandoff();
+        await disconnect({ skipTrackStop: true });
+      } else {
+        await disconnect();
+      }
+
+      setTimeout(() => {
+        liveBroadcastNav.suppressGameCleanupNav = false;
+      }, 2000);
+    };
+
+    teardownInFlightRef.current = run();
+    try {
+      await teardownInFlightRef.current;
+    } finally {
+      teardownInFlightRef.current = null;
     }
-
-    roomNameRef.current = '';
-    setLiveRoomName('');
-    setIsMicMuted(false);
-    clearLiveChatMessages();
-
-    if (opts?.backgroundDisconnect) {
-      await stopAllPublishedTracks();
-      void disconnect();
-    } else {
-      await disconnect();
-    }
-
-    setTimeout(() => {
-      liveBroadcastNav.suppressGameCleanupNav = false;
-    }, 2000);
-  }, [socket, user, disconnect, isLive, clearLiveChatMessages, stopAllPublishedTracks]);
+  }, [socket, user, disconnect, isLive, clearLiveChatMessages, stopMediaForCallHandoff]);
 
   const endLiveForCall = useCallback(async () => {
-    await teardownLiveSession({ backgroundDisconnect: true });
+    await teardownLiveSession({ forCallHandoff: true });
   }, [teardownLiveSession]);
 
   const endLive = useCallback(async () => {

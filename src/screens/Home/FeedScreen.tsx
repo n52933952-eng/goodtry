@@ -43,7 +43,21 @@ interface AvailableUser {
 }
 
 const FeedScreen = ({ navigation }: any) => {
-  const { posts, setPosts, appendPosts, filterPostsForFeed, unhideFeedPostFromFeed, unhideFeedSourceFromFeed, setViewerSortBoost, deletePost } = usePost();
+  const {
+    posts,
+    setPosts,
+    appendPosts,
+    filterPostsForFeed,
+    unhideFeedPostFromFeed,
+    unhideFeedSourceFromFeed,
+    setViewerSortBoost,
+    deletePost,
+    addPost,
+    setDeferIncomingFeedPosts,
+    flushPendingFeedPosts,
+    clearPendingFeedPosts,
+    pendingNewPostsCount,
+  } = usePost();
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount, refreshNotificationCount } = useSocket();
   const { isLive } = useLiveBroadcast();
@@ -105,7 +119,8 @@ const FeedScreen = ({ navigation }: any) => {
   const feedListRef = useRef<FlatList>(null);
   const lastFeedFocusRefreshAtRef = useRef(0);
   const FEED_FOCUS_REFRESH_MIN_MS = 30_000;
-  const LOAD_MORE_DEBOUNCE_MS = 2000;
+  const LOAD_MORE_DEBOUNCE_MS = 600;
+  const FEED_PAGE_SIZE = 12;
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 65,
     minimumViewTime: 180,
@@ -131,20 +146,22 @@ const FeedScreen = ({ navigation }: any) => {
   const knownPostIdsRef = useRef<Set<string>>(new Set());
   const scrollTopBtnAnim = useRef(new Animated.Value(0)).current;
   const NEW_POSTS_MIN_OFFSET = 300;
+  const deferIncomingRef = useRef(false);
 
   const scrollFeedToTop = useCallback(() => {
+    flushPendingFeedPosts();
     const list = feedListRef.current;
     if (list) {
       const y = scrollOffsetRef.current;
       const winH = Dimensions.get('window').height;
-      // Very far down: jump instantly. Animating a scroll would render every row in between
-      // and freeze/crash on a long feed (e.g. 500 posts). Only animate when we're close.
       list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
     }
     setShowScrollTop(false);
     setHasNewPosts(false);
     scrollOffsetRef.current = 0;
-  }, []);
+    deferIncomingRef.current = false;
+    setDeferIncomingFeedPosts(false);
+  }, [flushPendingFeedPosts, setDeferIncomingFeedPosts]);
 
   const handleFeedScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -152,6 +169,12 @@ const FeedScreen = ({ navigation }: any) => {
       const dy = y - lastScrollYRef.current;
       lastScrollYRef.current = y;
       scrollOffsetRef.current = y;
+
+      const shouldDefer = y > NEW_POSTS_MIN_OFFSET;
+      if (shouldDefer !== deferIncomingRef.current) {
+        deferIncomingRef.current = shouldDefer;
+        setDeferIncomingFeedPosts(shouldDefer);
+      }
 
       // Accumulate distance in the current direction so a single jittery frame
       // (momentum wobble) can't toggle the button. Reset the accumulator whenever
@@ -167,26 +190,31 @@ const FeedScreen = ({ navigation }: any) => {
         setShowScrollTop((prev) => (prev ? prev : true));
       }
 
-      if (y < 40 && hasNewPosts) setHasNewPosts(false);
+      if (y < 40) {
+        if (pendingNewPostsCount > 0) flushPendingFeedPosts();
+        setHasNewPosts(false);
+        if (deferIncomingRef.current) {
+          deferIncomingRef.current = false;
+          setDeferIncomingFeedPosts(false);
+        }
+      }
     },
-    [hasNewPosts],
+    [pendingNewPostsCount, flushPendingFeedPosts, setDeferIncomingFeedPosts],
   );
 
-  // Flag "new posts" only when a genuinely new post lands at the very top while scrolled down.
+  // Show "New posts" when posts are queued while scrolled down (no list mutation = no jump).
+  useEffect(() => {
+    if (pendingNewPostsCount > 0 && scrollOffsetRef.current > NEW_POSTS_MIN_OFFSET) {
+      setHasNewPosts(true);
+    } else if (pendingNewPostsCount === 0) {
+      setHasNewPosts(false);
+    }
+  }, [pendingNewPostsCount]);
+
+  // Track known ids for other feed logic (e.g. focus refresh).
   useEffect(() => {
     const list = visiblePosts;
     const currentTopId = list[0]?._id != null ? String(list[0]._id) : null;
-    const prevTop = prevTopIdRef.current;
-    const prevKnown = knownPostIdsRef.current;
-    if (
-      prevTop &&
-      currentTopId &&
-      currentTopId !== prevTop &&
-      !prevKnown.has(currentTopId) &&
-      scrollOffsetRef.current > NEW_POSTS_MIN_OFFSET
-    ) {
-      setHasNewPosts(true);
-    }
     prevTopIdRef.current = currentTopId;
     knownPostIdsRef.current = new Set(list.map((p: any) => String(p._id)));
   }, [visiblePosts]);
@@ -393,11 +421,10 @@ const FeedScreen = ({ navigation }: any) => {
         postedBy:     { _id: sid, name: data.streamerName, profilePic: data.streamerProfilePic },
         createdAt:    new Date().toISOString(),
         updatedAt:    new Date().toISOString(),
+        replies:      [],
+        likes:        [],
       };
-      setPosts((prev: any[]) => {
-        if (prev.some((p: any) => String(p._id) === pseudo._id)) return prev;
-        return [pseudo, ...prev];
-      });
+      addPost(pseudo as any);
     };
 
     const handleStreamEnded = (payload: any) => {
@@ -422,7 +449,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('livekit:streamStarted', handleStreamStarted);
       socket.off('livekit:streamEnded', handleStreamEnded);
     };
-  }, [socket, user, navigation, deletePost, setPosts]);
+  }, [socket, user, navigation, deletePost, setPosts, addPost]);
 
   // Backup: same server status check as pull-to-refresh (~15s, matches backend disconnect grace).
   useEffect(() => {
@@ -466,7 +493,7 @@ const FeedScreen = ({ navigation }: any) => {
     isFetchingRef.current = true;
 
     try {
-      const limit = 9;
+      const limit = FEED_PAGE_SIZE;
       let url = `${ENDPOINTS.GET_FEED}?limit=${limit}`;
       if (loadMore) {
         const token = feedCursorRef.current;
@@ -542,6 +569,9 @@ const FeedScreen = ({ navigation }: any) => {
     feedCursorRef.current = null;
     setStoryRingReplayKey((k) => k + 1);
     setHasNewPosts(false);
+    clearPendingFeedPosts();
+    deferIncomingRef.current = false;
+    setDeferIncomingFeedPosts(false);
     scrollOffsetRef.current = 0;
     feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
     fetchStoryStrip();
@@ -549,17 +579,15 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const handleLoadMore = () => {
-    // Guard: Don't load more when no posts (causes infinite loop - onEndReached fires on empty list)
     if (posts.length === 0) return;
-    if (!loadingMore && hasMore && !isFetchingRef.current) {
-      const now = Date.now();
-      if (now - lastLoadMoreTimeRef.current < LOAD_MORE_DEBOUNCE_MS) {
-        return; // Debounce rapid onEndReached fires
-      }
-      lastLoadMoreTimeRef.current = now;
-      setLoadingMore(true);
-      fetchFeed(true);
-    }
+    if (!hasMore || loadingMore || isFetchingRef.current) return;
+
+    const now = Date.now();
+    if (now - lastLoadMoreTimeRef.current < LOAD_MORE_DEBOUNCE_MS) return;
+
+    lastLoadMoreTimeRef.current = now;
+    setLoadingMore(true);
+    fetchFeed(true);
   };
 
   const fetchAvailableUsers = async () => {
@@ -919,9 +947,13 @@ const FeedScreen = ({ navigation }: any) => {
           />
         }
         onEndReached={handleLoadMore}
-        onEndReachedThreshold={0.5}
+        onEndReachedThreshold={0.35}
         onScroll={handleFeedScroll}
         scrollEventThrottle={16}
+        maintainVisibleContentPosition={{
+          minIndexForVisible: 0,
+          autoscrollToTopThreshold: 10,
+        }}
         viewabilityConfigCallbackPairs={viewabilityPairs}
         ListHeaderComponent={
           <View>

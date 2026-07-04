@@ -15,6 +15,7 @@ import React, {
   createContext, useContext, useEffect, useRef, useState, useCallback,
 } from 'react';
 import { DeviceEventEmitter, Alert } from 'react-native';
+import InCallManager from 'react-native-incall-manager';
 import {
   Room,
   RoomEvent,
@@ -36,6 +37,7 @@ import {
 } from '../services/callData';
 import { apiService } from '../services/api';
 import { callSessionNav } from '../services/callSessionNav';
+import { liveBroadcastNav } from '../services/liveBroadcastNav';
 
 // ─── types ───────────────────────────────────────────────────────────────────
 interface Call {
@@ -55,7 +57,7 @@ interface LiveKitContextType {
   callEnded: boolean;
   // ── actions (matches old WebRTCContext) ──
   callUser: (userId: string, userName: string, type: 'audio' | 'video') => Promise<void>;
-  answerCall: () => Promise<void>;
+  answerCall: (opts?: { releaseLive?: boolean }) => Promise<void>;
   leaveCall: () => void;
   /** Cold start / FCM / native Answer — hydrate incoming ring before socket delivers livekit:incomingCall */
   setIncomingCallFromNotification: (
@@ -264,7 +266,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const connectSessionId = callSessionIdRef.current;
     isConnectingRoomRef.current = true;
     try {
-    await disconnectRoom();
+    if (roomRef.current) {
+      await disconnectRoom();
+    }
 
     const lkRoom = new Room({
       adaptiveStream: true,
@@ -273,6 +277,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
     roomRef.current = lkRoom;
     setRoom(lkRoom);
+    setConnectionState(ConnectionState.Connecting);
 
     // Keep local camera preview resilient to Android publish/unpublish races.
     const syncLocalVideoFromParticipant = () => {
@@ -424,9 +429,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       await lkRoom.localParticipant.setCameraEnabled(false);
       await lkRoom.localParticipant.setMicrophoneEnabled(true);
     } else {
-    await lkRoom.localParticipant.setMicrophoneEnabled(true);
-        await lkRoom.localParticipant.setCameraEnabled(true);
-        syncLocalVideoFromParticipant();
+      await lkRoom.localParticipant.setMicrophoneEnabled(true);
+      const camP = lkRoom.localParticipant.setCameraEnabled(true);
+      syncLocalVideoFromParticipant();
+      try { await camP; } catch (_) {}
+      syncLocalVideoFromParticipant();
     }
     } catch (err: unknown) {
       if (
@@ -599,7 +606,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [user, socket, fetchToken, connectRoom, disconnectRoom, beginCallSession]);
 
   // ── PUBLIC: answerCall (receiver accepts) ────────────────────────────────
-  const answerCall = useCallback(async () => {
+  const answerCall = useCallback(async (opts?: { releaseLive?: boolean }) => {
     if (!call.from) return;
     if (callAcceptedRef.current || answerCallInFlightRef.current) return;
     if (roomRef.current?.state === ConnectionState.Connected) return;
@@ -612,26 +619,38 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const type = (call.callType as 'audio' | 'video') || 'video';
       const fromId = idStr(call.from);
       const prefetchKey = `${fromId}:${type}`;
-      const prefetch = incomingTokenPrefetchRef.current;
-      let token: string;
-      let livekitUrl: string;
-      if (prefetch && prefetch.key === prefetchKey) {
-        incomingTokenPrefetchRef.current = null;
-        try {
-          const bundle = await prefetch.promise;
-          token = bundle.token;
-          livekitUrl = bundle.livekitUrl;
-        } catch {
-          const bundle = await fetchToken(fromId, type);
-          token = bundle.token;
-          livekitUrl = bundle.livekitUrl;
+      const releaseLive = opts?.releaseLive !== false;
+
+      try {
+        InCallManager.start({ media: type === 'video' ? 'video' : 'audio', auto: false, ringback: '' });
+        InCallManager.setSpeakerphoneOn(true);
+        InCallManager.setForceSpeakerphoneOn(true);
+      } catch (_) {}
+
+      // Free live media in parallel with token fetch; must finish before connectRoom (no dual WebRTC).
+      const liveReleaseP = releaseLive && liveBroadcastNav.endForCall
+        ? liveBroadcastNav.endForCall().catch(() => {})
+        : Promise.resolve();
+
+      const resolveToken = async (): Promise<{ token: string; livekitUrl: string }> => {
+        const prefetch = incomingTokenPrefetchRef.current;
+        if (prefetch && prefetch.key === prefetchKey) {
+          incomingTokenPrefetchRef.current = null;
+          try {
+            return await prefetch.promise;
+          } catch {
+            return fetchToken(fromId, type);
+          }
         }
-      } else {
         incomingTokenPrefetchRef.current = null;
-        const bundle = await fetchToken(fromId, type);
-        token = bundle.token;
-        livekitUrl = bundle.livekitUrl;
-      }
+        return fetchToken(fromId, type);
+      };
+
+      const [{ token, livekitUrl }] = await Promise.all([
+        resolveToken(),
+        liveReleaseP,
+      ]);
+
       if (isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)) return;
       await connectRoom(token, livekitUrl, type);
       if (isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)) return;

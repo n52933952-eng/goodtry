@@ -105,6 +105,8 @@ interface PostProps {
   feedWideCard?: boolean;
   /** Fired after a successful delete (own post or own channel card) so parent lists with their own state can drop it immediately. */
   onPostDeleted?: (postId: string) => void;
+  /** Post detail: open the Instagram-style comments modal instead of navigating. */
+  onCommentPress?: () => void;
 }
 
 const Post: React.FC<PostProps> = ({
@@ -121,6 +123,7 @@ const Post: React.FC<PostProps> = ({
   fullWidthCard = false,
   feedWideCard = false,
   onPostDeleted,
+  onCommentPress,
 }) => {
   const isAnimatedImageUrl = (url: string) => {
     const raw = String(url || '');
@@ -434,6 +437,13 @@ const Post: React.FC<PostProps> = ({
     post.likeCount ?? post.likes?.length ?? 0,
   );
   const [likesModalVisible, setLikesModalVisible] = useState(false);
+
+  /** Prefer live replies array when present (post detail after add/delete); else denormalized replyCount from feed. */
+  const commentCount = useMemo(() => {
+    if (Array.isArray(post?.replies)) return post.replies.length;
+    const rc = Number((post as any)?.replyCount);
+    return Number.isFinite(rc) && rc >= 0 ? rc : 0;
+  }, [post?.replies, (post as any)?.replyCount]);
   
   // Weather post state
   const isWeatherPost = post.postedBy?.username === 'Weather' && post.weatherData;
@@ -2564,14 +2574,16 @@ const Post: React.FC<PostProps> = ({
             style={styles.actionButton}
             onPress={(e) => {
               e.stopPropagation();
-              if (!disableNavigation) {
+              if (onCommentPress) {
+                onCommentPress();
+              } else if (!disableNavigation) {
                 navigateToPostDetail(post._id);
               }
             }}
           >
             <Text style={styles.actionIcon}>💬</Text>
             <Text style={[styles.actionText, { color: colors.textGray }]}>
-              {(post as any).replyCount ?? post.replies?.length ?? 0}
+              {commentCount}
             </Text>
           </TouchableOpacity>
 

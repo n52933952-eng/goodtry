@@ -1,49 +1,27 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
-import { COLORS } from '../utils/constants';
+import { useTheme } from '../context/ThemeContext';
 
 type AnyReply = any;
 
 function formatTimeAgo(dateValue?: string) {
-  if (!dateValue) return 'just now';
+  if (!dateValue) return 'now';
   const date = new Date(dateValue);
-  if (Number.isNaN(date.getTime())) return 'just now';
+  if (Number.isNaN(date.getTime())) return 'now';
 
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMins / 60);
   const diffDays = Math.floor(diffHours / 24);
+  const diffWeeks = Math.floor(diffDays / 7);
 
   if (diffMins < 1) return 'now';
   if (diffMins < 60) return `${diffMins}m`;
   if (diffHours < 24) return `${diffHours}h`;
   if (diffDays < 7) return `${diffDays}d`;
+  if (diffWeeks < 4) return `${diffWeeks}w`;
   return date.toLocaleDateString();
-}
-
-function renderTextWithMentions(text: string, onMentionPress?: (username: string) => void) {
-  // Split on @mentions (same pattern as web: @\w+)
-  const parts = (text || '').split(/(@\w+)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith('@') && part.length > 1) {
-      const username = part.slice(1);
-      return (
-        <Text
-          key={`${idx}-${part}`}
-          style={styles.mention}
-          onPress={() => onMentionPress?.(username)}
-        >
-          {part}
-        </Text>
-      );
-    }
-    return (
-      <Text key={`${idx}-${part}`} style={styles.commentText}>
-        {part}
-      </Text>
-    );
-  });
 }
 
 type Props = {
@@ -52,7 +30,7 @@ type Props = {
   postId: string;
   postOwnerId?: string;
   currentUserId?: string;
-  currentUserProfilePic?: string; // Current user's profilePic for immediate updates
+  currentUserProfilePic?: string;
   depth?: number;
   onReplyPress: (reply: AnyReply) => void;
   onLikePress: (reply: AnyReply) => void;
@@ -73,89 +51,164 @@ export const ThreadedComment: React.FC<Props> = ({
   onDeletePress,
   onMentionPress,
 }) => {
+  const { colors } = useTheme();
   const replyId = reply?._id?.toString?.() ?? String(reply?._id);
   const replyUserId = reply?.userId?.toString?.() ?? String(reply?.userId);
 
-  const canDelete = !!currentUserId && (postOwnerId?.toString() === currentUserId?.toString() || replyUserId === currentUserId?.toString());
-  
-  // Use current user's profilePic if it's own comment (for immediate updates)
+  const [showReplies, setShowReplies] = useState(depth === 0 && false);
+
+  const canDelete =
+    !!currentUserId &&
+    (postOwnerId?.toString() === currentUserId?.toString() ||
+      replyUserId === currentUserId?.toString());
+
   const isOwnComment = replyUserId === currentUserId?.toString();
-  const avatarPic = isOwnComment && currentUserProfilePic 
-    ? currentUserProfilePic 
-    : reply?.userProfilePic;
+  const avatarPic =
+    isOwnComment && currentUserProfilePic ? currentUserProfilePic : reply?.userProfilePic;
 
   const liked = useMemo(() => {
     const likes = Array.isArray(reply?.likes) ? reply.likes : [];
     if (!currentUserId) return false;
-    return likes.some((id: any) => (id?.toString?.() ?? String(id)) === currentUserId?.toString());
+    return likes.some(
+      (id: any) => (id?.toString?.() ?? String(id)) === currentUserId?.toString(),
+    );
   }, [reply?.likes, currentUserId]);
 
   const likesCount = Array.isArray(reply?.likes) ? reply.likes.length : 0;
 
   const nestedReplies = useMemo(() => {
     return (allReplies || []).filter((r: any) => {
-      const parent = r?.parentReplyId?.toString?.() ?? (r?.parentReplyId ? String(r.parentReplyId) : null);
+      const parent =
+        r?.parentReplyId?.toString?.() ?? (r?.parentReplyId ? String(r.parentReplyId) : null);
       return parent && parent === replyId;
     });
   }, [allReplies, replyId]);
 
+  const isNested = depth > 0;
+  const avatarSize = isNested ? 28 : 32;
+
+  const renderBody = () => {
+    const text = reply?.text || '';
+    const parts = text.split(/(@\w+)/g);
+    return (
+      <Text style={[styles.bodyText, { color: colors.text }]}>
+        <Text style={[styles.usernameInline, { color: colors.text }]}>
+          {reply?.username || 'Unknown'}{' '}
+        </Text>
+        {parts.map((part, idx) => {
+          if (part.startsWith('@') && part.length > 1) {
+            const username = part.slice(1);
+            return (
+              <Text
+                key={`${idx}-${part}`}
+                style={styles.mention}
+                onPress={() => onMentionPress?.(username)}
+              >
+                {part}
+              </Text>
+            );
+          }
+          return <Text key={`${idx}-${part}`}>{part}</Text>;
+        })}
+      </Text>
+    );
+  };
+
   return (
-    <View style={[styles.container, depth > 0 && styles.nestedContainer]}>
+    <View style={[styles.container, isNested && styles.nestedContainer]}>
       <View style={styles.row}>
         {avatarPic ? (
-          <Image source={{ uri: avatarPic }} style={styles.avatar} />
+          <Image
+            source={{ uri: avatarPic }}
+            style={[styles.avatar, { width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2 }]}
+          />
         ) : (
-          <View style={[styles.avatar, styles.avatarPlaceholder]}>
-            <Text style={styles.avatarText}>{(reply?.username || '?')[0]?.toUpperCase?.() || '?'}</Text>
+          <View
+            style={[
+              styles.avatar,
+              styles.avatarPlaceholder,
+              { width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2, backgroundColor: colors.avatarBg },
+            ]}
+          >
+            <Text style={styles.avatarText}>
+              {(reply?.username || '?')[0]?.toUpperCase?.() || '?'}
+            </Text>
           </View>
         )}
 
         <View style={styles.content}>
-          <View style={styles.headerRow}>
-            <Text style={styles.username}>{reply?.username || 'Unknown'}</Text>
-            <Text style={styles.time}>· {formatTimeAgo(reply?.date)}</Text>
-            <View style={{ flex: 1 }} />
+          {renderBody()}
+
+          <View style={styles.metaRow}>
+            <Text style={[styles.metaText, { color: colors.textGray }]}>
+              {formatTimeAgo(reply?.date)}
+            </Text>
+            <TouchableOpacity onPress={() => onReplyPress(reply)} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
+              <Text style={[styles.metaAction, { color: colors.textGray }]}>Reply</Text>
+            </TouchableOpacity>
             {canDelete && (
-              <TouchableOpacity onPress={() => onDeletePress(reply)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Text style={styles.delete}>🗑️</Text>
+              <TouchableOpacity onPress={() => onDeletePress(reply)} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
+                <Text style={[styles.metaAction, { color: colors.textGray }]}>Delete</Text>
               </TouchableOpacity>
             )}
           </View>
-
-          <Text style={styles.commentText}>
-            {renderTextWithMentions(reply?.text || '', onMentionPress)}
-          </Text>
-
-          <View style={styles.actionsRow}>
-            <TouchableOpacity onPress={() => onReplyPress(reply)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.action}>Reply</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => onLikePress(reply)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.action}>{liked ? '❤️' : '🤍'} {likesCount}</Text>
-            </TouchableOpacity>
-          </View>
         </View>
+
+        <TouchableOpacity
+          style={styles.likeCol}
+          onPress={() => onLikePress(reply)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={[styles.heart, liked && styles.heartLiked]}>{liked ? '❤️' : '♡'}</Text>
+          {likesCount > 0 && (
+            <Text style={[styles.likeCount, { color: colors.textGray }]}>{likesCount}</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
-      {nestedReplies.length > 0 && (
-        <View style={styles.nestedList}>
-          {nestedReplies.map((nr: any) => (
-            <ThreadedComment
-              key={nr?._id?.toString?.() ?? String(nr?._id)}
-              reply={nr}
-              allReplies={allReplies}
-              postId={postId}
-              postOwnerId={postOwnerId}
-              currentUserId={currentUserId}
-              currentUserProfilePic={currentUserProfilePic}
-              depth={depth + 1}
-              onReplyPress={onReplyPress}
-              onLikePress={onLikePress}
-              onDeletePress={onDeletePress}
-              onMentionPress={onMentionPress}
-            />
-          ))}
+      {depth === 0 && nestedReplies.length > 0 && (
+        <View style={styles.nestedWrap}>
+          {!showReplies ? (
+            <TouchableOpacity
+              style={styles.viewRepliesRow}
+              onPress={() => setShowReplies(true)}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            >
+              <View style={[styles.viewRepliesLine, { backgroundColor: colors.border }]} />
+              <Text style={[styles.viewRepliesText, { color: colors.textGray }]}>
+                {nestedReplies.length === 1
+                  ? 'View 1 reply'
+                  : `View ${nestedReplies.length} more replies`}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              {nestedReplies.map((nr: any) => (
+                <ThreadedComment
+                  key={nr?._id?.toString?.() ?? String(nr?._id)}
+                  reply={nr}
+                  allReplies={allReplies}
+                  postId={postId}
+                  postOwnerId={postOwnerId}
+                  currentUserId={currentUserId}
+                  currentUserProfilePic={currentUserProfilePic}
+                  depth={depth + 1}
+                  onReplyPress={onReplyPress}
+                  onLikePress={onLikePress}
+                  onDeletePress={onDeletePress}
+                  onMentionPress={onMentionPress}
+                />
+              ))}
+              <TouchableOpacity
+                style={styles.viewRepliesRow}
+                onPress={() => setShowReplies(false)}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <View style={[styles.viewRepliesLine, { backgroundColor: colors.border }]} />
+                <Text style={[styles.viewRepliesText, { color: colors.textGray }]}>Hide replies</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       )}
     </View>
@@ -167,70 +220,94 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   nestedContainer: {
-    marginLeft: 18,
-    borderLeftWidth: 1,
-    borderLeftColor: COLORS.border,
-    paddingLeft: 12,
+    marginTop: 2,
   },
   row: {
     flexDirection: 'row',
-    gap: 10,
+    alignItems: 'flex-start',
   },
   avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.backgroundLight,
+    marginRight: 12,
+    backgroundColor: '#eee',
   },
   avatarPlaceholder: {
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.primary,
   },
   avatarText: {
     color: '#fff',
-    fontWeight: 'bold',
+    fontWeight: '700',
+    fontSize: 12,
   },
   content: {
     flex: 1,
+    paddingRight: 4,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  bodyText: {
+    fontSize: 14,
+    lineHeight: 20,
   },
-  username: {
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
-  time: {
-    color: COLORS.textGray,
-    fontSize: 12,
-  },
-  delete: {
-    fontSize: 16,
-  },
-  commentText: {
-    color: COLORS.text,
-    marginTop: 4,
-    lineHeight: 18,
+  usernameInline: {
+    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
   },
   mention: {
-    color: '#3B82F6',
-    fontWeight: 'bold',
+    color: '#0095F6',
+    fontWeight: '600',
+    fontSize: 14,
+    lineHeight: 20,
   },
-  actionsRow: {
+  metaRow: {
     flexDirection: 'row',
-    gap: 16,
-    marginTop: 8,
+    alignItems: 'center',
+    gap: 14,
+    marginTop: 6,
   },
-  action: {
-    color: COLORS.textGray,
+  metaText: {
     fontSize: 12,
     fontWeight: '600',
   },
-  nestedList: {
-    marginTop: 6,
+  metaAction: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  likeCol: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 2,
+    minWidth: 28,
+    marginLeft: 4,
+  },
+  heart: {
+    fontSize: 13,
+    color: '#262626',
+  },
+  heartLiked: {
+    fontSize: 12,
+  },
+  likeCount: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  nestedWrap: {
+    marginLeft: 44,
+    marginTop: 2,
+  },
+  viewRepliesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+  },
+  viewRepliesLine: {
+    width: 22,
+    height: StyleSheet.hairlineWidth,
+  },
+  viewRepliesText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
 

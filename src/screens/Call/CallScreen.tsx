@@ -143,7 +143,7 @@ const CallScreen = () => {
     setSelectedConversationPartnerId,
   } = useSocket();
 
-  const { isLive, isMinimized, isSharing, endLiveForCall } = useLiveBroadcast();
+  const { isLive, isMinimized, isSharing } = useLiveBroadcast();
 
   const {
     call,
@@ -191,17 +191,15 @@ const CallScreen = () => {
     autoAnswerStartedRef.current = true;
     void (async () => {
       try {
-        if (isLive && !isMinimized && !isSharing) {
-          await endLiveForCall();
-        }
-        await answerCall();
+        const releaseLive = !!(isLive && !isMinimized && !isSharing);
+        await answerCall({ releaseLive });
       } catch {
         autoAnswerStartedRef.current = false;
       }
     })();
   }, [
     shouldAutoAnswer, call.isReceivingCall, call.from, userId, answerCall, incomingCallKey,
-    isLive, isMinimized, isSharing, endLiveForCall,
+    isLive, isMinimized, isSharing,
   ]);
 
   // ── call control state ────────────────────────────────────────────────────

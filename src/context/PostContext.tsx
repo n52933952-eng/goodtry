@@ -96,6 +96,11 @@ interface PostContextType {
   /** Client-only: bubble a post to top (survives refresh). */
   setViewerSortBoost: (postId: string, boostMs?: number) => void;
   filterPostsForFeed: (list: Post[]) => Post[];
+  /** When true, socket/live inserts queue until flush (feed scrolled down — avoids scroll jump). */
+  setDeferIncomingFeedPosts: (defer: boolean) => void;
+  flushPendingFeedPosts: () => void;
+  clearPendingFeedPosts: () => void;
+  pendingNewPostsCount: number;
 }
 
 const PostContext = createContext<PostContextType | undefined>(undefined);
@@ -108,6 +113,10 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const [hiddenFeedSources, setHiddenFeedSources] = useState<Set<string>>(new Set());
   const hiddenFeedSourcesRef = useRef<Set<string>>(new Set());
   const viewerSortBoostRef = useRef<Record<string, number>>({});
+  /** Queue incoming posts while the user is scrolled down — prevents FlatList jump. */
+  const deferIncomingFeedPostsRef = useRef(false);
+  const pendingNewPostsRef = useRef<Post[]>([]);
+  const [pendingNewPostsCount, setPendingNewPostsCount] = useState(0);
 
   const getSortTimeMs = (p: any): number => {
     const id = p?._id?.toString?.() ?? (p?._id != null ? String(p._id) : '');
@@ -337,74 +346,96 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     [user?._id],
   );
 
-  const addPost = useCallback((post: Post) => {
-    setPosts((prevPosts) => {
-      // Safety check: ensure prevPosts is an array
-      const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
+  const mergePostIntoFeed = useCallback((prevPosts: Post[], post: Post): Post[] => {
+    const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
 
-      const newId = post?._id?.toString?.() ?? String(post?._id);
-      if (!newId) return safeArray;
-      if (hiddenFeedPostIdsRef.current.has(newId)) return safeArray;
+    const newId = post?._id?.toString?.() ?? String(post?._id);
+    if (!newId) return safeArray;
+    if (hiddenFeedPostIdsRef.current.has(newId)) return safeArray;
 
-      const newGameKey = getGameFeedDedupeKey(post);
-      if (newGameKey) {
-        const dupIdx = safeArray.findIndex(
-          (p) => getGameFeedDedupeKey(p) === newGameKey,
-        );
-        if (dupIdx >= 0) {
-          const merged = mergeGameFeedPostData(safeArray[dupIdx], post);
-          if (merged === safeArray[dupIdx]) return safeArray;
-          const next = [...safeArray];
-          next[dupIdx] = merged as Post;
-          return sortPostsNewestFirst(next);
-        }
+    const newGameKey = getGameFeedDedupeKey(post);
+    if (newGameKey) {
+      const dupIdx = safeArray.findIndex((p) => getGameFeedDedupeKey(p) === newGameKey);
+      if (dupIdx >= 0) {
+        const merged = mergeGameFeedPostData(safeArray[dupIdx], post);
+        if (merged === safeArray[dupIdx]) return safeArray;
+        const next = [...safeArray];
+        next[dupIdx] = merged as Post;
+        return sortPostsNewestFirst(next);
       }
+    }
 
-      // Prevent duplicates
-      const withoutDup = safeArray.filter((p) => {
-        const pId = p?._id?.toString?.() ?? String(p?._id);
-        return pId && pId !== newId;
-      });
-
-      // Maintain "3 newest posts per user" rule (like web/mobile FeedScreen used to do)
-      const newAuthorId =
-        (post as any)?.postedBy?._id?.toString?.() ??
-        (post as any)?.postedBy?.toString?.() ??
-        null;
-
-      if (!newAuthorId) {
-        // If we can't identify the author, just prepend safely
-        const updated = [post, ...withoutDup];
-        // Sort newest first by updatedAt/createdAt to match backend behavior
-        updated.sort((a: any, b: any) => {
-        return getSortTimeMs(b) - getSortTimeMs(a);
-        });
-        return trimFeedPostsToMax(updated);
-      }
-
-      const fromSameAuthor: any[] = [];
-      const fromOtherAuthors: any[] = [];
-      withoutDup.forEach((p: any) => {
-        const authorId = p?.postedBy?._id?.toString?.() ?? p?.postedBy?.toString?.();
-        if (authorId === newAuthorId) fromSameAuthor.push(p);
-        else fromOtherAuthors.push(p);
-      });
-
-      fromSameAuthor.sort((a: any, b: any) => {
-        return getSortTimeMs(b) - getSortTimeMs(a);
-      });
-
-      const keptSameAuthor = fromSameAuthor.slice(0, 2); // new post becomes #1, keep 2 older = 3 total
-      const updated = [post, ...keptSameAuthor, ...fromOtherAuthors];
-
-      // Sort newest first by updatedAt/createdAt to match backend behavior
-      updated.sort((a: any, b: any) => {
-        return getSortTimeMs(b) - getSortTimeMs(a);
-      });
-
-      return trimFeedPostsToMax(updated);
+    const withoutDup = safeArray.filter((p) => {
+      const pId = p?._id?.toString?.() ?? String(p._id);
+      return pId && pId !== newId;
     });
+
+    const newAuthorId =
+      (post as any)?.postedBy?._id?.toString?.() ??
+      (post as any)?.postedBy?.toString?.() ??
+      null;
+
+    if (!newAuthorId) {
+      const updated = [post, ...withoutDup];
+      updated.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+      return trimFeedPostsToMax(updated);
+    }
+
+    const fromSameAuthor: any[] = [];
+    const fromOtherAuthors: any[] = [];
+    withoutDup.forEach((p: any) => {
+      const authorId = p?.postedBy?._id?.toString?.() ?? p?.postedBy?.toString?.();
+      if (authorId === newAuthorId) fromSameAuthor.push(p);
+      else fromOtherAuthors.push(p);
+    });
+
+    fromSameAuthor.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+
+    const keptSameAuthor = fromSameAuthor.slice(0, 2);
+    const updated = [post, ...keptSameAuthor, ...fromOtherAuthors];
+    updated.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+
+    return trimFeedPostsToMax(updated);
+  }, [sortPostsNewestFirst]);
+
+  const queuePendingFeedPost = useCallback((post: Post) => {
+    const newId = post?._id?.toString?.() ?? String(post?._id);
+    if (!newId || hiddenFeedPostIdsRef.current.has(newId)) return;
+    const pending = pendingNewPostsRef.current;
+    if (pending.some((p) => String(p._id) === newId)) return;
+    pendingNewPostsRef.current = [post, ...pending];
+    setPendingNewPostsCount(pendingNewPostsRef.current.length);
   }, []);
+
+  const setDeferIncomingFeedPosts = useCallback((defer: boolean) => {
+    deferIncomingFeedPostsRef.current = defer;
+  }, []);
+
+  const clearPendingFeedPosts = useCallback(() => {
+    pendingNewPostsRef.current = [];
+    setPendingNewPostsCount(0);
+  }, []);
+
+  const flushPendingFeedPosts = useCallback(() => {
+    const pending = pendingNewPostsRef.current.splice(0);
+    setPendingNewPostsCount(0);
+    if (!pending.length) return;
+    setPosts((prev) => {
+      let next = prev;
+      for (let i = pending.length - 1; i >= 0; i--) {
+        next = mergePostIntoFeed(next, pending[i]);
+      }
+      return next;
+    });
+  }, [mergePostIntoFeed]);
+
+  const addPost = useCallback((post: Post) => {
+    if (deferIncomingFeedPostsRef.current) {
+      queuePendingFeedPost(post);
+      return;
+    }
+    setPosts((prevPosts) => mergePostIntoFeed(prevPosts, post));
+  }, [mergePostIntoFeed, queuePendingFeedPost]);
 
   const updatePost = useCallback((postId: string, updates: Partial<Post>) => {
     setPosts((prevPosts) => {
@@ -609,6 +640,10 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         unhideFeedSourceFromFeed,
         setViewerSortBoost,
         filterPostsForFeed,
+        setDeferIncomingFeedPosts,
+        flushPendingFeedPosts,
+        clearPendingFeedPosts,
+        pendingNewPostsCount,
       }}
     >
       {children}
