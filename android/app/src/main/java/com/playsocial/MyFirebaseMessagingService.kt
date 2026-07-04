@@ -87,6 +87,12 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                         return // Don't show incoming call UI for our own calls
                     }
                     Log.e(TAG, "✅ [FCM] Valid incoming call - current user ($currentUserId) is the receiver, caller is ($callerId)")
+
+                    // Tell the caller we actually received the call (we have internet right now).
+                    // This request reaching the server is a reliable "callee is reachable/ringing"
+                    // signal, so the caller keeps ringing instead of doing a fast offline hang-up.
+                    // (Mirrors postAckDelivered used for chat message delivery receipts.)
+                    postCallRinging(callerId, currentUserId, data["callId"] ?: "")
                 } else {
                     Log.w(TAG, "⚠️ [FCM] No current user ID found - showing incoming call UI anyway (might be first launch)")
                 }
@@ -346,6 +352,48 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             }
         }
         return false
+    }
+
+    /**
+     * Notify the caller (via backend relay) that this device received the incoming-call push
+     * and is ringing. Only succeeds when the phone has internet — which is exactly the signal
+     * the caller needs to keep ringing (vs. hanging up fast for a truly-offline callee).
+     */
+    private fun postCallRinging(callerId: String, recipientUserId: String, callId: String) {
+        if (callerId.isEmpty() || recipientUserId.isEmpty()) {
+            Log.w(TAG, "⚠️ [FCM] call ringing-ack skipped (callerId or recipientUserId missing)")
+            return
+        }
+        Thread {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("$API_URL/api/call/ack-ringing")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                val json = JSONObject().apply {
+                    put("callerId", callerId)
+                    put("recipientUserId", recipientUserId)
+                    put("callId", callId)
+                }
+                conn.outputStream.use { os: OutputStream ->
+                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    Log.w(TAG, "ack-ringing HTTP $code")
+                } else {
+                    Log.d(TAG, "✅ [FCM] ack-ringing ok (caller $callerId)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ack-ringing failed: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
+        }.start()
     }
 
     private fun postAckDelivered(messageId: String, recipientUserId: String) {

@@ -119,6 +119,13 @@ const { width: SW } = Dimensions.get('window');
 const OFFLINE_RING_GRACE_MS = 2500;
 const OFFLINE_POLL_MS = 1200;
 const OFFLINE_AUTO_DISMISS_MS = 5000;
+/**
+ * While reachability is still "probing" (null): the callee is backgrounded/killed and we're
+ * waiting for its device to confirm it received the call push (livekit:calleeRinging). FCM wake
+ * + the native ack HTTP can take several seconds, so keep ringing this long before giving up and
+ * showing "offline". A definite reachable:false (no push token / phone off) hangs up sooner.
+ */
+const REACHABLE_PROBE_MS = 12000;
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
@@ -155,6 +162,7 @@ const CallScreen = () => {
     remoteScreenTrack,
     minimizeCallUI,
     openCallUI,
+    callTargetReachable,
   } = useWebRTC();
 
   const params = route.params || {};
@@ -408,6 +416,7 @@ const CallScreen = () => {
 
   const partnerIdForPresence = userId || call.from;
   const offlineCheckGenRef = useRef(0);
+  const ringStartAtRef = useRef(0);
 
   // Fresh presence for call partner (stale cache caused false "offline" right after they reconnect).
   useEffect(() => {
@@ -427,6 +436,7 @@ const CallScreen = () => {
     if ((isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall) {
       setPartnerOfflinePhase(false);
       offlineCheckGenRef.current += 1;
+      ringStartAtRef.current = Date.now();
     }
   }, [isCalling, isOutgoingCall, callAccepted, call.isReceivingCall, partnerIdForPresence]);
 
@@ -443,10 +453,19 @@ const CallScreen = () => {
     const evaluatePresence = () => {
       if (offlineCheckGenRef.current !== gen) return;
       refreshPresenceSubscription();
-      if (isUserOnline(partnerIdForPresence)) {
+      // callTargetReachable:
+      //   true  → callee's device confirmed it got the call (live socket OR native FCM ack) → keep ringing.
+      //   false → truly unreachable (no push token / phone off) → offline now.
+      //   null  → still probing (backgrounded phone waking on FCM). Keep ringing until the probe
+      //           window elapses; only then treat the silence as offline. This avoids the old bug
+      //           where we hung up before the FCM wake + ack round-trip could complete.
+      if (callTargetReachable === true || isUserOnline(partnerIdForPresence)) {
         setPartnerOfflinePhase(false);
-      } else {
+      } else if (callTargetReachable === false) {
         setPartnerOfflinePhase(true);
+      } else {
+        const probing = Date.now() - ringStartAtRef.current < REACHABLE_PROBE_MS;
+        setPartnerOfflinePhase(!probing);
       }
     };
 
@@ -468,14 +487,19 @@ const CallScreen = () => {
     partnerIdForPresence,
     isUserOnline,
     refreshPresenceSubscription,
+    callTargetReachable,
   ]);
 
-  // Partner came online while ringing — stay on normal ring UI.
+  // Partner came online (or server confirmed reachable via FCM) while ringing — stay on normal ring UI.
   useEffect(() => {
-    if (partnerOfflinePhase && partnerIdForPresence && isUserOnline(partnerIdForPresence)) {
+    if (
+      partnerOfflinePhase &&
+      (callTargetReachable === true ||
+        (partnerIdForPresence && isUserOnline(partnerIdForPresence)))
+    ) {
       setPartnerOfflinePhase(false);
     }
-  }, [partnerOfflinePhase, partnerIdForPresence, isUserOnline, callAccepted]);
+  }, [partnerOfflinePhase, partnerIdForPresence, isUserOnline, callAccepted, callTargetReachable]);
 
   // Auto-dismiss after showing offline (user can also tap Cancel).
   useEffect(() => {

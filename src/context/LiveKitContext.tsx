@@ -83,6 +83,8 @@ interface LiveKitContextType {
   // ── busy users (same as mobile SocketContext busyUsers) ──
   busyUsers: Set<string>;
   isUserBusy: (userId: unknown) => boolean;
+  /** Outgoing ring: null = probing, true = callee reachable (keep ringing), false = truly offline (hang up fast). */
+  callTargetReachable: boolean | null;
   /** User left CallScreen but call is still active (app home while sharing). */
   isCallUIMinimized: boolean;
   minimizeCallUI: () => void;
@@ -128,6 +130,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [callAccepted, setCallAccepted] = useState(false);
   const [callEnded,    setCallEnded]    = useState(false);
   const [busyUsers,    setBusyUsers]    = useState<Set<string>>(new Set());
+  /** null = unknown (still probing), true = callee reachable (in-app or FCM), false = truly offline. */
+  const [callTargetReachable, setCallTargetReachable] = useState<boolean | null>(null);
 
   // ── LiveKit room state ───────────────────────────────────────────────────
   const [room,              setRoom]              = useState<Room | null>(null);
@@ -171,6 +175,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     callSessionIdRef.current += 1;
     endedCallSessionIdRef.current = -1;
     remoteEndIgnoreUntilRef.current = Date.now() + 1200;
+    setCallTargetReachable(null);
     return callSessionIdRef.current;
   }, []);
 
@@ -882,11 +887,34 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       handleCallEnded();
     };
 
+    // Weak hint from the server. reachable:false = truly unreachable (no socket AND no push
+    // token / phone off) → we can hang up fast. reachable:true only means a push was QUEUED by
+    // FCM — NOT that the phone is online — so we stay "probing" (null) and wait for the real
+    // livekit:calleeRinging ack (or the offline timeout on CallScreen).
+    const onCallTarget = ({ roomName, reachable }: any) => {
+      const active = activeCallRoomRef.current;
+      if (active && roomName && String(roomName) !== active) return;
+      if (!isCallingRef.current) return;
+      if (reachable === false) setCallTargetReachable(false);
+    };
+
+    // RELIABLE reachability signal: the callee's device confirmed it received the call —
+    // either via a live in-app socket, or via its native FCM handler pinging the backend
+    // (which only happens if that phone truly has internet right now). Keep ringing full-length.
+    const onCalleeRinging = ({ roomName }: any) => {
+      const active = activeCallRoomRef.current;
+      if (active && roomName && String(roomName) !== active) return;
+      if (!isCallingRef.current) return;
+      setCallTargetReachable(true);
+    };
+
     const bind = () => {
       try {
         socket.off('livekit:incomingCall', onIncomingCall);
         socket.off('livekit:callCanceled', onCallCanceled);
         socket.off('livekit:callDeclined', onCallDeclined);
+        socket.off('livekit:callTarget', onCallTarget);
+        socket.off('livekit:calleeRinging', onCalleeRinging);
         socket.off('CallCanceled', onLegacyCallCanceled);
         socket.off('callBusy', onCallBusy);
         socket.off('cancleCall', onCancleCall);
@@ -902,6 +930,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       socket.on('livekit:incomingCall', onIncomingCall);
       socket.on('livekit:callCanceled', onCallCanceled);
       socket.on('livekit:callDeclined', onCallDeclined);
+      socket.on('livekit:callTarget', onCallTarget);
+      socket.on('livekit:calleeRinging', onCalleeRinging);
       socket.on('CallCanceled', onLegacyCallCanceled);
       socket.on('callBusy', onCallBusy);
       socket.on('cancleCall', onCancleCall);
@@ -928,6 +958,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       socket.off('livekit:incomingCall', onIncomingCall);
       socket.off('livekit:callCanceled', onCallCanceled);
       socket.off('livekit:callDeclined', onCallDeclined);
+      socket.off('livekit:callTarget', onCallTarget);
+      socket.off('livekit:calleeRinging', onCalleeRinging);
       socket.off('CallCanceled', onLegacyCallCanceled);
       socket.off('callBusy', onCallBusy);
       socket.off('cancleCall', onCancleCall);
@@ -1023,6 +1055,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isScreenSharing, toggleScreenShare, remoteScreenTrack,
       room, getLiveKitRoom, connectionState,
       busyUsers, isUserBusy,
+      callTargetReachable,
       isCallUIMinimized, minimizeCallUI, openCallUI, refreshCallTracks,
     }}>
       {children}
