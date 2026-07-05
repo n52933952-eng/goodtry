@@ -67,6 +67,8 @@ export const ENDPOINTS = {
   // Collaborative Posts
   ADD_CONTRIBUTOR: '/api/post/collaborative',
   REMOVE_CONTRIBUTOR: '/api/post/collaborative',
+  /** PUT multipart — one photo per contributor on a collaborative post */
+  COLLABORATOR_IMAGE: '/api/post/collaborative',
   
   // Comments
   ADD_COMMENT: '/api/post/reply',

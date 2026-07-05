@@ -41,7 +41,7 @@ import {
   isLivePseudoPostId,
   normalizeStreamerId,
 } from '../../utils/liveFeedPost';
-import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
+import { pauseAllFeedVideos, emitFeedVisiblePostIds } from '../../utils/feedVideoPlayback';
 import Svg, { Path } from 'react-native-svg';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
@@ -160,6 +160,12 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean }> }) => {
+      const nextVisibleIds = viewableItems
+        .filter((entry) => entry?.isViewable)
+        .map((entry) => entry?.item?._id?.toString?.() ?? String(entry?.item?._id ?? ''))
+        .filter(Boolean);
+      emitFeedVisiblePostIds(nextVisibleIds);
+
       const visibleVideos = viewableItems.filter((entry) => {
         if (!entry?.isViewable) return false;
         const p = entry?.item;
@@ -809,6 +815,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       <FlatList
         ref={profileListRef}
         data={displayPosts}
+        extraData={{ activeVideoPostId, isScreenFocused }}
         keyExtractor={(item, index) => {
           // Ensure unique keys by using both _id and index as fallback
           const id = item._id?.toString?.() ?? String(item._id);

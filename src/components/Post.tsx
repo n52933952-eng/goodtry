@@ -35,6 +35,8 @@ import VideoFeedPreview from './VideoFeedPreview';
 import AddContributorModal from './AddContributorModal';
 import ManageContributorsModal from './ManageContributorsModal';
 import EditPostModal from './EditPostModal';
+import AddCollaboratorPhotoModal from './AddCollaboratorPhotoModal';
+import PostMediaCarousel from './PostMediaCarousel';
 import StoryAvatarRing from './StoryAvatarRing';
 import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
@@ -53,6 +55,17 @@ import {
 import { useFeedCardMetrics } from '../utils/feedCardLayout';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
 import { FEED_VIDEO_PAUSE_ALL } from '../utils/feedVideoPlayback';
+import {
+  getYouTubeVideoId,
+  isChannelPost,
+  hideChannelPostComments,
+} from '../utils/channelPostUtils';
+import {
+  getPostCarouselSlides,
+  getPostCarouselAudio,
+  shouldShowPostCarousel,
+  getMyCollaboratorImage,
+} from '../utils/postCarousel';
 
 const INLINE_VIDEO_CONTAIN_CSS = `
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -275,9 +288,11 @@ const Post: React.FC<PostProps> = ({
 
   const [addContribOpen, setAddContribOpen] = useState(false);
   const [manageContribOpen, setManageContribOpen] = useState(false);
+  const [addCollaboratorPhotoOpen, setAddCollaboratorPhotoOpen] = useState(false);
   const [editPostOpen, setEditPostOpen] = useState(false);
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
   const [postImagePreviewOpen, setPostImagePreviewOpen] = useState(false);
+  const [carouselPreviewUri, setCarouselPreviewUri] = useState<string | null>(null);
 
   // Contributor hydration: sometimes API/socket returns contributor ids only. Fetch profiles so avatars show without reload.
   const [contribHydrateMap, setContribHydrateMap] = useState<Record<string, any>>({});
@@ -438,11 +453,12 @@ const Post: React.FC<PostProps> = ({
   );
   const [likesModalVisible, setLikesModalVisible] = useState(false);
 
-  /** Prefer live replies array when present (post detail after add/delete); else denormalized replyCount from feed. */
+  /** Server sends replyCount + empty replies[] on feed/detail; use replyCount as source of truth. */
   const commentCount = useMemo(() => {
-    if (Array.isArray(post?.replies)) return post.replies.length;
     const rc = Number((post as any)?.replyCount);
-    return Number.isFinite(rc) && rc >= 0 ? rc : 0;
+    if (Number.isFinite(rc) && rc >= 0) return rc;
+    if (Array.isArray(post?.replies)) return post.replies.length;
+    return 0;
   }, [post?.replies, (post as any)?.replyCount]);
   
   // Weather post state
@@ -905,7 +921,7 @@ const Post: React.FC<PostProps> = ({
 
   const showAuthorPresenceDot =
     isFollowedAuthor &&
-    !isChannelPost &&
+    !isChannelPostFlag &&
     !isFootballPost &&
     !isWeatherPost &&
     !isChessPost &&
@@ -921,6 +937,8 @@ const Post: React.FC<PostProps> = ({
     !!post.isCollaborative &&
     Array.isArray(post.contributors) &&
     post.contributors.length > 0;
+  const canAddCollaboratorPhoto = canAddCollaborator;
+  const myCollaboratorPhoto = getMyCollaboratorImage(post, currentUserId);
 
   const isCapsuleEligiblePost = useMemo(() => {
     const postId = String(post?._id || '');
@@ -1189,34 +1207,11 @@ const Post: React.FC<PostProps> = ({
     return date.toLocaleDateString();
   };
 
-  // Extract YouTube video ID from many possible URL shapes:
-  // embed, watch?v=, youtu.be, shorts, live, and thumbnail /vi/<id>/...
-  const getYouTubeVideoId = (url: string) => {
-    if (!url) return '';
-    const normalized = url.trim();
-    const patterns = [
-      /youtube\.com\/embed\/([^?&/]+)/i,
-      /youtube\.com\/watch\?v=([^?&/]+)/i,
-      /youtu\.be\/([^?&/]+)/i,
-      /youtube\.com\/shorts\/([^?&/]+)/i,
-      /youtube\.com\/live\/([^?&/]+)/i,
-      /(?:ytimg\.com|img\.youtube\.com)\/vi\/([^?&/]+)/i,
-    ];
-    for (const pattern of patterns) {
-      const match = normalized.match(pattern);
-      if (match?.[1]) return match[1];
-    }
-    return '';
-  };
-
   const youtubeVideoId = getYouTubeVideoId(post.img || '');
   const isYouTubePost = !!youtubeVideoId;
 
-  // Check if this is a channel post (system account with YouTube or channel post)
-  const channelUsernames = ['Football', 'AlJazeera', 'NBCNews', 'BeinSportsNews', 'SkyNews', 'Cartoonito', 
-    'NatGeoKids', 'SciShowKids', 'JJAnimalTime', 'KidsArabic', 'NatGeoAnimals', 'MBCDrama', 'Fox11'];
-  const isChannelPost = isYouTubePost || !!post?.channelAddedBy || 
-    channelUsernames.includes(post.postedBy?.username);
+  const isChannelPostFlag = isChannelPost(post);
+  const hideChannelPostCommentsFlag = hideChannelPostComments(post);
 
   /** Chess/card posts are removed when the game ends — hide feed actions to avoid broken like/comment/remind. */
   const hideGamePostFooter = isChessPost || isCardPost;
@@ -1228,7 +1223,7 @@ const Post: React.FC<PostProps> = ({
     showFeedExtras &&
     !!user &&
     !isOwner &&
-    !isChannelPost &&
+    !isChannelPostFlag &&
     !isFootballPost &&
     !isWeatherPost &&
     !isChessPost &&
@@ -1342,7 +1337,7 @@ const Post: React.FC<PostProps> = ({
 
   const canEditPostText =
     !!user &&
-    !isChannelPost &&
+    !isChannelPostFlag &&
     !isWeatherPost &&
     !isFootballPost &&
     !isChessPost &&
@@ -1354,7 +1349,7 @@ const Post: React.FC<PostProps> = ({
     showFeedExtras &&
     !!user &&
     !isOwner &&
-    !isChannelPost &&
+    !isChannelPostFlag &&
     !isFootballPost &&
     !isWeatherPost &&
     !isChessPost &&
@@ -1439,12 +1434,12 @@ const Post: React.FC<PostProps> = ({
     [displayVideoUrl, post.thumbnail]
   );
 
-  const { width } = Dimensions.get('window');
+  const { width, height: windowHeight } = Dimensions.get('window');
 
   const showStoryRing =
     !!storyRing?.storyId &&
     !!postedById &&
-    !isChannelPost &&
+    !isChannelPostFlag &&
     !isWeatherPost &&
     !isFootballPost &&
     !isChessPost &&
@@ -1455,6 +1450,15 @@ const Post: React.FC<PostProps> = ({
 
   const feedCard = useFeedCardMetrics();
   const useFeedWideLayout = !!(feedWideCard && !fullWidthCard && !hideFootballFeedHeader);
+  /** Feed list (not post detail): cap media height so image + likes fit on one screen. */
+  const isFeedListCard = useFeedWideLayout && !disableNavigation;
+  const feedMediaMaxHeight = Math.round(windowHeight * 0.52);
+  const capFeedMediaHeight = (h: number) =>
+    isFeedListCard ? Math.min(h, feedMediaMaxHeight) : h;
+  /** Collaborative manage links on profile — only if you own or contribute to this post. */
+  const showCollabManagementUi =
+    fromScreen === 'UserProfile' && !!post.isCollaborative && canAddCollaborator;
+  const showContributorNamesOnProfile = fromScreen === 'UserProfile';
   const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
   const feedWideContainerStyle = useFeedWideLayout
     ? {
@@ -1487,6 +1491,21 @@ const Post: React.FC<PostProps> = ({
   const postImageStyle = useFeedWideLayout
     ? [styles.postImage, feedMediaBleedStyle]
     : styles.postImage;
+  const carouselSlides = useMemo(
+    () => getPostCarouselSlides(post),
+    [post?.isCollaborative, post?.collaboratorImages, post?.images, post?.img, post?.contributors, post?.postedBy],
+  );
+  const carouselAudio = useMemo(() => getPostCarouselAudio(post), [post?.audio]);
+  const showPostMediaCarousel = shouldShowPostCarousel(post);
+  /** Match portrait video posts — tall media area instead of a short 200px strip. */
+  const carouselMediaWidth = useFeedWideLayout ? feedCard.screenWidth : width - 30;
+  const CAROUSEL_PORTRAIT_ASPECT = 0.75;
+  const carouselHeight = capFeedMediaHeight(
+    Math.round(carouselMediaWidth / CAROUSEL_PORTRAIT_ASPECT),
+  );
+  const carouselContainerStyle = useFeedWideLayout
+    ? [styles.postImage, feedMediaBleedStyle, { height: carouselHeight, marginBottom: 10 }]
+    : [styles.postImage, { height: carouselHeight, marginBottom: 10 }];
   const videoContainerStyle = useFeedWideLayout
     ? [styles.videoContainer, feedMediaBleedStyle]
     : [styles.videoContainer, { height: feedMediaHeight }];
@@ -1501,11 +1520,11 @@ const Post: React.FC<PostProps> = ({
   const MAX_VIDEO_ASPECT = 1.91; // widest allowed → ~1.91:1
   const dynamicVideoHeight = useMemo(() => {
     if (!videoAspect || !Number.isFinite(videoAspect) || videoAspect <= 0) {
-      return feedMediaHeight;
+      return capFeedMediaHeight(feedMediaHeight);
     }
     const clamped = Math.max(MIN_VIDEO_ASPECT, Math.min(videoAspect, MAX_VIDEO_ASPECT));
-    return Math.round(videoMediaWidth / clamped);
-  }, [videoAspect, feedMediaHeight, videoMediaWidth]);
+    return capFeedMediaHeight(Math.round(videoMediaWidth / clamped));
+  }, [videoAspect, feedMediaHeight, videoMediaWidth, isFeedListCard, feedMediaMaxHeight]);
   const videoOnlyContainerStyle = useFeedWideLayout
     ? [styles.videoContainer, feedMediaBleedStyle, { height: dynamicVideoHeight }]
     : [styles.videoContainer, { height: dynamicVideoHeight }];
@@ -1523,7 +1542,7 @@ const Post: React.FC<PostProps> = ({
       navigateToFootballTab();
       return;
     }
-    if (isChannelPost && post?._id) {
+    if (isChannelPostFlag && post?._id) {
       navigateToPostDetail(post._id);
       return;
     }
@@ -1568,7 +1587,7 @@ const Post: React.FC<PostProps> = ({
       ]}
     >
       {!hideFootballFeedHeader && (
-      <View style={styles.header}>
+      <View style={[styles.header, isFeedListCard && styles.headerFeedCompact]}>
         <View style={styles.headerAvatarWrap}>
         <StoryAvatarRing
           visible={showStoryRing}
@@ -1587,7 +1606,7 @@ const Post: React.FC<PostProps> = ({
             // Use current user's profilePic if it's own post (for immediate updates)
             const avatarPic = isOwner && user?.profilePic 
               ? user.profilePic 
-              : (post.postedBy?.profilePic && !isChannelPost ? post.postedBy.profilePic : null);
+              : (post.postedBy?.profilePic && !isChannelPostFlag ? post.postedBy.profilePic : null);
             
             return avatarPic ? (
               <SafeImage 
@@ -1600,7 +1619,7 @@ const Post: React.FC<PostProps> = ({
                   {(() => {
                     // For channels, use first two letters of username or name
                     const name = post.postedBy?.name || post.postedBy?.username || '';
-                    if (isChannelPost && name.length >= 2) {
+                    if (isChannelPostFlag && name.length >= 2) {
                       return name.substring(0, 2).toUpperCase();
                     }
                     // For regular users, use first letter
@@ -1771,10 +1790,11 @@ const Post: React.FC<PostProps> = ({
                   const hydrated = cid && contribHydrateMap[cid] ? contribHydrateMap[cid] : null;
                   const cObj = hydrated || contributor;
                   const label = cObj?.name || cObj?.username || '?';
+                  const handle = cObj?.username ? `@${cObj.username}` : '';
                   return (
                     <TouchableOpacity
                       key={cid || String(idx)}
-                      style={{ marginRight: 8 }}
+                      style={styles.contribChip}
                       activeOpacity={0.75}
                       onPress={(e) => {
                         e.stopPropagation();
@@ -1797,6 +1817,22 @@ const Post: React.FC<PostProps> = ({
                           <Text style={{ color: '#fff', fontWeight: '700' }}>{label[0]?.toUpperCase()}</Text>
                         </View>
                       )}
+                      {showContributorNamesOnProfile ? (
+                        <Text
+                          style={[styles.contribName, { color: colors.text }]}
+                          numberOfLines={1}
+                        >
+                          {label}
+                        </Text>
+                      ) : null}
+                      {showContributorNamesOnProfile && handle ? (
+                        <Text
+                          style={[styles.contribHandle, { color: colors.textGray }]}
+                          numberOfLines={1}
+                        >
+                          {handle}
+                        </Text>
+                      ) : null}
                     </TouchableOpacity>
                   );
                 })}
@@ -1805,8 +1841,21 @@ const Post: React.FC<PostProps> = ({
           );
         })()}
 
-      {canAddCollaborator && (
+      {showCollabManagementUi && canAddCollaborator && (
         <View style={styles.collabActions}>
+          {canAddCollaboratorPhoto && (
+            <TouchableOpacity
+              style={{ marginRight: 16 }}
+              onPress={(e) => {
+                e.stopPropagation();
+                setAddCollaboratorPhotoOpen(true);
+              }}
+            >
+              <Text style={[styles.collabActionText, { color: colors.primary }]}>
+                {myCollaboratorPhoto ? t('changeYourPhoto') : `+ ${t('addYourPhoto')}`}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={{ marginRight: 16 }}
             onPress={(e) => {
@@ -2201,6 +2250,42 @@ const Post: React.FC<PostProps> = ({
             </TouchableOpacity>
           )
         )
+      ) : showPostMediaCarousel ? (
+        disableNavigation ? (
+          <>
+            <PostMediaCarousel
+              slides={carouselSlides}
+              audioUrl={carouselAudio}
+              postId={post._id != null ? String(post._id) : undefined}
+              containerStyle={carouselContainerStyle}
+              slideHeight={carouselHeight}
+              screenFocused={screenFocused}
+              onPressImagePreview={(uri) => {
+                setCarouselPreviewUri(uri);
+                setPostImagePreviewOpen(true);
+              }}
+            />
+            <PinchZoomImageModal
+              visible={postImagePreviewOpen && !!(carouselPreviewUri || postImagePreviewUrl)}
+              uri={carouselPreviewUri || postImagePreviewUrl}
+              onClose={() => {
+                setPostImagePreviewOpen(false);
+                setCarouselPreviewUri(null);
+              }}
+              closeAccessibilityLabel={t('close')}
+            />
+          </>
+        ) : (
+          <PostMediaCarousel
+            slides={carouselSlides}
+            audioUrl={carouselAudio}
+            postId={post._id != null ? String(post._id) : undefined}
+            containerStyle={carouselContainerStyle}
+            slideHeight={carouselHeight}
+            screenFocused={screenFocused}
+            onPressSlide={() => navigateToPostDetail(post._id)}
+          />
+        )
       ) : post.img ? (
         disableNavigation ? (
           <>
@@ -2570,6 +2655,7 @@ const Post: React.FC<PostProps> = ({
             ) : null}
           </View>
 
+          {!hideChannelPostCommentsFlag && (
           <TouchableOpacity
             style={styles.actionButton}
             onPress={(e) => {
@@ -2586,6 +2672,7 @@ const Post: React.FC<PostProps> = ({
               {commentCount}
             </Text>
           </TouchableOpacity>
+          )}
 
           {showFeedExtras && (
             <TouchableOpacity
@@ -2726,6 +2813,12 @@ const Post: React.FC<PostProps> = ({
         post={post}
         onContributorAdded={onCollaborativePostUpdated}
       />
+      <AddCollaboratorPhotoModal
+        visible={addCollaboratorPhotoOpen}
+        onClose={() => setAddCollaboratorPhotoOpen(false)}
+        post={post}
+        onSaved={onCollaborativePostUpdated}
+      />
       <ManageContributorsModal
         visible={manageContribOpen}
         onClose={() => setManageContribOpen(false)}
@@ -2795,6 +2888,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 10,
+  },
+  headerFeedCompact: {
+    marginBottom: 6,
   },
   headerAvatarWrap: {
     position: 'relative',
@@ -2878,6 +2974,21 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
+  },
+  contribChip: {
+    alignItems: 'center',
+    marginRight: 12,
+    maxWidth: 72,
+  },
+  contribName: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  contribHandle: {
+    fontSize: 10,
+    textAlign: 'center',
   },
   collabActions: {
     flexDirection: 'row',

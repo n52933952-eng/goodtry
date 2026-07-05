@@ -36,6 +36,12 @@ export interface Post {
   thumbnail?: string;
   isCollaborative?: boolean;
   contributors?: any[];
+  /** Collaborative album: one image per contributor (including owner). */
+  collaboratorImages?: { userId: string; img: string }[];
+  /** Up to 4 carousel images; `img` mirrors images[0]. */
+  images?: string[];
+  /** Optional MP3/audio for carousel posts. */
+  audio?: string;
   likes: string[];
   /** Denormalized like count (source of truth; the raw `likes` array is stripped server-side). */
   likeCount?: number;
@@ -49,6 +55,8 @@ export interface Post {
     profilePic?: string | null;
   } | null;
   replies: any[];
+  /** Denormalized comment count (feed/detail omit full replies[]). */
+  replyCount?: number;
   createdAt: string;
   updatedAt: string;
   editedAt?: string | null;
@@ -603,11 +611,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
   const addComment = useCallback((postId: string, comment: any) => {
     setPosts((prevPosts) => {
-      // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       return safeArray.map((post) =>
         post._id === postId
-          ? { ...post, replies: [...(post.replies || []), comment] }
+          ? {
+              ...post,
+              replies: [...(post.replies || []), comment],
+              replyCount: (post.replyCount ?? post.replies?.length ?? 0) + 1,
+            }
           : post
       );
     });

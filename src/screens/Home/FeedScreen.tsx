@@ -27,7 +27,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
 import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
 import { pruneStaleLiveFeedPosts } from '../../utils/pruneStaleLiveFeedPosts';
-import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
+import { pauseAllFeedVideos, emitFeedVisiblePostIds } from '../../utils/feedVideoPlayback';
 import { useShowToast } from '../../hooks/useShowToast';
 import Svg, { Path } from 'react-native-svg';
 import Post from '../../components/Post';
@@ -746,6 +746,12 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean; index?: number | null }> }) => {
+    const nextVisibleIds = viewableItems
+      .filter((entry) => entry?.isViewable)
+      .map((entry) => entry?.item?._id?.toString?.() ?? String(entry?.item?._id ?? ''))
+      .filter(Boolean);
+    emitFeedVisiblePostIds(nextVisibleIds);
+
     const visibleVideos = viewableItems.filter((entry) => {
       if (!entry?.isViewable) return false;
       const p = entry?.item;
@@ -931,6 +937,7 @@ const FeedScreen = ({ navigation }: any) => {
         ref={feedListRef}
         data={loading ? [] : visiblePosts}
         renderItem={renderPost}
+        extraData={{ activeVideoPostId, videoAutoplayReady, isScreenFocused, storyRingReplayKey }}
         removeClippedSubviews={false}
         ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
         keyExtractor={(item, index) => {

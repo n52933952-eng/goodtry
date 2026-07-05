@@ -34,6 +34,7 @@ import { ENDPOINTS } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
 import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
+import { hideChannelPostComments } from '../../utils/channelPostUtils';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 const SHEET_PARTIAL = Math.round(SCREEN_H * 0.72);
@@ -631,6 +632,11 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     [isDark],
   );
 
+  const hideChannelPostCommentsFlag = useMemo(
+    () => hideChannelPostComments(post),
+    [post],
+  );
+
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
@@ -678,9 +684,10 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           onPostUpdated={setPost}
           footballFocusMatchId={footballMatchId}
           fullWidthCard
-          onCommentPress={openCommentsModal}
+          onCommentPress={hideChannelPostCommentsFlag ? undefined : openCommentsModal}
         />
 
+        {!hideChannelPostCommentsFlag && (
         <TouchableOpacity
           style={styles.viewCommentsRow}
           onPress={openCommentsModal}
@@ -692,6 +699,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
               : 'Add a comment…'}
           </Text>
         </TouchableOpacity>
+        )}
       </ScrollView>
 
       {/* Instagram-style comments bottom sheet */}

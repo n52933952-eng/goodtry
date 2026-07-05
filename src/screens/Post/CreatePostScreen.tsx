@@ -26,12 +26,14 @@ import { useUser } from '../../context/UserContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
-import { useImagePicker } from '../../hooks/useImagePicker';
+import { useImagePicker, MAX_CAROUSEL_PHOTOS } from '../../hooks/useImagePicker';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import {
   isVideoWithinMaxDuration,
+  isAudioWithinMaxDuration,
   MAX_POST_VIDEO_DURATION_SEC,
+  MAX_POST_AUDIO_DURATION_SEC,
 } from '../../utils/videoDuration';
 
 const MAX_CHAR = 500;
@@ -48,10 +50,18 @@ const CreatePostScreen = ({ navigation }: any) => {
     imageUri,
     imageData,
     isVideo,
+    carouselImages,
+    audioFile,
     pickImage,
     pickMixedFromGallery,
     pickVideoFromCamera,
+    pickMultiplePhotos,
+    pickAudioFile,
+    removeCarouselImage,
+    clearCarousel,
+    clearAudio,
     clearImage,
+    clearAllMedia,
   } = useImagePicker();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
@@ -174,8 +184,30 @@ const CreatePostScreen = ({ navigation }: any) => {
     }, 280);
   };
 
+  const [carouselPreviewIndex, setCarouselPreviewIndex] = useState(0);
+
+  /** Collaborative = one photo per person — no multi-image carousel or MP3. */
+  const clearCollaborativeIncompatibleMedia = useCallback(() => {
+    clearCarousel();
+    clearAudio();
+    if (isVideo) clearImage();
+  }, [clearCarousel, clearAudio, clearImage, isVideo]);
+
+  const activateCollaborative = () => {
+    const hadExtra = carouselImages.length > 0 || !!audioFile || isVideo;
+    if (hadExtra) clearCollaborativeIncompatibleMedia();
+    setIsCollaborative(true);
+    setCollaboratorModalOpen(true);
+    if (hadExtra) {
+      showToast(t('info'), t('collaborativeMediaCleared'), 'info');
+    }
+  };
+
+  const hasMedia =
+    !!imageUri || (!isCollaborative && (carouselImages.length > 0 || !!audioFile));
+
   const handlePost = async () => {
-    if (!text.trim() && !imageUri) {
+    if (!text.trim() && !hasMedia) {
       showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
       return;
     }
@@ -188,9 +220,67 @@ const CreatePostScreen = ({ navigation }: any) => {
       return;
     }
 
+    if (isCollaborative) {
+      if (isVideo) {
+        showToast(t('error'), t('collaborativePhotoImagesOnly'), 'error');
+        return;
+      }
+      if (carouselImages.length > 0 || audioFile) {
+        showToast(t('error'), t('collaborativeNoCarouselAudio'), 'error');
+        return;
+      }
+    }
+
+    if (audioFile) {
+      const ok = await isAudioWithinMaxDuration(audioFile.uri, MAX_POST_AUDIO_DURATION_SEC);
+      if (!ok) {
+        showToast(t('error'), t('postAudioTooLongBody'), 'error');
+        return;
+      }
+    }
+
     setLoading(true);
     try {
-      if (imageUri && imageData) {
+      if (carouselImages.length > 0 && !isCollaborative) {
+        const formData = new FormData();
+        formData.append('text', text.trim() || '');
+        formData.append('postedBy', user?._id || '');
+        if (isCollaborative) {
+          formData.append('isCollaborative', 'true');
+          formData.append(
+            'contributors',
+            JSON.stringify(buildInitialContributorIds(user?._id, selectedCollaborators))
+          );
+        }
+        for (const asset of carouselImages) {
+          const mime = asset.type || 'image/jpeg';
+          formData.append('images', {
+            uri: asset.uri,
+            type: mime,
+            name: asset.fileName || `image_${Date.now()}.jpg`,
+          } as any);
+        }
+        if (audioFile) {
+          formData.append('audio', {
+            uri: audioFile.uri,
+            type: audioFile.type || 'audio/mpeg',
+            name: audioFile.fileName || `audio_${Date.now()}.mp3`,
+          } as any);
+        }
+        const response = await apiService.upload(ENDPOINTS.CREATE_POST, formData);
+        const postData = response.post || response;
+        if (postData?._id) {
+          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
+          setText('');
+          clearAllMedia();
+          setIsCollaborative(false);
+          setSelectedCollaborators([]);
+          setCarouselPreviewIndex(0);
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        } else {
+          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
+        }
+      } else if (imageUri && imageData) {
         const formData = new FormData();
         formData.append('text', text.trim() || '');
         formData.append('postedBy', user?._id || '');
@@ -232,9 +322,10 @@ const CreatePostScreen = ({ navigation }: any) => {
           // Clear inputs immediately after successful post
           console.log('🧹 [CreatePost] Clearing form - text, image, collaborative');
           setText('');
-          clearImage();
+          clearAllMedia();
           setIsCollaborative(false);
           setSelectedCollaborators([]);
+          setCarouselPreviewIndex(0);
 
           // Force a small delay to ensure UI updates
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -258,17 +349,13 @@ const CreatePostScreen = ({ navigation }: any) => {
         const postDataFromResponse = response.post || response;
         
         if (postDataFromResponse && postDataFromResponse._id) {
-          // Don't add own posts to feed - feed only shows posts from users you follow
-          // The post will appear in feed after refresh when backend filters correctly
-          // addPost(postDataFromResponse); // Removed - feed shouldn't show own posts
           showToast(t('success'), t('postCreatedSuccessfully'), 'success');
           
-          // Clear inputs immediately after successful post
-          console.log('🧹 [CreatePost] Clearing form - text, image, collaborative');
           setText('');
-          clearImage(); // Clear image even if not used (in case user removed it)
+          clearAllMedia();
           setIsCollaborative(false);
           setSelectedCollaborators([]);
+          setCarouselPreviewIndex(0);
 
           // Force a small delay to ensure UI updates
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -302,7 +389,7 @@ const CreatePostScreen = ({ navigation }: any) => {
         <Text style={[styles.title, { color: colors.text }]}>{t('createPost')}</Text>
         <TouchableOpacity 
           onPress={handlePost}
-          disabled={loading || (!text.trim() && !imageUri)}
+          disabled={loading || (!text.trim() && !hasMedia)}
         >
           {loading ? (
             <ActivityIndicator color={colors.primary} />
@@ -311,7 +398,7 @@ const CreatePostScreen = ({ navigation }: any) => {
               style={[
                 styles.postButton,
                 { color: colors.primary },
-                (!text.trim() && !imageUri) && styles.postButtonDisabled
+                (!text.trim() && !hasMedia) && styles.postButtonDisabled
               ]}
             >
               {t('post')}
@@ -366,7 +453,45 @@ const CreatePostScreen = ({ navigation }: any) => {
           autoFocus
         />
 
-        {imageUri && !isVideo && (
+        {carouselImages.length > 0 && !isCollaborative && (
+          <View style={[styles.carouselPreviewWrap, { backgroundColor: colors.backgroundLight }]}>
+            <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+              {carouselImages.map((asset, idx) => (
+                <View key={`${asset.uri}-${idx}`} style={{ width: winW - 30, height: imagePreviewHeight }}>
+                  <Image source={{ uri: asset.uri! }} style={styles.imageFill} resizeMode="contain" />
+                  <TouchableOpacity
+                    style={styles.removeImageButton}
+                    onPress={() => removeCarouselImage(idx)}
+                  >
+                    <Text style={styles.removeImageText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <Text style={[styles.carouselCountLabel, { color: colors.textGray }]}>
+              {carouselImages.length}/{MAX_CAROUSEL_PHOTOS} {t('photos')}
+            </Text>
+            {audioFile ? (
+              <View style={[styles.audioChip, { borderColor: colors.border }]}>
+                <Text style={{ color: colors.text, flex: 1 }} numberOfLines={1}>
+                  🎵 {audioFile.fileName}
+                </Text>
+                <TouchableOpacity onPress={clearAudio} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={{ color: colors.error, fontWeight: '700' }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.addMusicBtn, { borderColor: colors.primary }]}
+                onPress={() => pickAudioFile()}
+              >
+                <Text style={{ color: colors.primary, fontWeight: '600' }}>+ {t('addMusic')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {imageUri && !isVideo && !carouselImages.length && (
           <View
             style={[
               styles.imageContainer,
@@ -431,13 +556,13 @@ const CreatePostScreen = ({ navigation }: any) => {
 
             <TouchableOpacity
               style={styles.removeImageButton}
-              onPress={clearImage}
+              onPress={clearAllMedia}
             >
               <Text style={styles.removeImageText}>✕</Text>
             </TouchableOpacity>
           </View>
         )}
-        {imageUri && isVideo && (
+        {imageUri && isVideo && !carouselImages.length && (
           <View style={styles.imageContainer}>
             <View style={styles.videoPreview}>
               <Text style={styles.videoPreviewIcon}>🎬</Text>
@@ -450,7 +575,7 @@ const CreatePostScreen = ({ navigation }: any) => {
             </View>
             <TouchableOpacity
               style={styles.removeImageButton}
-              onPress={clearImage}
+              onPress={clearAllMedia}
             >
               <Text style={styles.removeImageText}>✕</Text>
             </TouchableOpacity>
@@ -462,8 +587,7 @@ const CreatePostScreen = ({ navigation }: any) => {
             style={styles.option}
             onPress={() => {
               if (!isCollaborative) {
-                setIsCollaborative(true);
-                setCollaboratorModalOpen(true);
+                activateCollaborative();
               } else {
                 setCollaboratorModalOpen(true);
               }
@@ -491,6 +615,11 @@ const CreatePostScreen = ({ navigation }: any) => {
                 : ''}
             </Text>
           </TouchableOpacity>
+          {isCollaborative ? (
+            <Text style={[styles.collabCreateHint, { color: colors.textGray }]}>
+              {t('collaborativeCreateHint')}
+            </Text>
+          ) : null}
         </View>
       </ScrollView>
 
@@ -531,6 +660,19 @@ const CreatePostScreen = ({ navigation }: any) => {
               {t('chooseOption')}
             </Text>
 
+            {!isCollaborative ? (
+            <TouchableOpacity
+              style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
+              onPress={() => runAfterPickerClose(() => pickMultiplePhotos())}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.mediaModalOptionText, { color: colors.primary }, isRTL && styles.rtlText]}>
+                {t('carouselPhotos').toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+            ) : null}
+
+            {!isCollaborative ? (
             <TouchableOpacity
               style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
               onPress={() => runAfterPickerClose(() => pickVideoFromCamera())}
@@ -546,9 +688,14 @@ const CreatePostScreen = ({ navigation }: any) => {
                 {isRTL ? t('recordVideo') : t('recordVideo').toUpperCase()}
               </Text>
             </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               style={[styles.mediaModalOption, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}
-              onPress={() => runAfterPickerClose(() => pickMixedFromGallery())}
+              onPress={() =>
+                runAfterPickerClose(() =>
+                  isCollaborative ? pickImage(false) : pickMixedFromGallery(),
+                )
+              }
               activeOpacity={0.7}
             >
               <Text
@@ -763,6 +910,38 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
   },
+  carouselPreviewWrap: {
+    marginTop: 15,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  carouselCountLabel: {
+    fontSize: 13,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    textAlign: 'center',
+  },
+  audioChip: {
+    marginTop: 8,
+    marginHorizontal: 10,
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 8,
+  },
+  addMusicBtn: {
+    marginTop: 4,
+    marginHorizontal: 10,
+    marginBottom: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
   options: {
     marginTop: 20,
   },
@@ -778,6 +957,13 @@ const styles = StyleSheet.create({
   },
   optionText: {
     fontSize: 16,
+  },
+  collabCreateHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+    marginBottom: 4,
+    paddingHorizontal: 2,
   },
   toolbar: {
     flexDirection: 'row',

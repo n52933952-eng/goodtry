@@ -50,6 +50,8 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     clearImage,
   } = useImagePicker();
 
+  const isCollaborative = !!post?.isCollaborative;
+
   useEffect(() => {
     if (visible && post) {
       setText(post.text || '');
@@ -68,7 +70,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   const handleSave = async () => {
     if (!post?._id) return;
     const trimmed = text.trim();
-    const willUploadNew = !!(imageUri && imageData);
+    const willUploadNew = !isCollaborative && !!(imageUri && imageData);
 
     if (!trimmed && !hasRemoteMedia && !willUploadNew) {
       showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
@@ -81,6 +83,10 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
 
     if (willUploadNew && isVideo && imageData && !isVideoWithinMaxDuration(imageData, MAX_POST_VIDEO_DURATION_SEC)) {
       showToast(t('error'), t('postVideoTooLongBody'), 'error');
+      return;
+    }
+    if (willUploadNew && post?.isCollaborative && isVideo) {
+      showToast(t('error'), t('collaborativePhotoImagesOnly'), 'error');
       return;
     }
 
@@ -133,6 +139,14 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   };
 
   const openMediaPicker = () => {
+    if (post?.isCollaborative) {
+      Alert.alert(t('selectImage'), t('chooseOption'), [
+        { text: t('camera'), onPress: () => pickImage(true) },
+        { text: t('gallery'), onPress: () => pickMixedFromGallery() },
+        { text: t('cancel'), style: 'cancel' },
+      ]);
+      return;
+    }
     Alert.alert(t('selectMedia'), t('chooseOption'), [
       { text: t('camera'), onPress: () => pickImage(true) },
       { text: t('gallery'), onPress: () => pickMixedFromGallery() },
@@ -197,6 +211,12 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
               {text?.length || 0}/{MAX_LEN}
             </Text>
 
+            {isCollaborative ? (
+              <Text style={[styles.collabHint, { color: colors.textGray }]}>
+                {t('collaborativeEditTextHint')}
+              </Text>
+            ) : (
+              <>
             <Text style={[styles.sectionLabel, { color: colors.textGray }]}>{t('media')}</Text>
             {showNewLocal ? (
               <View style={styles.mediaBox}>
@@ -232,6 +252,8 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
                 {showNewLocal || displayRemoteUri ? t('changeMedia') : t('addPhotoOrVideo')}
               </Text>
             </TouchableOpacity>
+              </>
+            )}
           </ScrollView>
         </Pressable>
       </KeyboardAvoidingView>
@@ -285,6 +307,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 12,
     textAlign: 'right',
+  },
+  collabHint: {
+    marginTop: 14,
+    fontSize: 13,
+    lineHeight: 19,
   },
   sectionLabel: {
     marginTop: 16,

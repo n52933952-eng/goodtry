@@ -1,18 +1,37 @@
 import { useState } from 'react';
 import { Alert, Platform, PermissionsAndroid } from 'react-native';
 import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
+import {
+  pick,
+  types,
+  keepLocalCopy,
+  isErrorWithCode,
+  errorCodes,
+} from '@react-native-documents/picker';
 import { useLanguage } from '../context/LanguageContext';
 import {
   MAX_POST_VIDEO_DURATION_SEC,
+  MAX_POST_AUDIO_DURATION_SEC,
   isVideoAsset,
   isVideoWithinMaxDuration,
+  isAudioWithinMaxDuration,
 } from '../utils/videoDuration';
+
+export const MAX_CAROUSEL_PHOTOS = 4;
+
+export type PickedAudio = {
+  uri: string;
+  type: string;
+  fileName: string;
+};
 
 export const useImagePicker = () => {
   const { t } = useLanguage();
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageData, setImageData] = useState<Asset | null>(null);
   const [isVideo, setIsVideo] = useState(false);
+  const [carouselImages, setCarouselImages] = useState<Asset[]>([]);
+  const [audioFile, setAudioFile] = useState<PickedAudio | null>(null);
 
   const showVideoTooLongAlert = () => {
     Alert.alert(t('postVideoTooLongTitle'), t('postVideoTooLongBody'));
@@ -28,6 +47,8 @@ export const useImagePicker = () => {
   const acceptMediaAsset = (asset: Asset): Asset | null => {
     if (rejectLongVideo(asset)) return null;
     const looksVideo = isVideoAsset(asset);
+    setCarouselImages([]);
+    setAudioFile(null);
     setIsVideo(looksVideo);
     setImageUri(asset.uri || null);
     setImageData(asset);
@@ -115,6 +136,8 @@ export const useImagePicker = () => {
 
       if (result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
+        setCarouselImages([]);
+        setAudioFile(null);
         setIsVideo(false);
         setImageUri(asset.uri || null);
         setImageData(asset);
@@ -201,19 +224,129 @@ export const useImagePicker = () => {
     }
   };
 
+  /** Pick up to 4 photos for an Instagram-style carousel (photos only). */
+  const pickMultiplePhotos = async () => {
+    try {
+      const remaining = MAX_CAROUSEL_PHOTOS - carouselImages.length;
+      if (remaining <= 0) {
+        Alert.alert(t('error'), t('carouselMaxPhotos'));
+        return null;
+      }
+
+      const result = await launchImageLibrary({
+        mediaType: 'photo',
+        selectionLimit: remaining,
+        quality: 0.85,
+        maxWidth: 2048,
+        maxHeight: 2048,
+      });
+
+      if (result.didCancel) return null;
+      if (result.errorCode) {
+        Alert.alert('Error', result.errorMessage || 'Failed to pick photos');
+        return null;
+      }
+
+      const assets = (result.assets || []).filter((a) => a.uri && !isVideoAsset(a));
+      if (!assets.length) return null;
+
+      setImageUri(null);
+      setImageData(null);
+      setIsVideo(false);
+      setCarouselImages((prev) => [...prev, ...assets].slice(0, MAX_CAROUSEL_PHOTOS));
+      return assets;
+    } catch (error) {
+      console.error('Error picking photos:', error);
+      Alert.alert('Error', 'Failed to pick photos');
+      return null;
+    }
+  };
+
+  /** Pick MP3/audio from device storage (Files, Downloads, Music, etc.). */
+  const pickAudioFile = async () => {
+    try {
+      const results = await pick({
+        type: [types.audio, 'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a'],
+        allowMultiSelection: false,
+      });
+
+      const result = results[0];
+      if (!result?.uri) return null;
+
+      const fileName = result.name || `audio_${Date.now()}.mp3`;
+      let uri = result.uri;
+      const mime = result.type || 'audio/mpeg';
+
+      try {
+        const [copyResult] = await keepLocalCopy({
+          files: [{ uri: result.uri, fileName }],
+          destination: 'cachesDirectory',
+        });
+        if (copyResult.status === 'success' && copyResult.localUri) {
+          uri = copyResult.localUri;
+        }
+      } catch (copyErr) {
+        console.warn('[pickAudioFile] keepLocalCopy failed, using original uri', copyErr);
+      }
+
+      const withinLimit = await isAudioWithinMaxDuration(uri, MAX_POST_AUDIO_DURATION_SEC);
+      if (!withinLimit) {
+        Alert.alert(t('postAudioTooLongTitle'), t('postAudioTooLongBody'));
+        return null;
+      }
+
+      const picked: PickedAudio = {
+        uri,
+        type: mime,
+        fileName,
+      };
+      setAudioFile(picked);
+      return picked;
+    } catch (error) {
+      if (isErrorWithCode(error) && error.code === errorCodes.OPERATION_CANCELED) {
+        return null;
+      }
+      console.error('Error picking audio:', error);
+      Alert.alert(t('error'), t('failedToPickAudio'));
+      return null;
+    }
+  };
+
+  const clearAudio = () => setAudioFile(null);
+
+  const removeCarouselImage = (index: number) => {
+    setCarouselImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const clearCarousel = () => setCarouselImages([]);
+
   const clearImage = () => {
     setImageUri(null);
     setImageData(null);
     setIsVideo(false);
   };
 
+  const clearAllMedia = () => {
+    clearImage();
+    clearCarousel();
+    clearAudio();
+  };
+
   return {
     imageUri,
     imageData,
     isVideo,
+    carouselImages,
+    audioFile,
     pickImage,
     pickMixedFromGallery,
     pickVideoFromCamera,
+    pickMultiplePhotos,
+    pickAudioFile,
+    removeCarouselImage,
     clearImage,
+    clearCarousel,
+    clearAudio,
+    clearAllMedia,
   };
 };
