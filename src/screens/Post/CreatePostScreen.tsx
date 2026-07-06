@@ -186,15 +186,14 @@ const CreatePostScreen = ({ navigation }: any) => {
 
   const [carouselPreviewIndex, setCarouselPreviewIndex] = useState(0);
 
-  /** Collaborative = one photo per person — no multi-image carousel or MP3. */
+  /** Collaborative = one photo per person — no multi-image carousel (owner may add MP3). */
   const clearCollaborativeIncompatibleMedia = useCallback(() => {
     clearCarousel();
-    clearAudio();
     if (isVideo) clearImage();
-  }, [clearCarousel, clearAudio, clearImage, isVideo]);
+  }, [clearCarousel, clearImage, isVideo]);
 
   const activateCollaborative = () => {
-    const hadExtra = carouselImages.length > 0 || !!audioFile || isVideo;
+    const hadExtra = carouselImages.length > 0 || isVideo;
     if (hadExtra) clearCollaborativeIncompatibleMedia();
     setIsCollaborative(true);
     setCollaboratorModalOpen(true);
@@ -204,7 +203,9 @@ const CreatePostScreen = ({ navigation }: any) => {
   };
 
   const hasMedia =
-    !!imageUri || (!isCollaborative && (carouselImages.length > 0 || !!audioFile));
+    !!imageUri ||
+    !!audioFile ||
+    (!isCollaborative && carouselImages.length > 0);
 
   const handlePost = async () => {
     if (!text.trim() && !hasMedia) {
@@ -225,8 +226,8 @@ const CreatePostScreen = ({ navigation }: any) => {
         showToast(t('error'), t('collaborativePhotoImagesOnly'), 'error');
         return;
       }
-      if (carouselImages.length > 0 || audioFile) {
-        showToast(t('error'), t('collaborativeNoCarouselAudio'), 'error');
+      if (carouselImages.length > 0) {
+        showToast(t('error'), t('collaborativeNoCarousel'), 'error');
         return;
       }
     }
@@ -304,8 +305,16 @@ const CreatePostScreen = ({ navigation }: any) => {
             imageData?.fileName ||
             (isVideo ? `video_${Date.now()}.${fallbackExt}` : `image_${Date.now()}.${fallbackExt}`),
         };
-        
+
         formData.append('file', imageFile as any);
+
+        if (audioFile) {
+          formData.append('audio', {
+            uri: audioFile.uri,
+            type: audioFile.type || 'audio/mpeg',
+            name: audioFile.fileName || `audio_${Date.now()}.mp3`,
+          } as any);
+        }
 
         const response = await apiService.upload(ENDPOINTS.CREATE_POST, formData);
         console.log('📝 [CreatePost] Upload response:', response);
@@ -450,7 +459,6 @@ const CreatePostScreen = ({ navigation }: any) => {
           onChangeText={handleTextChange}
           maxLength={MAX_CHAR}
           multiline
-          autoFocus
         />
 
         {carouselImages.length > 0 && !isCollaborative && (
@@ -562,6 +570,29 @@ const CreatePostScreen = ({ navigation }: any) => {
             </TouchableOpacity>
           </View>
         )}
+
+        {isCollaborative && imageUri && !isVideo && !carouselImages.length ? (
+          <View style={styles.collabAudioWrap}>
+            {audioFile ? (
+              <View style={[styles.audioChip, { borderColor: colors.border }]}>
+                <Text style={{ color: colors.text, flex: 1 }} numberOfLines={1}>
+                  🎵 {audioFile.fileName}
+                </Text>
+                <TouchableOpacity onPress={clearAudio} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={{ color: colors.error, fontWeight: '700' }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.addMusicBtn, { borderColor: colors.primary }]}
+                onPress={() => pickAudioFile()}
+              >
+                <Text style={{ color: colors.primary, fontWeight: '600' }}>+ {t('addMusic')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : null}
+
         {imageUri && isVideo && !carouselImages.length && (
           <View style={styles.imageContainer}>
             <View style={styles.videoPreview}>
@@ -654,10 +685,10 @@ const CreatePostScreen = ({ navigation }: any) => {
             onPress={(e) => e.stopPropagation()}
           >
             <Text style={[styles.mediaModalTitle, { color: colors.text }, isRTL && styles.rtlText]}>
-              {t('selectMedia')}
+              {t(isCollaborative ? 'selectPhoto' : 'selectMedia')}
             </Text>
             <Text style={[styles.mediaModalSubtitle, { color: colors.textGray }, isRTL && styles.rtlText]}>
-              {t('chooseOption')}
+              {isCollaborative ? t('collaborativePhotoHint') : t('chooseOption')}
             </Text>
 
             {!isCollaborative ? (
@@ -705,7 +736,13 @@ const CreatePostScreen = ({ navigation }: any) => {
                   isRTL && styles.rtlText,
                 ]}
               >
-                {isRTL ? t('gallery') : t('gallery').toUpperCase()}
+                {isCollaborative
+                  ? isRTL
+                    ? t('galleryPhotosOnly')
+                    : t('galleryPhotosOnly').toUpperCase()
+                  : isRTL
+                    ? t('gallery')
+                    : t('gallery').toUpperCase()}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -941,6 +978,10 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     alignItems: 'center',
+  },
+  collabAudioWrap: {
+    marginTop: 4,
+    marginBottom: 4,
   },
   options: {
     marginTop: 20,

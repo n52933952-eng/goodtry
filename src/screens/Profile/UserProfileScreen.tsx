@@ -41,8 +41,11 @@ import {
   isLivePseudoPostId,
   normalizeStreamerId,
 } from '../../utils/liveFeedPost';
-import { pauseAllFeedVideos, emitFeedVisiblePostIds } from '../../utils/feedVideoPlayback';
+import { pauseAllFeedVideos, emitFeedVisiblePostIds, isFeedAutoPlayMediaPost, FEED_REQUEST_MEDIA_AUTOPLAY } from '../../utils/feedVideoPlayback';
 import Svg, { Path } from 'react-native-svg';
+import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
+import CollapsingStackHeader from '../../components/CollapsingStackHeader';
+import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam, userId: userIdParam } = route.params || {};
@@ -59,6 +62,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
   const [profileUser, setProfileUser] = useState<any>(null);
   const [posts, setPosts] = useState<any[]>([]);
+  const [totalPostsCount, setTotalPostsCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [following, setFollowing] = useState(false);
@@ -108,6 +112,14 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const pastThresholdRef = useRef(false);
   const scrollTopBtnAnim = useRef(new Animated.Value(0)).current;
 
+  const {
+    translateY: headerTranslateY,
+    mergeOnScroll,
+    resetHeader,
+    stackHeaderHeight,
+  } = useCollapsingHeader({ forStackHeader: true });
+  const { mergeTabBarScroll, resetTabBar, tabBarHeight } = useTabBarCollapseOnFocus('user-profile');
+
   const scrollProfileToTop = useCallback(() => {
     const list = profileListRef.current;
     if (list) {
@@ -117,7 +129,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
     }
     setShowScrollTop(false);
-  }, []);
+    resetHeader();
+    resetTabBar();
+  }, [resetHeader, resetTabBar]);
 
   const handleProfileScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -147,6 +161,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     activeVideoPostIdRef.current = activeVideoPostId;
   }, [activeVideoPostId]);
 
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      FEED_REQUEST_MEDIA_AUTOPLAY,
+      ({ postId }: { postId?: string }) => {
+        const id = postId != null ? String(postId).trim() : '';
+        if (!id) return;
+        setActiveVideoPostId(id);
+        activeVideoPostIdRef.current = id;
+      },
+    );
+    return () => sub.remove();
+  }, []);
+
   // Pause profile videos when leaving profile screen.
   useFocusEffect(
     React.useCallback(() => {
@@ -166,19 +193,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         .filter(Boolean);
       emitFeedVisiblePostIds(nextVisibleIds);
 
-      const visibleVideos = viewableItems.filter((entry) => {
+      const visibleMedia = viewableItems.filter((entry) => {
         if (!entry?.isViewable) return false;
-        const p = entry?.item;
-        const img = String(p?.img || '');
-        const isVideo =
-          !!img &&
-          (/\.(mp4|webm|ogg|mov)$/i.test(img) || img.includes('/video/upload/'));
-        const isYouTube = /youtube\.com|youtu\.be|ytimg\.com|img\.youtube\.com/i.test(img);
-        return isVideo && !isYouTube;
+        return isFeedAutoPlayMediaPost(entry?.item);
       });
 
       // Prefer the lower/next visible video while scrolling down.
-      const preferred = visibleVideos.length > 0 ? visibleVideos[visibleVideos.length - 1] : null;
+      const preferred = visibleMedia.length > 0 ? visibleMedia[visibleMedia.length - 1] : null;
       const nextId = preferred?.item?._id?.toString?.() ?? null;
       if (activeVideoPostIdRef.current === nextId) return;
       setActiveVideoPostId(nextId);
@@ -220,6 +241,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
     setProfileUser(null);
     setPosts([]);
+    setTotalPostsCount(null);
     setProfileLiveMeta(null);
     setFollowing(false);
     setLoading(true);
@@ -278,6 +300,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       if (isOwnProfile) {
         setProfileUser(null);
         setPosts([]);
+        setTotalPostsCount(null);
         setLoading(true);
         void refetchSessionUser?.().then((me) => {
           fetchUserProfile(me?.following);
@@ -405,6 +428,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       }
       
       const newPosts = data.posts || data || [];
+
+      if (typeof data.totalCount === 'number') {
+        setTotalPostsCount(data.totalCount);
+      }
       
       if (isLoadMore) {
         // Append new posts to existing ones, filtering out duplicates
@@ -602,6 +629,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     profileUser?.username,
   ]);
 
+  const postsStatCount =
+    totalPostsCount ??
+    posts.filter((p) => !isLivePseudoPostId(p?._id)).length;
+
   const displayPosts = useMemo(() => {
     const base = posts.filter((p) => !isLivePseudoPostId(p?._id));
     if (!profileUser || !activeLiveForProfile) return base;
@@ -626,26 +657,44 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   );
 
   useLayoutEffect(() => {
+    const handleProfileBack = () => {
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+        return;
+      }
+      const rootNavigation = navigation.getParent()?.getParent();
+      if (rootNavigation) {
+        rootNavigation.navigate('MainTabs', { screen: 'Feed' });
+      } else {
+        navigation.navigate('Feed');
+      }
+    };
+
     navigation.setOptions({
-      headerRight: () =>
-        isOwnProfile ? (
-          <TouchableOpacity
-            onPress={() => setDeleteMenuOpen(true)}
-            style={{
-              marginRight: 10,
-              width: 34,
-              height: 34,
-              borderRadius: 17,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <Text style={{ color: colors.text, fontSize: 22, lineHeight: 22 }}>⋮</Text>
-          </TouchableOpacity>
-        ) : null,
+      headerTransparent: true,
+      header: () => (
+        <CollapsingStackHeader
+          title={t('profile')}
+          translateY={headerTranslateY}
+          backgroundColor={colors.backgroundLight}
+          borderColor={colors.border}
+          tintColor={colors.text}
+          onBackPress={handleProfileBack}
+          headerRight={
+            isOwnProfile ? (
+              <TouchableOpacity
+                onPress={() => setDeleteMenuOpen(true)}
+                style={styles.headerMenuBtn}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={{ color: colors.text, fontSize: 22, lineHeight: 22 }}>⋮</Text>
+              </TouchableOpacity>
+            ) : null
+          }
+        />
+      ),
     });
-  }, [navigation, isOwnProfile, colors.text]);
+  }, [navigation, isOwnProfile, colors, headerTranslateY, t]);
 
   if (loading) {
     return (
@@ -824,7 +873,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         ItemSeparatorComponent={() => (
           <View style={[styles.postSeparator, { backgroundColor: colors.background }]} />
         )}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingTop: stackHeaderHeight, paddingBottom: 28 + tabBarHeight }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -840,7 +889,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
-        onScroll={handleProfileScroll}
+        onScroll={mergeOnScroll(mergeTabBarScroll(handleProfileScroll))}
         scrollEventThrottle={16}
         viewabilityConfigCallbackPairs={viewabilityPairs}
         ListHeaderComponent={
@@ -938,7 +987,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               
               <View style={[styles.stats, { borderTopColor: colors.border }]}>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statNumber, { color: colors.text }]}>{posts.length}</Text>
+                  <Text style={[styles.statNumber, { color: colors.text }]}>{postsStatCount}</Text>
                   <Text style={[styles.statLabel, { color: colors.textGray }]}>{t('posts')}</Text>
                 </View>
                 <TouchableOpacity
@@ -1018,7 +1067,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               post={item}
               feedWideCard
               fromScreen="UserProfile"
-              userProfileParams={{ username }}
+              userProfileParams={{ username, isOwnProfile }}
               screenFocused={isScreenFocused}
               autoPlayMedia={
                 isScreenFocused && String(item?._id || '') === activeVideoPostId
@@ -1034,6 +1083,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
               onPostDeleted={(deletedId) => {
                 if (!deletedId) return;
                 setPosts((prev) => prev.filter((p) => String(p._id) !== String(deletedId)));
+                setTotalPostsCount((prev) =>
+                  prev != null ? Math.max(0, prev - 1) : prev,
+                );
               }}
             />
           );
@@ -1045,6 +1097,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         pointerEvents={showScrollTop ? 'box-none' : 'none'}
         style={[
           styles.scrollTopWrap,
+          { bottom: tabBarHeight + 20 },
           {
             opacity: scrollTopBtnAnim,
             transform: [
@@ -1211,7 +1264,6 @@ const styles = StyleSheet.create({
   },
   scrollTopWrap: {
     position: 'absolute',
-    bottom: 20,
     alignSelf: 'center',
   },
   scrollTopButton: {
@@ -1380,6 +1432,13 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: 28,
+  },
+  headerMenuBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   postSeparator: {
     height: 8,

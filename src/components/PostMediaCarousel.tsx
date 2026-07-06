@@ -11,11 +11,19 @@ import {
   ViewStyle,
   LayoutChangeEvent,
   DeviceEventEmitter,
+  Animated,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import Sound from 'react-native-sound';
 import SafeImage from './SafeImage';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
-import { FEED_VIDEO_PAUSE_ALL, FEED_VISIBLE_POSTS } from '../utils/feedVideoPlayback';
+import {
+  FEED_VIDEO_PAUSE_ALL,
+  FEED_VISIBLE_POSTS,
+  FEED_MEDIA_SOUND_PREF,
+  FEED_REQUEST_MEDIA_AUTOPLAY,
+  isFeedMediaMuted,
+  setFeedMediaSoundUnmuted,
+} from '../utils/feedVideoPlayback';
 import type { PostCarouselSlide } from '../utils/postCarousel';
 
 type Props = {
@@ -26,12 +34,23 @@ type Props = {
   slideHeight?: number;
   /** Parent screen focus — stop audio when another screen is on top. */
   screenFocused?: boolean;
+  /** Feed: active visible post — autoplay loop muted like video. */
+  autoPlayMedia?: boolean;
+  /** Collaborative posts — show contributor name on each slide. */
+  showContributorNames?: boolean;
   onPressSlide?: () => void;
   onPressImagePreview?: (uri: string) => void;
 };
 
-const escapeHtmlAttr = (value: string) =>
-  value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+let soundCategoryReady = false;
+
+const ensureSoundCategory = () => {
+  if (soundCategoryReady) return;
+  try {
+    Sound.setCategory('Playback', true);
+    soundCategoryReady = true;
+  } catch (_) {}
+};
 
 const PostMediaCarousel: React.FC<Props> = ({
   slides,
@@ -40,88 +59,185 @@ const PostMediaCarousel: React.FC<Props> = ({
   containerStyle,
   slideHeight = 280,
   screenFocused = true,
+  autoPlayMedia = false,
+  showContributorNames = false,
   onPressSlide,
   onPressImagePreview,
 }) => {
   const [activeIndex, setActiveIndex] = useState(0);
   const [layoutWidth, setLayoutWidth] = useState(0);
-  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [feedSoundPrefTick, setFeedSoundPrefTick] = useState(0);
+  const isAudioMuted = useMemo(() => isFeedMediaMuted(), [feedSoundPrefTick]);
   const [audioReady, setAudioReady] = useState(false);
-  const audioWebViewRef = useRef<WebView>(null);
+  const soundRef = useRef<Sound | null>(null);
+  const soundUrlRef = useRef('');
+  const pendingPlaybackRef = useRef<{ play: boolean; muted: boolean } | null>(null);
   const listRef = useRef<FlatList<PostCarouselSlide>>(null);
+  const autoPlayMediaRef = useRef(autoPlayMedia);
+  autoPlayMediaRef.current = autoPlayMedia;
+  const screenFocusedRef = useRef(screenFocused);
+  screenFocusedRef.current = screenFocused;
 
   const displayAudioUrl = useMemo(
     () => (audioUrl ? mediaDisplayUrl(audioUrl) : ''),
     [audioUrl],
   );
 
-  const audioHtml = useMemo(() => {
-    if (!displayAudioUrl) return null;
-    const src = escapeHtmlAttr(displayAudioUrl);
-    return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  </head>
-  <body style="margin:0;background:transparent;">
-    <audio id="a" loop preload="auto" playsinline src="${src}"></audio>
-    <script>
-      (function () {
-        var a = document.getElementById('a');
-        if (!a) return;
-        function send(name) {
-          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(name);
-        }
-        a.addEventListener('canplay', function () { send('ready'); });
-        a.addEventListener('loadeddata', function () { send('ready'); });
-        a.addEventListener('error', function () { send('error'); });
-        a.addEventListener('playing', function () { send('playing'); });
-        a.addEventListener('pause', function () { send('paused'); });
-      })();
-    </script>
-  </body>
-</html>`;
-  }, [displayAudioUrl]);
-
-  const stopAudio = useCallback(() => {
+  const releaseSound = useCallback(() => {
+    const s = soundRef.current;
+    soundRef.current = null;
+    if (!s) return;
     try {
-      audioWebViewRef.current?.injectJavaScript(`
-        (function () {
-          var a = document.getElementById('a');
-          if (!a) return;
-          try { a.pause(); a.muted = true; } catch (_) {}
-        })();
-        true;
-      `);
-    } catch (_) {}
-    setAudioPlaying(false);
+      s.stop(() => {
+        try {
+          s.release();
+        } catch (_) {}
+      });
+    } catch (_) {
+      try {
+        s.release();
+      } catch (_) {}
+    }
   }, []);
 
-  const toggleAudio = useCallback(() => {
-    if (!audioReady) return;
+  const applySoundPlayback = useCallback((play: boolean, muted: boolean) => {
+    const s = soundRef.current;
+    if (!s) {
+      pendingPlaybackRef.current = { play, muted };
+      return;
+    }
+    pendingPlaybackRef.current = null;
     try {
-      audioWebViewRef.current?.injectJavaScript(`
-        (function () {
-          var a = document.getElementById('a');
-          if (!a) return;
-          if (a.paused) {
-            a.muted = false;
-            a.volume = 1;
-            var p = a.play();
-            if (p && p.catch) p.catch(function () {});
-          } else {
-            a.pause();
-          }
-        })();
-        true;
-      `);
+      s.setVolume(muted ? 0 : 1);
+      if (play) {
+        s.play((success) => {
+          if (!success) pendingPlaybackRef.current = { play: true, muted };
+        });
+      } else {
+        s.pause();
+      }
     } catch (_) {}
-  }, [audioReady]);
+  }, []);
+
+  const syncAudioPlayback = useCallback(
+    (play: boolean, muted: boolean) => {
+      applySoundPlayback(play, muted);
+    },
+    [applySoundPlayback],
+  );
+
+  const stopAudio = useCallback(() => {
+    syncAudioPlayback(false, true);
+  }, [syncAudioPlayback]);
+
+  const startFocusedPlayback = useCallback(
+    (muted?: boolean) => {
+      if (!screenFocusedRef.current) return;
+      syncAudioPlayback(true, muted ?? isFeedMediaMuted());
+    },
+    [syncAudioPlayback],
+  );
+
+  const toggleMute = useCallback(() => {
+    const nextUnmuted = isFeedMediaMuted();
+    setFeedMediaSoundUnmuted(nextUnmuted);
+    startFocusedPlayback(!nextUnmuted);
+  }, [startFocusedPlayback]);
 
   useEffect(() => {
+    ensureSoundCategory();
     setAudioReady(false);
-    setAudioPlaying(false);
-  }, [displayAudioUrl]);
+    pendingPlaybackRef.current = null;
+
+    if (!displayAudioUrl) {
+      releaseSound();
+      soundUrlRef.current = '';
+      return undefined;
+    }
+
+    if (soundUrlRef.current === displayAudioUrl && soundRef.current) {
+      return undefined;
+    }
+
+    releaseSound();
+    soundUrlRef.current = displayAudioUrl;
+
+    const sound = new Sound(displayAudioUrl, '', (error) => {
+      if (error) {
+        setAudioReady(false);
+        return;
+      }
+      try {
+        sound.setNumberOfLoops(-1);
+      } catch (_) {}
+      soundRef.current = sound;
+      setAudioReady(true);
+
+      const pending = pendingPlaybackRef.current;
+      if (pending) {
+        applySoundPlayback(pending.play, pending.muted);
+        return;
+      }
+
+      const muted = isFeedMediaMuted();
+      const shouldPlay = autoPlayMediaRef.current && screenFocusedRef.current;
+      applySoundPlayback(shouldPlay, muted);
+    });
+
+    return () => {
+      if (soundRef.current === sound) {
+        releaseSound();
+        soundUrlRef.current = '';
+      }
+    };
+  }, [displayAudioUrl, postId, releaseSound, applySoundPlayback]);
+
+  useEffect(() => {
+    if (!audioReady || !displayAudioUrl) return;
+    const muted = isFeedMediaMuted();
+    const shouldPlay = autoPlayMedia && screenFocused;
+    syncAudioPlayback(shouldPlay, muted);
+  }, [autoPlayMedia, screenFocused, audioReady, displayAudioUrl, syncAudioPlayback]);
+
+  useEffect(() => {
+    if (!displayAudioUrl || !autoPlayMedia || !screenFocused) return;
+    const muted = isFeedMediaMuted();
+    startFocusedPlayback(muted);
+    const retries = [250, 600, 1200].map((ms) =>
+      setTimeout(() => startFocusedPlayback(muted), ms),
+    );
+    return () => retries.forEach(clearTimeout);
+  }, [displayAudioUrl, autoPlayMedia, screenFocused, startFocusedPlayback]);
+
+  useEffect(() => {
+    if (!postId) return undefined;
+    const pid = String(postId);
+    const sub = DeviceEventEmitter.addListener(
+      FEED_REQUEST_MEDIA_AUTOPLAY,
+      ({ postId: reqId }: { postId?: string }) => {
+        if (String(reqId) !== pid) return;
+        const muted = isFeedMediaMuted();
+        startFocusedPlayback(muted);
+        [300, 900, 1800].forEach((ms) => {
+          setTimeout(() => startFocusedPlayback(muted), ms);
+        });
+      },
+    );
+    return () => sub.remove();
+  }, [postId, startFocusedPlayback]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      FEED_MEDIA_SOUND_PREF,
+      () => {
+        setFeedSoundPrefTick((t) => t + 1);
+        if (screenFocusedRef.current && audioReady && autoPlayMediaRef.current) {
+          syncAudioPlayback(true, isFeedMediaMuted());
+        }
+      },
+    );
+    return () => sub.remove();
+  }, [audioReady, syncAudioPlayback]);
 
   useEffect(() => {
     if (!screenFocused) stopAudio();
@@ -142,32 +258,56 @@ const PostMediaCarousel: React.FC<Props> = ({
     return () => sub.remove();
   }, [postId, stopAudio]);
 
-  useEffect(() => {
-    return () => {
-      try {
-        audioWebViewRef.current?.injectJavaScript(`
-          (function () {
-            var a = document.getElementById('a');
-            if (!a) return;
-            try { a.pause(); a.muted = true; a.removeAttribute('src'); a.load(); } catch (_) {}
-          })();
-          true;
-        `);
-        audioWebViewRef.current?.stopLoading?.();
-      } catch (_) {}
-    };
-  }, [displayAudioUrl]);
+  useEffect(() => () => releaseSound(), [releaseSound]);
 
-  const onAudioMessage = useCallback((event: { nativeEvent: { data: string } }) => {
-    const msg = String(event.nativeEvent.data || '');
-    if (msg === 'ready') setAudioReady(true);
-    if (msg === 'playing') setAudioPlaying(true);
-    if (msg === 'paused') setAudioPlaying(false);
-    if (msg === 'error') {
-      setAudioReady(false);
-      setAudioPlaying(false);
+  const badgeOpacity = useRef(new Animated.Value(0)).current;
+  const badgeTranslateY = useRef(new Animated.Value(10)).current;
+  const badgeIndexRef = useRef(0);
+  const badgeDidMountRef = useRef(false);
+
+  const activeSlide = slides[activeIndex];
+  const looksLikeEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  const rawName = (activeSlide?.name || '').trim();
+  const rawUsername = (activeSlide?.username || '').trim();
+  const contributorName =
+    rawName && !looksLikeEmail(rawName)
+      ? rawName
+      : rawUsername && !looksLikeEmail(rawUsername)
+        ? rawUsername.replace(/^@/, '')
+        : '';
+  const showContributorBadge =
+    showContributorNames && !!(contributorName || activeSlide?.profilePic);
+
+  const runBadgeIn = useCallback(() => {
+    badgeOpacity.setValue(0);
+    badgeTranslateY.setValue(10);
+    Animated.parallel([
+      Animated.timing(badgeOpacity, {
+        toValue: 1,
+        duration: 240,
+        useNativeDriver: true,
+      }),
+      Animated.spring(badgeTranslateY, {
+        toValue: 0,
+        useNativeDriver: true,
+        tension: 88,
+        friction: 10,
+      }),
+    ]).start();
+  }, [badgeOpacity, badgeTranslateY]);
+
+  useEffect(() => {
+    if (!showContributorBadge) return;
+    if (!badgeDidMountRef.current) {
+      badgeDidMountRef.current = true;
+      badgeIndexRef.current = activeIndex;
+      runBadgeIn();
+      return;
     }
-  }, []);
+    if (badgeIndexRef.current === activeIndex) return;
+    badgeIndexRef.current = activeIndex;
+    runBadgeIn();
+  }, [activeIndex, showContributorBadge, runBadgeIn]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = e.nativeEvent.layout.width;
@@ -192,7 +332,6 @@ const PostMediaCarousel: React.FC<Props> = ({
 
   const slideW = layoutWidth > 0 ? layoutWidth : undefined;
   const showSlideCounter = slides.length > 1;
-  const showContributorBadge = !!(slides[activeIndex]?.name || slides[activeIndex]?.username);
 
   return (
     <View style={[styles.root, containerStyle]} onLayout={onLayout}>
@@ -232,54 +371,58 @@ const PostMediaCarousel: React.FC<Props> = ({
       />
 
       {showContributorBadge ? (
-        <View style={styles.badge} pointerEvents="none">
-          <Text style={styles.badgeText} numberOfLines={1}>
-            {slides[activeIndex].name || slides[activeIndex].username}
-          </Text>
-        </View>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.contributorBadge,
+            {
+              opacity: badgeOpacity,
+              transform: [{ translateY: badgeTranslateY }],
+            },
+          ]}
+        >
+          {activeSlide?.profilePic ? (
+            <SafeImage
+              source={{ uri: mediaDisplayUrl(activeSlide.profilePic) }}
+              style={styles.contributorAvatar}
+            />
+          ) : (
+            <View style={styles.contributorAvatarFallback}>
+              <Text style={styles.contributorAvatarLetter}>
+                {contributorName.charAt(0).toUpperCase() || '?'}
+              </Text>
+            </View>
+          )}
+          {contributorName ? (
+            <Text style={styles.contributorName} numberOfLines={1}>
+              {contributorName}
+            </Text>
+          ) : null}
+        </Animated.View>
       ) : null}
 
       {showSlideCounter ? (
-        <View style={[styles.slideCounter, audioUrl ? styles.slideCounterWithAudio : null]} pointerEvents="none">
+        <View style={styles.slideCounter} pointerEvents="none">
           <Text style={styles.slideCounterText}>
             {activeIndex + 1}/{slides.length}
           </Text>
         </View>
       ) : null}
 
-      {audioUrl && audioHtml ? (
-        <>
-          <WebView
-            ref={audioWebViewRef}
-            source={{ html: audioHtml }}
-            style={styles.audioWebView}
-            mediaPlaybackRequiresUserAction={false}
-            allowsInlineMediaPlayback
-            javaScriptEnabled
-            domStorageEnabled
-            scrollEnabled={false}
-            onMessage={onAudioMessage}
-          />
-          <TouchableOpacity
-            style={[styles.audioBtn, !audioReady && styles.audioBtnDisabled]}
-            onPress={toggleAudio}
-            activeOpacity={0.85}
-            disabled={!audioReady}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            accessibilityRole="button"
-            accessibilityLabel={audioPlaying ? 'Pause music' : 'Play music'}
-          >
-            <Text style={styles.audioBtnText}>{audioPlaying ? '🔊' : '🔇'}</Text>
-          </TouchableOpacity>
-        </>
-      ) : null}
-
-      {slides.length > 1 ? (
-        <View style={styles.dots} pointerEvents="none">
-          {slides.map((_, i) => (
-            <View key={i} style={[styles.dot, i === activeIndex && styles.dotActive]} />
-          ))}
-        </View>
+      {audioUrl ? (
+        <TouchableOpacity
+          style={styles.muteButton}
+          onPress={(e) => {
+            e?.stopPropagation?.();
+            toggleMute();
+          }}
+          activeOpacity={0.85}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          accessibilityRole="button"
+          accessibilityLabel={isAudioMuted ? 'Unmute music' : 'Mute music'}
+        >
+          <Text style={styles.muteButtonText}>{isAudioMuted ? '🔇' : '🔊'}</Text>
+        </TouchableOpacity>
       ) : null}
     </View>
   );
@@ -300,88 +443,85 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  audioWebView: {
+  contributorBadge: {
     position: 'absolute',
-    width: 1,
-    height: 1,
-    opacity: 0,
-    top: 0,
-    left: 0,
-  },
-  badge: {
-    position: 'absolute',
-    top: 12,
+    top: 10,
     left: 10,
-    backgroundColor: 'rgba(0,0,0,0.62)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: '58%',
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    maxWidth: '55%',
-    zIndex: 8,
-    elevation: 8,
+    paddingVertical: 6,
+    borderRadius: 22,
+    zIndex: 10,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
   },
-  badgeText: {
+  contributorAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  contributorAvatarFallback: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 8,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contributorAvatarLetter: {
     color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  contributorName: {
+    flexShrink: 1,
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
   },
   slideCounter: {
     position: 'absolute',
-    top: 12,
-    right: 12,
-    backgroundColor: 'rgba(0,0,0,0.62)',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.55)',
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
+    paddingVertical: 4,
+    borderRadius: 10,
     zIndex: 9,
     elevation: 9,
-  },
-  slideCounterWithAudio: {
-    right: 52,
   },
   slideCounterText: {
     color: '#fff',
     fontSize: 13,
     fontWeight: '700',
   },
-  audioBtn: {
+  muteButton: {
     position: 'absolute',
-    top: 10,
     right: 10,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(0,0,0,0.62)',
+    bottom: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.6)',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 10,
-    elevation: 10,
+    zIndex: 20,
+    elevation: 20,
   },
-  audioBtnDisabled: {
-    opacity: 0.45,
-  },
-  audioBtnText: {
-    fontSize: 18,
-  },
-  dots: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(128,128,128,0.45)',
-  },
-  dotActive: {
-    backgroundColor: '#3897f0',
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+  muteButtonText: {
+    fontSize: 16,
+    color: '#fff',
   },
 });
 

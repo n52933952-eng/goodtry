@@ -36,7 +36,9 @@ import AddContributorModal from './AddContributorModal';
 import ManageContributorsModal from './ManageContributorsModal';
 import EditPostModal from './EditPostModal';
 import AddCollaboratorPhotoModal from './AddCollaboratorPhotoModal';
+import CollaborativePostAudioModal from './CollaborativePostAudioModal';
 import PostMediaCarousel from './PostMediaCarousel';
+import ExpandablePostText from './ExpandablePostText';
 import StoryAvatarRing from './StoryAvatarRing';
 import StoryOrProfileSheet from './StoryOrProfileSheet';
 import FootballMatchCard from './FootballMatchCard';
@@ -54,7 +56,13 @@ import {
 } from '../utils/gameFeedPostUtils';
 import { useFeedCardMetrics } from '../utils/feedCardLayout';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
-import { FEED_VIDEO_PAUSE_ALL } from '../utils/feedVideoPlayback';
+import {
+  FEED_VIDEO_PAUSE_ALL,
+  FEED_MEDIA_SOUND_PREF,
+  isFeedMediaMuted,
+  setFeedMediaSoundUnmuted,
+  requestFeedMediaAutoplay,
+} from '../utils/feedVideoPlayback';
 import {
   getYouTubeVideoId,
   isChannelPost,
@@ -65,6 +73,7 @@ import {
   getPostCarouselAudio,
   shouldShowPostCarousel,
   getMyCollaboratorImage,
+  isCarouselPost,
 } from '../utils/postCarousel';
 
 const INLINE_VIDEO_CONTAIN_CSS = `
@@ -289,7 +298,10 @@ const Post: React.FC<PostProps> = ({
   const [addContribOpen, setAddContribOpen] = useState(false);
   const [manageContribOpen, setManageContribOpen] = useState(false);
   const [addCollaboratorPhotoOpen, setAddCollaboratorPhotoOpen] = useState(false);
+  const [collabAudioOpen, setCollabAudioOpen] = useState(false);
   const [editPostOpen, setEditPostOpen] = useState(false);
+  const [collabMenuOpen, setCollabMenuOpen] = useState(false);
+  const [carouselMenuOpen, setCarouselMenuOpen] = useState(false);
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
   const [postImagePreviewOpen, setPostImagePreviewOpen] = useState(false);
   const [carouselPreviewUri, setCarouselPreviewUri] = useState<string | null>(null);
@@ -361,7 +373,12 @@ const Post: React.FC<PostProps> = ({
     Record<string, { liked: boolean; count: number }>
   >({});
   const [footballMatchLikingId, setFootballMatchLikingId] = useState<string | null>(null);
-  const [isFeedVideoMuted, setIsFeedVideoMuted] = useState(true);
+  /** Bumps on FEED_MEDIA_SOUND_PREF so mute icon re-renders from global pref (not local state). */
+  const [feedSoundPrefTick, setFeedSoundPrefTick] = useState(0);
+  const isFeedVideoMuted = useMemo(
+    () => isFeedMediaMuted(),
+    [feedSoundPrefTick],
+  );
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const [isFeedVideoPausedByUser, setIsFeedVideoPausedByUser] = useState(false);
   const [isFeedVideoPlaying, setIsFeedVideoPlaying] = useState(false);
@@ -377,6 +394,19 @@ const Post: React.FC<PostProps> = ({
   mediaShouldPlayRef.current = mediaShouldPlay;
   const lastFeedVideoTimeRef = useRef(0);
   const lastFeedVideoTimeUpdateRef = useRef(0);
+
+  const injectFeedVideoMute = useCallback((muted?: boolean) => {
+    const m = muted ?? isFeedMediaMuted();
+    try {
+      feedVideoWebViewRef.current?.injectJavaScript(`
+        (function () {
+          var v = document.getElementById('v');
+          if (v) v.muted = ${m ? 'true' : 'false'};
+        })();
+        true;
+      `);
+    } catch (_) {}
+  }, []);
 
   const pauseDetailVideo = useCallback(() => {
     try {
@@ -749,11 +779,6 @@ const Post: React.FC<PostProps> = ({
   }, [post.likes, post.likeCount, post.likedByMe, user?._id]);
 
   useEffect(() => {
-    // Default to muted in feed (Twitter/X style).
-    setIsFeedVideoMuted(true);
-  }, [post?._id]);
-
-  useEffect(() => {
     setFeedVideoReady(false);
     setIsFeedVideoPlaying(false);
     setFeedVideoErrored(false);
@@ -788,14 +813,32 @@ const Post: React.FC<PostProps> = ({
 
   // Immediate hard-stop when any screen blurs — don't wait for React re-render (Android WebView audio).
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener(FEED_VIDEO_PAUSE_ALL, () => {
+    const pauseSub = DeviceEventEmitter.addListener(FEED_VIDEO_PAUSE_ALL, () => {
       stopFeedVideoWebView();
       pauseDetailVideo();
       setYoutubePlaying(false);
       setIsFeedVideoPlaying(false);
     });
-    return () => sub.remove();
-  }, [stopFeedVideoWebView, pauseDetailVideo]);
+    const soundSub = DeviceEventEmitter.addListener(
+      FEED_MEDIA_SOUND_PREF,
+      () => {
+        setFeedSoundPrefTick((t) => t + 1);
+        if (mediaShouldPlayRef.current) {
+          injectFeedVideoMute();
+        }
+      },
+    );
+    return () => {
+      pauseSub.remove();
+      soundSub.remove();
+    };
+  }, [stopFeedVideoWebView, pauseDetailVideo, injectFeedVideoMute]);
+
+  // Active feed video — apply global sound preference when this post becomes focused.
+  useEffect(() => {
+    if (!mediaShouldPlay) return;
+    injectFeedVideoMute();
+  }, [mediaShouldPlay, post?._id, injectFeedVideoMute]);
 
   // Ensure media starts playing when opening PostDetail.
   useEffect(() => {
@@ -882,6 +925,11 @@ const Post: React.FC<PostProps> = ({
     loadPersonalizedWeather();
   }, [isWeatherPost, post?.weatherData, user?._id]);
 
+  const youtubeVideoId = getYouTubeVideoId(post.img || '');
+  const isYouTubePost = !!youtubeVideoId;
+  const isChannelPostFlag = isChannelPost(post);
+  const hideChannelPostCommentsFlag = hideChannelPostComments(post);
+
   const isLiked = localLiked; // Use local state for immediate UI update
 
   // Inline "liked by [avatar]" preview. If the current viewer liked it, they are the most
@@ -930,15 +978,52 @@ const Post: React.FC<PostProps> = ({
 
   const authorIsOnline = showAuthorPresenceDot && isUserOnline(postedById);
 
+  const isSomeoneElsesProfile =
+    fromScreen === 'UserProfile' && userProfileParams?.isOwnProfile === false;
+  const canActAsContributor = !!isContributor && !isSomeoneElsesProfile;
+
   const canAddCollaborator =
-    !!post.isCollaborative && (isOwner || !!isContributor);
+    !!post.isCollaborative && (isOwner || canActAsContributor);
   const canManageContributorsList =
-    (isOwner || !!isContributor) &&
+    (isOwner || canActAsContributor) &&
     !!post.isCollaborative &&
     Array.isArray(post.contributors) &&
     post.contributors.length > 0;
   const canAddCollaboratorPhoto = canAddCollaborator;
+  const canManageCollabAudio = !!post.isCollaborative && isOwner;
+  const isCarouselOwnerPost = isCarouselPost(post) && isOwner;
+  const canManageCarouselAudio = isCarouselOwnerPost;
   const myCollaboratorPhoto = getMyCollaboratorImage(post, currentUserId);
+  const hasCollabAudio = !!getPostCarouselAudio(post);
+
+  const onPenPress = useCallback(
+    (e?: { stopPropagation?: () => void }) => {
+      e?.stopPropagation?.();
+      if (post.isCollaborative && canAddCollaborator) {
+        setCollabMenuOpen(true);
+        return;
+      }
+      if (isCarouselOwnerPost) {
+        setCarouselMenuOpen(true);
+        return;
+      }
+      setEditPostOpen(true);
+    },
+    [post.isCollaborative, canAddCollaborator, isCarouselOwnerPost],
+  );
+
+  const closeCollabMenu = useCallback(() => setCollabMenuOpen(false), []);
+  const closeCarouselMenu = useCallback(() => setCarouselMenuOpen(false), []);
+
+  const runCollabMenuAction = useCallback((action: () => void) => {
+    setCollabMenuOpen(false);
+    setTimeout(action, 100);
+  }, []);
+
+  const runCarouselMenuAction = useCallback((action: () => void) => {
+    setCarouselMenuOpen(false);
+    setTimeout(action, 100);
+  }, []);
 
   const isCapsuleEligiblePost = useMemo(() => {
     const postId = String(post?._id || '');
@@ -1067,6 +1152,11 @@ const Post: React.FC<PostProps> = ({
     if (updated?._id) {
       updatePost(updated._id, updated);
       onPostUpdated?.(updated);
+      if (getPostCarouselAudio(updated)) {
+        const id = String(updated._id);
+        requestFeedMediaAutoplay(id);
+        setTimeout(() => requestFeedMediaAutoplay(id), 400);
+      }
     }
   };
 
@@ -1207,12 +1297,6 @@ const Post: React.FC<PostProps> = ({
     return date.toLocaleDateString();
   };
 
-  const youtubeVideoId = getYouTubeVideoId(post.img || '');
-  const isYouTubePost = !!youtubeVideoId;
-
-  const isChannelPostFlag = isChannelPost(post);
-  const hideChannelPostCommentsFlag = hideChannelPostComments(post);
-
   /** Chess/card posts are removed when the game ends — hide feed actions to avoid broken like/comment/remind. */
   const hideGamePostFooter = isChessPost || isCardPost;
 
@@ -1343,7 +1427,7 @@ const Post: React.FC<PostProps> = ({
     !isChessPost &&
     !isCardPost &&
     !post?.channelAddedBy &&
-    (isOwner || (!!post.isCollaborative && isContributor));
+    (isOwner || (!!post.isCollaborative && canActAsContributor));
 
   const canMessagePostOwner =
     showFeedExtras &&
@@ -1455,9 +1539,6 @@ const Post: React.FC<PostProps> = ({
   const feedMediaMaxHeight = Math.round(windowHeight * 0.52);
   const capFeedMediaHeight = (h: number) =>
     isFeedListCard ? Math.min(h, feedMediaMaxHeight) : h;
-  /** Collaborative manage links on profile — only if you own or contribute to this post. */
-  const showCollabManagementUi =
-    fromScreen === 'UserProfile' && !!post.isCollaborative && canAddCollaborator;
   const showContributorNamesOnProfile = fromScreen === 'UserProfile';
   const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
   const feedWideContainerStyle = useFeedWideLayout
@@ -1748,10 +1829,7 @@ const Post: React.FC<PostProps> = ({
           )}
           {canEditPostText && (
             <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation();
-                setEditPostOpen(true);
-              }}
+              onPress={onPenPress}
               style={{ padding: 5, marginRight: 4 }}
             >
               <Text style={styles.editButton}>✏️</Text>
@@ -1790,7 +1868,6 @@ const Post: React.FC<PostProps> = ({
                   const hydrated = cid && contribHydrateMap[cid] ? contribHydrateMap[cid] : null;
                   const cObj = hydrated || contributor;
                   const label = cObj?.name || cObj?.username || '?';
-                  const handle = cObj?.username ? `@${cObj.username}` : '';
                   return (
                     <TouchableOpacity
                       key={cid || String(idx)}
@@ -1825,14 +1902,6 @@ const Post: React.FC<PostProps> = ({
                           {label}
                         </Text>
                       ) : null}
-                      {showContributorNamesOnProfile && handle ? (
-                        <Text
-                          style={[styles.contribHandle, { color: colors.textGray }]}
-                          numberOfLines={1}
-                        >
-                          {handle}
-                        </Text>
-                      ) : null}
                     </TouchableOpacity>
                   );
                 })}
@@ -1841,60 +1910,24 @@ const Post: React.FC<PostProps> = ({
           );
         })()}
 
-      {showCollabManagementUi && canAddCollaborator && (
-        <View style={styles.collabActions}>
-          {canAddCollaboratorPhoto && (
-            <TouchableOpacity
-              style={{ marginRight: 16 }}
-              onPress={(e) => {
-                e.stopPropagation();
-                setAddCollaboratorPhotoOpen(true);
-              }}
-            >
-              <Text style={[styles.collabActionText, { color: colors.primary }]}>
-                {myCollaboratorPhoto ? t('changeYourPhoto') : `+ ${t('addYourPhoto')}`}
-              </Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={{ marginRight: 16 }}
-            onPress={(e) => {
-              e.stopPropagation();
-              setAddContribOpen(true);
-            }}
-          >
-            <Text style={[styles.collabActionText, { color: colors.primary }]}>+ {t('addContributor')}</Text>
-          </TouchableOpacity>
-          {canManageContributorsList && (
-            <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation();
-                setManageContribOpen(true);
-              }}
-            >
-              <Text style={[styles.collabActionText, { color: colors.text }]}>{t('manageContributors')}</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
       {/* Hide post text for football posts if we have matches (from API or post data) */}
       {!(isFootballPost && (footballMatches.length > 0 || post.liveMatches?.length > 0 || post.matches?.length > 0 || post.todayMatches?.length > 0)) && (
         disableNavigation ? (
-          <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+          <ExpandablePostText text={post.text} style={styles.text} color={colors.text} accentColor={colors.primary} />
         ) : isCardPost ? (
-          <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+          <ExpandablePostText text={post.text} style={styles.text} color={colors.text} accentColor={colors.primary} />
         ) : isChessPost ? (
           <Pressable onPress={openGamePostDetails} style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}>
-            <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
+            <ExpandablePostText text={post.text} style={styles.text} color={colors.text} accentColor={colors.primary} />
           </Pressable>
         ) : (
-          <TouchableOpacity
+          <ExpandablePostText
+            text={post.text}
+            style={styles.text}
+            color={colors.text}
+            accentColor={colors.primary}
             onPress={() => navigateToPostDetail(String(post._id))}
-            activeOpacity={0.9}
-          >
-            <Text style={[styles.text, { color: colors.text }]}>{post.text}</Text>
-          </TouchableOpacity>
+          />
         )
       )}
 
@@ -2091,7 +2124,7 @@ const Post: React.FC<PostProps> = ({
           mediaShouldPlay && !feedVideoErrored ? (
             <View style={videoOnlyContainerStyle}>
               {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
-                <View style={styles.feedVideoPreviewOverlay}>
+                <View style={styles.feedVideoPreviewOverlay} pointerEvents="box-none">
                   <VideoFeedPreview
                     videoUrl={thumbnailVideoUrl}
                     serverThumbnail={serverVideoThumbnail}
@@ -2118,6 +2151,7 @@ const Post: React.FC<PostProps> = ({
                 ref={feedVideoWebViewRef}
                 source={feedAutoPlaySource}
                 style={styles.videoWebView}
+                pointerEvents="none"
                 allowsFullscreenVideo={false}
                 mediaPlaybackRequiresUserAction={false}
                 javaScriptEnabled
@@ -2134,7 +2168,7 @@ const Post: React.FC<PostProps> = ({
                       if (${lastFeedVideoTimeRef.current.toFixed(3)} > 0 && Math.abs(v.currentTime - ${lastFeedVideoTimeRef.current.toFixed(3)}) > 0.35) {
                         try { v.currentTime = ${lastFeedVideoTimeRef.current.toFixed(3)}; } catch (_) {}
                       }
-                      v.muted = ${isFeedVideoMuted ? 'true' : 'false'};
+                      v.muted = ${isFeedMediaMuted() ? 'true' : 'false'};
                       ${isFeedVideoPausedByUser ? 'v.pause();' : 'var p = v.play(); if (p && p.catch) p.catch(function(){});'}
                     })();
                     true;
@@ -2162,6 +2196,7 @@ const Post: React.FC<PostProps> = ({
                   if (msg === 'playing' || msg === 'canplay' || msg === 'loadeddata') {
                     setFeedVideoReady(true);
                     if (msg === 'playing') setIsFeedVideoPlaying(true);
+                    if (mediaShouldPlayRef.current) injectFeedVideoMute();
                     return;
                   }
                   if (msg === 'paused') {
@@ -2188,7 +2223,8 @@ const Post: React.FC<PostProps> = ({
               />
               <TouchableOpacity
                 style={styles.feedPlayPauseButton}
-                onPress={() => {
+                onPress={(e) => {
+                  e?.stopPropagation?.();
                   const nextPaused = !isFeedVideoPausedByUser;
                   setIsFeedVideoPausedByUser(nextPaused);
                   setIsFeedVideoPlaying(!nextPaused);
@@ -2208,23 +2244,20 @@ const Post: React.FC<PostProps> = ({
                   `);
                 }}
                 activeOpacity={0.85}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <Text style={styles.feedPlayPauseButtonText}>{!isFeedVideoPlaying ? '▶' : '⏸'}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.feedMuteButton}
-                onPress={() => {
-                  const nextMuted = !isFeedVideoMuted;
-                  setIsFeedVideoMuted(nextMuted);
-                  feedVideoWebViewRef.current?.injectJavaScript(`
-                    (function () {
-                      var v = document.getElementById('v');
-                      if (v) v.muted = ${nextMuted ? 'true' : 'false'};
-                    })();
-                    true;
-                  `);
+                onPress={(e) => {
+                  e?.stopPropagation?.();
+                  const nextUnmuted = isFeedMediaMuted();
+                  setFeedMediaSoundUnmuted(nextUnmuted);
+                  injectFeedVideoMute(!nextUnmuted);
                 }}
                 activeOpacity={0.85}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <Text style={styles.feedMuteButtonText}>{isFeedVideoMuted ? '🔇' : '🔊'}</Text>
               </TouchableOpacity>
@@ -2260,6 +2293,8 @@ const Post: React.FC<PostProps> = ({
               containerStyle={carouselContainerStyle}
               slideHeight={carouselHeight}
               screenFocused={screenFocused}
+              autoPlayMedia={mediaShouldPlay}
+              showContributorNames={!!post.isCollaborative}
               onPressImagePreview={(uri) => {
                 setCarouselPreviewUri(uri);
                 setPostImagePreviewOpen(true);
@@ -2283,6 +2318,8 @@ const Post: React.FC<PostProps> = ({
             containerStyle={carouselContainerStyle}
             slideHeight={carouselHeight}
             screenFocused={screenFocused}
+            autoPlayMedia={mediaShouldPlay}
+            showContributorNames={!!post.isCollaborative}
             onPressSlide={() => navigateToPostDetail(post._id)}
           />
         )
@@ -2807,11 +2844,138 @@ const Post: React.FC<PostProps> = ({
         </View>
       </Modal>
 
+      <Modal
+        visible={collabMenuOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={closeCollabMenu}
+        statusBarTranslucent
+      >
+        <View style={styles.collabMenuOverlay}>
+          <Pressable style={styles.collabMenuBackdrop} onPress={closeCollabMenu} />
+          <View
+            style={[
+              styles.collabMenuSheet,
+              { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+            ]}
+          >
+            <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.collabMenuTitle, { color: colors.text }]}>
+                {t('collaborativePost')}
+              </Text>
+              <TouchableOpacity
+                onPress={closeCollabMenu}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={t('close')}
+              >
+                <Text style={[styles.collabMenuClose, { color: colors.textGray }]}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.collabMenuRow, { borderBottomColor: colors.border }]}
+              onPress={() => runCollabMenuAction(() => setEditPostOpen(true))}
+            >
+              <Text style={[styles.collabMenuRowText, { color: colors.text }]}>{t('editPost')}</Text>
+            </TouchableOpacity>
+            {canManageCollabAudio ? (
+              <TouchableOpacity
+                style={[styles.collabMenuRow, { borderBottomColor: colors.border }]}
+                onPress={() => runCollabMenuAction(() => setCollabAudioOpen(true))}
+              >
+                <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                  {hasCollabAudio ? t('changeMusic') : t('addMusic')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {canAddCollaboratorPhoto ? (
+              <TouchableOpacity
+                style={[styles.collabMenuRow, { borderBottomColor: colors.border }]}
+                onPress={() => runCollabMenuAction(() => setAddCollaboratorPhotoOpen(true))}
+              >
+                <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                  {myCollaboratorPhoto ? t('changeYourPhoto') : t('addYourPhoto')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.collabMenuRow, { borderBottomColor: colors.border }]}
+              onPress={() => runCollabMenuAction(() => setAddContribOpen(true))}
+            >
+              <Text style={[styles.collabMenuRowText, { color: colors.text }]}>{t('addContributor')}</Text>
+            </TouchableOpacity>
+            {canManageContributorsList ? (
+              <TouchableOpacity
+                style={styles.collabMenuRow}
+                onPress={() => runCollabMenuAction(() => setManageContribOpen(true))}
+              >
+                <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                  {t('manageContributors')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={carouselMenuOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={closeCarouselMenu}
+        statusBarTranslucent
+      >
+        <View style={styles.collabMenuOverlay}>
+          <Pressable style={styles.collabMenuBackdrop} onPress={closeCarouselMenu} />
+          <View
+            style={[
+              styles.collabMenuSheet,
+              { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+            ]}
+          >
+            <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.collabMenuTitle, { color: colors.text }]}>
+                {t('carouselPost')}
+              </Text>
+              <TouchableOpacity
+                onPress={closeCarouselMenu}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={t('close')}
+              >
+                <Text style={[styles.collabMenuClose, { color: colors.textGray }]}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.collabMenuRow, { borderBottomColor: colors.border }]}
+              onPress={() => runCarouselMenuAction(() => setEditPostOpen(true))}
+            >
+              <Text style={[styles.collabMenuRowText, { color: colors.text }]}>{t('editPost')}</Text>
+            </TouchableOpacity>
+            {canManageCarouselAudio ? (
+              <TouchableOpacity
+                style={styles.collabMenuRow}
+                onPress={() => runCarouselMenuAction(() => setCollabAudioOpen(true))}
+              >
+                <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                  {hasCollabAudio ? t('changeMusic') : t('addMusic')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
       <AddContributorModal
         visible={addContribOpen}
         onClose={() => setAddContribOpen(false)}
         post={post}
         onContributorAdded={onCollaborativePostUpdated}
+      />
+      <CollaborativePostAudioModal
+        visible={collabAudioOpen}
+        onClose={() => setCollabAudioOpen(false)}
+        post={post}
+        onSaved={onCollaborativePostUpdated}
       />
       <AddCollaboratorPhotoModal
         visible={addCollaboratorPhotoOpen}
@@ -2986,19 +3150,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  contribHandle: {
-    fontSize: 10,
-    textAlign: 'center',
-  },
-  collabActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 10,
-  },
-  collabActionText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
   contributorsLabel: {
     fontSize: 13,
     fontWeight: '600',
@@ -3125,23 +3276,27 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 10,
     bottom: 10,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 20,
+    elevation: 20,
   },
   feedPlayPauseButton: {
     position: 'absolute',
     left: 10,
     bottom: 10,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 20,
+    elevation: 20,
   },
   feedPlayPauseButtonText: {
     fontSize: 16,
@@ -3340,6 +3495,47 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.55)',
     justifyContent: 'center',
     paddingHorizontal: 18,
+  },
+  collabMenuOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  collabMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  collabMenuSheet: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingBottom: 24,
+  },
+  collabMenuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  collabMenuTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    flex: 1,
+  },
+  collabMenuClose: {
+    fontSize: 20,
+    fontWeight: '600',
+    lineHeight: 22,
+  },
+  collabMenuRow: {
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  collabMenuRowText: {
+    fontSize: 16,
+    fontWeight: '500',
   },
   modalCard: {
     borderRadius: 12,

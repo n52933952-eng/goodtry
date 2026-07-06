@@ -34,7 +34,7 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
   const { user } = useUser();
   const showToast = useShowToast();
   const [saving, setSaving] = useState(false);
-  const { imageUri, imageData, pickImage, pickMixedFromGallery, clearImage } = useImagePicker();
+  const { imageUri, imageData, pickImage, clearImage } = useImagePicker();
   const currentUserId = user?._id != null ? String(user._id) : '';
   const hasExistingPhoto = !!getMyCollaboratorImage(post, currentUserId);
 
@@ -43,9 +43,9 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
   }, [visible, post?._id]);
 
   const openPicker = () => {
-    Alert.alert(t('selectImage'), t('chooseOption'), [
+    Alert.alert(t('selectPhoto'), t('collaborativePhotoHint'), [
       { text: t('camera'), onPress: () => pickImage(true) },
-      { text: t('gallery'), onPress: () => pickMixedFromGallery() },
+      { text: t('galleryPhotosOnly'), onPress: () => pickImage(false) },
       { text: t('cancel'), style: 'cancel' },
     ]);
   };
@@ -108,7 +108,7 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
             onPress={openPicker}
             disabled={saving}
           >
-            <Text style={{ color: colors.primary }}>{imageUri ? t('changeMedia') : t('selectImage')}</Text>
+            <Text style={{ color: colors.primary }}>{imageUri ? t('changeYourPhoto') : t('selectPhoto')}</Text>
           </TouchableOpacity>
 
           {imageUri ? (

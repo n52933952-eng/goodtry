@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Modal,
   View,
@@ -13,7 +13,9 @@ import {
   Image,
   Alert,
   Pressable,
+  Keyboard,
 } from 'react-native';
+import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
 import { useLanguage } from '../context/LanguageContext';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
@@ -23,9 +25,16 @@ import { useImagePicker } from '../hooks/useImagePicker';
 import {
   isVideoWithinMaxDuration,
   MAX_POST_VIDEO_DURATION_SEC,
+  isVideoAsset,
 } from '../utils/videoDuration';
+import { isCarouselPost, MAX_POST_CAROUSEL_IMAGES } from '../utils/postCarousel';
+import { mediaDisplayUrl } from '../utils/mediaUrl';
 
 const MAX_LEN = 500;
+
+type CarouselEditSlot =
+  | { key: string; kind: 'existing'; url: string }
+  | { key: string; kind: 'new'; uri: string; mime: string; fileName: string };
 
 type Props = {
   visible: boolean;
@@ -40,6 +49,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   const showToast = useShowToast();
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
+  const [carouselSlots, setCarouselSlots] = useState<CarouselEditSlot[]>([]);
   const {
     imageUri,
     imageData,
@@ -51,28 +61,133 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   } = useImagePicker();
 
   const isCollaborative = !!post?.isCollaborative;
+  const isCarousel = isCarouselPost(post);
+  const captionOnlyEdit = isCollaborative;
+
+  const resetCarouselSlots = useCallback(() => {
+    if (!isCarouselPost(post)) {
+      setCarouselSlots([]);
+      return;
+    }
+    const urls = Array.isArray(post?.images)
+      ? post.images.map(String).filter(Boolean)
+      : [];
+    setCarouselSlots(
+      urls.map((url, index) => ({
+        key: `existing-${index}-${url}`,
+        kind: 'existing' as const,
+        url,
+      })),
+    );
+  }, [post]);
 
   useEffect(() => {
     if (visible && post) {
       setText(post.text || '');
       clearImage();
+      resetCarouselSlots();
     }
-  }, [visible, post?._id, post?.text]);
+  }, [visible, post?._id, post?.text, resetCarouselSlots]);
 
   const remoteImg = post?.img ? String(post.img) : '';
   const isRemoteVideo =
     !!remoteImg &&
     (/\.(mp4|webm|ogg|mov)$/i.test(remoteImg) || remoteImg.includes('/video/upload/'));
-  const hasRemoteMedia = !!(remoteImg && !remoteImg.includes('youtube'));
+  const hasRemoteMedia = isCarousel
+    ? carouselSlots.length > 0
+    : !!(remoteImg && !remoteImg.includes('youtube'));
   const displayRemoteUri = remoteImg && !imageUri && !remoteImg.includes('youtube') ? remoteImg : null;
   const showNewLocal = !!imageUri;
 
-  const handleSave = async () => {
-    if (!post?._id) return;
+  const pickCarouselPhoto = useCallback(
+    (onPicked: (asset: Asset) => void) => {
+      Alert.alert(t('selectPhoto'), t('carouselEditTextHint'), [
+        {
+          text: t('camera'),
+          onPress: async () => {
+            const result = await launchCamera({
+              mediaType: 'photo',
+              quality: 0.8,
+              maxWidth: 1024,
+              maxHeight: 1024,
+            });
+            const asset = result.assets?.[0];
+            if (!asset?.uri) return;
+            if (isVideoAsset(asset)) {
+              showToast(t('error'), t('carouselPhotosOnly'), 'error');
+              return;
+            }
+            onPicked(asset);
+          },
+        },
+        {
+          text: t('galleryPhotosOnly'),
+          onPress: async () => {
+            const result = await launchImageLibrary({
+              mediaType: 'photo',
+              quality: 0.8,
+              maxWidth: 1024,
+              maxHeight: 1024,
+              selectionLimit: 1,
+            });
+            const asset = result.assets?.[0];
+            if (!asset?.uri) return;
+            if (isVideoAsset(asset)) {
+              showToast(t('error'), t('carouselPhotosOnly'), 'error');
+              return;
+            }
+            onPicked(asset);
+          },
+        },
+        { text: t('cancel'), style: 'cancel' },
+      ]);
+    },
+    [t, showToast],
+  );
+
+  const assetToNewSlot = (asset: Asset): CarouselEditSlot => ({
+    key: `new-${Date.now()}-${Math.random()}`,
+    kind: 'new',
+    uri: asset.uri || '',
+    mime: asset.type || 'image/jpeg',
+    fileName: asset.fileName || `image_${Date.now()}.jpg`,
+  });
+
+  const replaceCarouselSlot = (index: number) => {
+    pickCarouselPhoto((asset) => {
+      if (!asset.uri) return;
+      setCarouselSlots((prev) =>
+        prev.map((slot, i) => (i === index ? assetToNewSlot(asset) : slot)),
+      );
+    });
+  };
+
+  const addCarouselSlot = () => {
+    if (carouselSlots.length >= MAX_POST_CAROUSEL_IMAGES) {
+      showToast(t('error'), t('carouselMaxPhotos'), 'error');
+      return;
+    }
+    pickCarouselPhoto((asset) => {
+      if (!asset.uri) return;
+      setCarouselSlots((prev) => [...prev, assetToNewSlot(asset)]);
+    });
+  };
+
+  const removeCarouselSlot = (index: number) => {
+    setCarouselSlots((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSave = useCallback(async () => {
+    if (!post?._id || saving) return;
+    Keyboard.dismiss();
     const trimmed = text.trim();
-    const willUploadNew = !isCollaborative && !!(imageUri && imageData);
+    const willUploadNew = !captionOnlyEdit && !isCarousel && !!(imageUri && imageData);
 
     if (!trimmed && !hasRemoteMedia && !willUploadNew) {
+      showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
+      return;
+    }
+    if (isCarousel && carouselSlots.length === 0 && !trimmed) {
       showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
       return;
     }
@@ -85,14 +200,39 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
       showToast(t('error'), t('postVideoTooLongBody'), 'error');
       return;
     }
-    if (willUploadNew && post?.isCollaborative && isVideo) {
-      showToast(t('error'), t('collaborativePhotoImagesOnly'), 'error');
-      return;
-    }
 
     setSaving(true);
     try {
-      if (willUploadNew) {
+      if (isCarousel) {
+        const formData = new FormData();
+        formData.append('text', trimmed);
+        const imageSlots = carouselSlots.map((slot) =>
+          slot.kind === 'existing' ? { kind: 'keep', url: slot.url } : { kind: 'new' },
+        );
+        formData.append('imageSlots', JSON.stringify(imageSlots));
+        for (const slot of carouselSlots) {
+          if (slot.kind === 'new') {
+            formData.append('images', {
+              uri: slot.uri,
+              type: slot.mime,
+              name: slot.fileName,
+            } as any);
+          }
+        }
+        const data = await apiService.upload(
+          `${ENDPOINTS.CAROUSEL_POST}/${post._id}/images`,
+          formData,
+          'PUT',
+        );
+        const updated = data?.post ?? data;
+        if (updated?._id) {
+          showToast(t('success'), t('postUpdatedSuccessfully'), 'success');
+          onSaved(updated);
+          onClose();
+        } else {
+          showToast(t('error'), t('failedToUpdatePost'), 'error');
+        }
+      } else if (willUploadNew) {
         const formData = new FormData();
         formData.append('text', trimmed);
         const mime =
@@ -136,17 +276,24 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     } finally {
       setSaving(false);
     }
-  };
+  }, [
+    post?._id,
+    saving,
+    text,
+    isCarousel,
+    carouselSlots,
+    captionOnlyEdit,
+    imageUri,
+    imageData,
+    hasRemoteMedia,
+    isVideo,
+    showToast,
+    t,
+    onSaved,
+    onClose,
+  ]);
 
   const openMediaPicker = () => {
-    if (post?.isCollaborative) {
-      Alert.alert(t('selectImage'), t('chooseOption'), [
-        { text: t('camera'), onPress: () => pickImage(true) },
-        { text: t('gallery'), onPress: () => pickMixedFromGallery() },
-        { text: t('cancel'), style: 'cancel' },
-      ]);
-      return;
-    }
     Alert.alert(t('selectMedia'), t('chooseOption'), [
       { text: t('camera'), onPress: () => pickImage(true) },
       { text: t('gallery'), onPress: () => pickMixedFromGallery() },
@@ -167,18 +314,30 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
           onPress={(e) => e.stopPropagation()}
         >
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity onPress={onClose} style={[styles.headerSideBtn, styles.headerSideBtnLeft]}>
               <Text style={{ color: colors.textGray, fontSize: 16 }}>{t('cancel')}</Text>
             </TouchableOpacity>
-            <Text style={[styles.title, { color: colors.text }]}>{t('editPost')}</Text>
-            <TouchableOpacity onPress={handleSave} disabled={saving}>
+            <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
+              {t('editPost')}
+            </Text>
+            <Pressable
+              onPressIn={() => {
+                if (saving) return;
+                Keyboard.dismiss();
+                handleSave();
+              }}
+              disabled={saving}
+              style={[styles.headerSideBtn, styles.headerSideBtnRight]}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
               {saving ? (
                 <ActivityIndicator color={colors.primary} />
               ) : (
                 <Text style={{ color: colors.primary, fontSize: 16, fontWeight: '600' }}>{t('save')}</Text>
               )}
-            </TouchableOpacity>
+            </Pressable>
           </View>
+
           <ScrollView
             style={styles.scroll}
             keyboardShouldPersistTaps="always"
@@ -215,6 +374,51 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
               <Text style={[styles.collabHint, { color: colors.textGray }]}>
                 {t('collaborativeEditTextHint')}
               </Text>
+            ) : isCarousel ? (
+              <>
+                <Text style={[styles.sectionLabel, { color: colors.textGray }]}>
+                  {t('photos')} ({carouselSlots.length}/{MAX_POST_CAROUSEL_IMAGES})
+                </Text>
+                <Text style={[styles.collabHint, { color: colors.textGray }]}>
+                  {t('carouselEditTextHint')}
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.carouselRow}
+                  contentContainerStyle={styles.carouselRowContent}
+                >
+                  {carouselSlots.map((slot, index) => {
+                    const uri =
+                      slot.kind === 'existing' ? mediaDisplayUrl(slot.url) : slot.uri;
+                    return (
+                      <View key={slot.key} style={styles.carouselThumbWrap}>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() => replaceCarouselSlot(index)}
+                        >
+                          <Image source={{ uri }} style={styles.carouselThumb} resizeMode="cover" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.carouselRemoveBtn}
+                          onPress={() => removeCarouselSlot(index)}
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        >
+                          <Text style={styles.carouselRemoveText}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                  {carouselSlots.length < MAX_POST_CAROUSEL_IMAGES ? (
+                    <TouchableOpacity
+                      style={[styles.carouselAddBtn, { borderColor: colors.border }]}
+                      onPress={addCarouselSlot}
+                    >
+                      <Text style={{ color: colors.primary, fontSize: 28, lineHeight: 30 }}>+</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </ScrollView>
+              </>
             ) : (
               <>
             <Text style={[styles.sectionLabel, { color: colors.textGray }]}>{t('media')}</Text>
@@ -278,14 +482,28 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     borderBottomWidth: 1,
   },
+  headerSideBtn: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  headerSideBtnLeft: {
+    alignItems: 'flex-start',
+  },
+  headerSideBtnRight: {
+    alignItems: 'flex-end',
+  },
   title: {
+    flex: 2,
     fontSize: 17,
     fontWeight: '700',
+    textAlign: 'center',
+    marginHorizontal: 8,
   },
   scroll: {
     maxHeight: 520,
@@ -309,7 +527,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   collabHint: {
-    marginTop: 14,
+    marginTop: 8,
     fontSize: 13,
     lineHeight: 19,
   },
@@ -317,6 +535,49 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 13,
     fontWeight: '600',
+  },
+  carouselRow: {
+    marginTop: 12,
+    flexGrow: 0,
+  },
+  carouselRowContent: {
+    alignItems: 'center',
+    paddingBottom: 4,
+  },
+  carouselThumbWrap: {
+    position: 'relative',
+    marginRight: 10,
+  },
+  carouselThumb: {
+    width: 96,
+    height: 96,
+    borderRadius: 12,
+    backgroundColor: '#111',
+  },
+  carouselRemoveBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  carouselRemoveText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  carouselAddBtn: {
+    width: 96,
+    height: 96,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   mediaBox: {
     marginTop: 8,

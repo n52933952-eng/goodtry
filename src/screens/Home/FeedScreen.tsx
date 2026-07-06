@@ -27,8 +27,10 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
 import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
 import { pruneStaleLiveFeedPosts } from '../../utils/pruneStaleLiveFeedPosts';
-import { pauseAllFeedVideos, emitFeedVisiblePostIds } from '../../utils/feedVideoPlayback';
+import { pauseAllFeedVideos, emitFeedVisiblePostIds, isFeedAutoPlayMediaPost, FEED_REQUEST_MEDIA_AUTOPLAY } from '../../utils/feedVideoPlayback';
 import { useShowToast } from '../../hooks/useShowToast';
+import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
+import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
 import Svg, { Path } from 'react-native-svg';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
@@ -61,7 +63,7 @@ const FeedScreen = ({ navigation }: any) => {
   const { user, logout } = useUser();
   const { socket, isUserOnline, notificationCount, refreshNotificationCount } = useSocket();
   const { isLive } = useLiveBroadcast();
-  const { t, isRTL } = useLanguage();
+  const { t } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
   const showToast = useShowToast();
 
@@ -148,6 +150,15 @@ const FeedScreen = ({ navigation }: any) => {
   const NEW_POSTS_MIN_OFFSET = 300;
   const deferIncomingRef = useRef(false);
 
+  const {
+    headerTranslateStyle,
+    mergeOnScroll,
+    resetHeader,
+    measuredHeight: feedHeaderHeight,
+    setMeasuredHeight: setFeedHeaderHeight,
+  } = useCollapsingHeader();
+  const { mergeTabBarScroll, resetTabBar, tabBarHeight } = useTabBarCollapseOnFocus('feed');
+
   const scrollFeedToTop = useCallback(() => {
     flushPendingFeedPosts();
     const list = feedListRef.current;
@@ -161,7 +172,9 @@ const FeedScreen = ({ navigation }: any) => {
     scrollOffsetRef.current = 0;
     deferIncomingRef.current = false;
     setDeferIncomingFeedPosts(false);
-  }, [flushPendingFeedPosts, setDeferIncomingFeedPosts]);
+    resetHeader();
+    resetTabBar();
+  }, [flushPendingFeedPosts, setDeferIncomingFeedPosts, resetHeader, resetTabBar]);
 
   const handleFeedScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -243,6 +256,24 @@ const FeedScreen = ({ navigation }: any) => {
   useEffect(() => {
     activeVideoPostIdRef.current = activeVideoPostId;
   }, [activeVideoPostId]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      FEED_REQUEST_MEDIA_AUTOPLAY,
+      ({ postId }: { postId?: string }) => {
+        const id = postId != null ? String(postId).trim() : '';
+        if (!id) return;
+        if (pendingVideoSwitchTimerRef.current) {
+          clearTimeout(pendingVideoSwitchTimerRef.current);
+          pendingVideoSwitchTimerRef.current = null;
+        }
+        setActiveVideoPostId(id);
+        activeVideoPostIdRef.current = id;
+        setVideoAutoplayReady(true);
+      },
+    );
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -752,19 +783,13 @@ const FeedScreen = ({ navigation }: any) => {
       .filter(Boolean);
     emitFeedVisiblePostIds(nextVisibleIds);
 
-    const visibleVideos = viewableItems.filter((entry) => {
+    const visibleMedia = viewableItems.filter((entry) => {
       if (!entry?.isViewable) return false;
-      const p = entry?.item;
-      const img = String(p?.img || '');
-      const isVideo =
-        !!img &&
-        (/\.(mp4|webm|ogg|mov)$/i.test(img) || img.includes('/video/upload/'));
-      const isYouTube = /youtube\.com|youtu\.be|ytimg\.com|img\.youtube\.com/i.test(img);
-      return isVideo && !isYouTube;
+      return isFeedAutoPlayMediaPost(entry?.item);
     });
 
     // Prefer the lower/next visible video so scrolling down activates the post in focus.
-    const preferred = visibleVideos.length > 0 ? visibleVideos[visibleVideos.length - 1] : null;
+    const preferred = visibleMedia.length > 0 ? visibleMedia[visibleMedia.length - 1] : null;
     const nextId = preferred?.item?._id?.toString?.() ?? null;
     const currentId = activeVideoPostIdRef.current;
     if (currentId === nextId) return;
@@ -889,8 +914,19 @@ const FeedScreen = ({ navigation }: any) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }, isRTL && styles.headerTitleRTL]}>{t('feed')}</Text>
+      <Animated.View
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 0) setFeedHeaderHeight(h);
+        }}
+        style={[
+          styles.header,
+          styles.headerFloating,
+          headerTranslateStyle,
+          { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('feed')}</Text>
         <View style={styles.headerButtons}>
           <TouchableOpacity
             style={styles.logoutButton}
@@ -931,7 +967,7 @@ const FeedScreen = ({ navigation }: any) => {
             <Text style={[styles.createButtonText, { color: colors.buttonText }]}>+</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
 
       <FlatList
         ref={feedListRef}
@@ -945,7 +981,7 @@ const FeedScreen = ({ navigation }: any) => {
           const id = item._id?.toString?.() ?? String(item._id);
           return id || `post-${index}`;
         }}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[styles.listContainer, { paddingTop: feedHeaderHeight, paddingBottom: 20 + tabBarHeight }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -955,7 +991,7 @@ const FeedScreen = ({ navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.35}
-        onScroll={handleFeedScroll}
+        onScroll={mergeOnScroll(mergeTabBarScroll(handleFeedScroll))}
         scrollEventThrottle={16}
         maintainVisibleContentPosition={{
           minIndexForVisible: 0,
@@ -995,6 +1031,7 @@ const FeedScreen = ({ navigation }: any) => {
           pointerEvents={showScrollTop || hasNewPosts ? 'box-none' : 'none'}
           style={[
             styles.scrollTopWrap,
+            { bottom: tabBarHeight + 20 },
             {
               opacity: scrollTopBtnAnim,
               transform: [
@@ -1220,6 +1257,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
+  headerFloating: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 20,
+    elevation: 20,
+  },
   headerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
@@ -1341,7 +1386,6 @@ const styles = StyleSheet.create({
   },
   scrollTopWrap: {
     position: 'absolute',
-    bottom: 20,
     alignSelf: 'center',
   },
   scrollTopButton: {

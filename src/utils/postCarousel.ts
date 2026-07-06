@@ -93,6 +93,15 @@ export function shouldShowPostCarousel(post: any): boolean {
   return false;
 }
 
+/** Non-collaborative multi-photo / carousel posts (owner manages photos at create time). */
+export function isCarouselPost(post: any): boolean {
+  if (post?.isCollaborative) return false;
+  const images = Array.isArray(post?.images)
+    ? post.images.map(String).filter(Boolean)
+    : [];
+  return images.length > 0;
+}
+
 export function getMyCollaboratorImage(post: any, userId: string): string | null {
   if (!userId) return null;
   const uid = String(userId);

@@ -69,6 +69,10 @@ export const ENDPOINTS = {
   REMOVE_CONTRIBUTOR: '/api/post/collaborative',
   /** PUT multipart — one photo per contributor on a collaborative post */
   COLLABORATOR_IMAGE: '/api/post/collaborative',
+  /** Owner only — background MP3 on collaborative posts */
+  COLLABORATOR_AUDIO: '/api/post/collaborative',
+  /** Owner only — update carousel post photos */
+  CAROUSEL_POST: '/api/post/carousel',
   
   // Comments
   ADD_COMMENT: '/api/post/reply',

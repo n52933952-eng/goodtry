@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
 import { useIsFocused, useRoute, useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -35,6 +35,8 @@ import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
 import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
 import { hideChannelPostComments } from '../../utils/channelPostUtils';
+import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
+import CollapsingStackHeader from '../../components/CollapsingStackHeader';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 const SHEET_PARTIAL = Math.round(SCREEN_H * 0.72);
@@ -69,38 +71,44 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const showToast = useShowToast();
   const { t } = useLanguage();
   const { deletePost, updatePost } = usePost();
-  
-  // Customize back button behavior based on where we came from
-  React.useEffect(() => {
-    const needsCustomBack = fromScreen === 'UserProfile' || fromScreen === 'Notifications';
-    if (needsCustomBack) {
-      navigation.setOptions({
-        headerLeft: () => (
-          <TouchableOpacity
-            onPress={() => {
-              if (navigation.canGoBack?.()) {
-                navigation.goBack();
-                return;
-              }
-              if (fromScreen === 'Notifications') {
-                navigation.navigate('Notifications', { screen: 'NotificationsMain' });
-                return;
-              }
-              if (userProfileParams) navigation.navigate('UserProfile', userProfileParams);
-            }}
-            style={{ marginLeft: 10 }}
-          >
-            <Text style={{ color: COLORS.text, fontSize: 24 }}>←</Text>
-          </TouchableOpacity>
-        ),
-      });
-    } else {
-      navigation.setOptions({
-        headerLeft: undefined,
-      });
+
+  const {
+    translateY: headerTranslateY,
+    mergeOnScroll,
+    stackHeaderHeight,
+  } = useCollapsingHeader({ forStackHeader: true });
+
+  const handlePostDetailBack = useCallback(() => {
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+      return;
     }
+    if (fromScreen === 'Notifications') {
+      navigation.navigate('Notifications', { screen: 'NotificationsMain' });
+      return;
+    }
+    if (fromScreen === 'UserProfile' && userProfileParams) {
+      navigation.navigate('UserProfile', userProfileParams);
+      return;
+    }
+    navigation.goBack();
   }, [fromScreen, navigation, userProfileParams]);
 
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTransparent: true,
+      header: () => (
+        <CollapsingStackHeader
+          title="Post"
+          translateY={headerTranslateY}
+          backgroundColor={colors.backgroundLight}
+          borderColor={colors.border}
+          tintColor={colors.text}
+          onBackPress={handlePostDetailBack}
+        />
+      ),
+    });
+  }, [navigation, colors, headerTranslateY, handlePostDetailBack]);
   const [post, setPost] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -663,7 +671,9 @@ const PostDetailScreen = ({ route, navigation }: any) => {
       <ScrollView
         ref={scrollViewRef}
         style={[styles.content, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.contentContainer}
+        contentContainerStyle={[styles.contentContainer, { paddingTop: stackHeaderHeight }]}
+        onScroll={mergeOnScroll()}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

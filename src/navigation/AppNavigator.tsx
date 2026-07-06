@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable } from 'react-native';
+import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable, Animated } from 'react-native';
+import { TabBarCollapseProvider, useTabBarCollapse } from '../context/TabBarCollapseContext';
 import { NavigationContainer, DarkTheme, DefaultTheme, CommonActions } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -256,11 +257,16 @@ const NotificationsStack = () => {
 };
 
 // Main Tab Navigator (after login)
-const MainTabs = () => {
+const MainTabsNavigator = ({
+  tabBarHeight,
+  bottomInset,
+}: {
+  tabBarHeight: number;
+  bottomInset: number;
+}) => {
   const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
-  const tabBarHeight = 60 + Math.max(0, insets.bottom);
-  
+  const { tabBarTranslateStyle } = useTabBarCollapse();
+
   return (
   <Tab.Navigator
     detachInactiveScreens={true}
@@ -271,11 +277,15 @@ const MainTabs = () => {
       sceneStyle: { backgroundColor: colors.background },
       tabBarShowLabel: false, // Remove text labels below icons
       tabBarStyle: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
         backgroundColor: colors.backgroundLight,
         borderTopColor: colors.border,
         borderTopWidth: 1,
         height: tabBarHeight,
-        paddingBottom: Math.max(0, insets.bottom),
+        paddingBottom: Math.max(0, bottomInset),
         paddingTop: 0,
         paddingHorizontal: 0,
         elevation: 8,
@@ -305,20 +315,28 @@ const MainTabs = () => {
       });
 
       return (
-        <View style={{
-          flexDirection: 'row',
-          backgroundColor: colors.backgroundLight,
-          borderTopWidth: 1,
-          borderTopColor: colors.border,
-          height: tabBarHeight,
-          paddingBottom: Math.max(0, insets.bottom),
-          width: '100%',
-          elevation: 8,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.1,
-          shadowRadius: 4,
-        }}>
+        <Animated.View style={[
+          {
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            flexDirection: 'row',
+            backgroundColor: colors.backgroundLight,
+            borderTopWidth: 1,
+            borderTopColor: colors.border,
+            height: tabBarHeight,
+            paddingBottom: Math.max(0, bottomInset),
+            width: '100%',
+            elevation: 8,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: -2 },
+            shadowOpacity: 0.1,
+            shadowRadius: 4,
+            zIndex: 50,
+          },
+          tabBarTranslateStyle,
+        ]}>
           {visibleRoutes.map((route) => {
             const { options } = props.descriptors[route.key];
             const routeIndex = props.state.routes.findIndex(r => r.key === route.key);
@@ -397,7 +415,7 @@ const MainTabs = () => {
               </Pressable>
             );
           })}
-        </View>
+        </Animated.View>
       );
     }}
   >
@@ -461,6 +479,17 @@ const MainTabs = () => {
       options={{ tabBarButton: () => null }}
     />
   </Tab.Navigator>
+  );
+};
+
+const MainTabs = () => {
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 60 + Math.max(0, insets.bottom);
+
+  return (
+    <TabBarCollapseProvider tabBarHeight={tabBarHeight}>
+      <MainTabsNavigator tabBarHeight={tabBarHeight} bottomInset={insets.bottom} />
+    </TabBarCollapseProvider>
   );
 };
 
