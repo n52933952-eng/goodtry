@@ -25,6 +25,7 @@ import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
+import { usePostEngagementSubscription, applyPostEngagement } from '../../hooks/usePostEngagementSubscription';
 import Post from '../../components/Post';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import { apiService } from '../../services/api';
@@ -46,6 +47,8 @@ import Svg, { Path } from 'react-native-svg';
 import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
 import CollapsingStackHeader from '../../components/CollapsingStackHeader';
 import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
+import { SOCKET_EVENTS } from '../../utils/constants';
+import { mergePostUpdate, postBelongsToProfile, upsertProfilePost } from '../../utils/postMerge';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam, userId: userIdParam } = route.params || {};
@@ -273,6 +276,86 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       .then((d) => setStoryMeta(d))
       .catch(() => setStoryMeta({ active: false }));
   }, [profileUser?._id]);
+
+  // Live profile updates: create, edit, delete (collab + regular)
+  useEffect(() => {
+    if (!socket || !profileUser) return;
+
+    const handlePostUpdated = (payload: any) => {
+      const updatedPost = payload?.post ?? payload;
+      const postId =
+        updatedPost?._id?.toString?.() ??
+        payload?.postId?.toString?.() ??
+        (payload?.postId ? String(payload.postId) : null);
+      if (!postId) return;
+
+      setPosts((prev) => {
+        const idx = prev.findIndex((p) => String(p._id) === postId);
+        if (idx !== -1) {
+          return upsertProfilePost(prev, updatedPost, postId);
+        }
+        const merged = mergePostUpdate({}, updatedPost);
+        if (postBelongsToProfile(merged, profileUser)) {
+          return upsertProfilePost(prev, merged, postId);
+        }
+        return prev;
+      });
+    };
+
+    const handleNewPost = (newPost: any) => {
+      if (!postBelongsToProfile(newPost, profileUser)) return;
+      const idStr = newPost?._id?.toString?.();
+      if (!idStr) return;
+
+      setPosts((prev) => {
+        if (prev.some((p) => String(p._id) === idStr)) return prev;
+        return upsertProfilePost(prev, newPost, idStr);
+      });
+      setTotalPostsCount((prev) => (prev != null ? prev + 1 : prev));
+    };
+
+    const handlePostDeleted = (payload: any) => {
+      let postId: string | null = null;
+      if (typeof payload === 'string') postId = payload;
+      else if (payload?.postId) postId = String(payload.postId);
+      if (!postId) return;
+
+      setPosts((prev) => {
+        if (!prev.some((p) => String(p._id) === postId)) return prev;
+        return prev.filter((p) => String(p._id) !== postId);
+      });
+      setTotalPostsCount((prev) => (prev != null ? Math.max(0, prev - 1) : prev));
+    };
+
+    const handlePostEngagement = (payload: any) => {
+      const postId = payload?.postId?.toString?.();
+      if (!postId) return;
+      setPosts((prev) =>
+        prev.map((p) => (String(p._id) === postId ? applyPostEngagement(p, payload) : p)),
+      );
+    };
+
+    const bind = () => {
+      socket.off(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.off(SOCKET_EVENTS.NEW_POST, handleNewPost);
+      socket.off(SOCKET_EVENTS.POST_DELETED, handlePostDeleted);
+      socket.off(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+      socket.on(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.on(SOCKET_EVENTS.NEW_POST, handleNewPost);
+      socket.on(SOCKET_EVENTS.POST_DELETED, handlePostDeleted);
+      socket.on(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+    };
+
+    bind();
+    const removeReady = (socket as any)?.addSocketReadyListener?.(bind);
+    return () => {
+      socket.off(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.off(SOCKET_EVENTS.NEW_POST, handleNewPost);
+      socket.off(SOCKET_EVENTS.POST_DELETED, handlePostDeleted);
+      socket.off(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+      removeReady?.();
+    };
+  }, [socket, profileUser]);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(STORY_STRIP_SHOULD_REFRESH, () => {
@@ -1076,8 +1159,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 if (!updated?._id) return;
                 setPosts((prev) =>
                   prev.map((p) =>
-                    String(p._id) === String(updated._id) ? { ...p, ...updated } : p
-                  )
+                    String(p._id) === String(updated._id)
+                      ? mergePostUpdate(p, updated)
+                      : p,
+                  ),
                 );
               }}
               onPostDeleted={(deletedId) => {

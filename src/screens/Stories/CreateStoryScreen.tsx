@@ -15,6 +15,7 @@ import { launchImageLibrary, Asset } from 'react-native-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiService } from '../../services/api';
 import { ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
+import { uploadManyMediaToR2 } from '../../utils/directR2Upload';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useTheme } from '../../context/ThemeContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -77,22 +78,46 @@ const CreateStoryScreen = ({ navigation }: any) => {
     }
     setUploading(true);
     try {
-      const formData = new FormData();
-      const trimmedCaption = caption.trim();
-      if (trimmedCaption) {
-        formData.append('text', trimmedCaption.slice(0, 300));
-      }
-      for (const a of assets) {
-        const uri = a.uri;
-        if (!uri) continue;
+      const trimmedCaption = caption.trim().slice(0, 300);
+      const mediaAssets = assets.filter((a) => !!a.uri);
+      const inputs = mediaAssets.map((a) => {
         const mime = a.type || 'image/jpeg';
-        const isVid = mime.startsWith('video/');
-        const ext = isVid ? 'mp4' : 'jpg';
-        const name = a.fileName || `story_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
-        formData.append('files', { uri, type: mime, name } as any);
+        const isVid = mime.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(a.uri || '');
+        return {
+          uri: a.uri || '',
+          type: mime,
+          fileName: a.fileName,
+          skipCompress: isVid,
+        };
+      });
+      if (!inputs.length) {
+        showToast('Error', 'Add at least one photo or video', 'error');
+        return;
       }
 
-      const data = await apiService.upload(ENDPOINTS.STORY_CREATE, formData);
+      const urls = await uploadManyMediaToR2(inputs, 'stories');
+      const slides = urls.map((url, i) => {
+        const a = mediaAssets[i];
+        const mime = a?.type || '';
+        const uri = a?.uri || '';
+        const isVid =
+          mime.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(uri) || /\.(mp4|mov|webm)(\?|$)/i.test(url);
+        const slide: { type: 'image' | 'video'; url: string; text?: string; durationSec?: number } = {
+          type: isVid ? 'video' : 'image',
+          url,
+        };
+        if (trimmedCaption) slide.text = trimmedCaption;
+        if (isVid && typeof a?.duration === 'number') {
+          const dur = a.duration > 1000 ? a.duration / 1000 : a.duration;
+          if (Number.isFinite(dur) && dur > 0) slide.durationSec = Math.min(dur, MAX_VIDEO_SEC);
+        }
+        return slide;
+      });
+
+      const data = await apiService.post(ENDPOINTS.STORY_CREATE, {
+        slides,
+        ...(trimmedCaption ? { text: trimmedCaption } : {}),
+      });
       const appended = !!(data as { appended?: boolean })?.appended;
       DeviceEventEmitter.emit(STORY_STRIP_SHOULD_REFRESH);
       showToast(t('success'), appended ? t('addedToYourStory') : t('storyPublished'), 'success');

@@ -30,6 +30,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import { uploadMediaToR2 } from '../../utils/directR2Upload';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
@@ -1076,38 +1077,32 @@ const ChatScreen = ({ route, navigation }: any) => {
     try {
       let response: any = null;
 
-      if (mediaSnapshot) {
-        const formData = new FormData();
-        if (isGroupConv) {
-          formData.append('conversationId', String(groupConvId));
-        } else {
-          formData.append('recipientId', recipientId);
-        }
-        formData.append('message', textSnapshot);
-        if (replySnapshot?._id) {
-          formData.append('replyTo', String(replySnapshot._id));
-        }
-
-        const uri = mediaSnapshot.uri;
-        const name = mediaSnapshot.fileName || `upload_${Date.now()}`;
-        const type = mediaSnapshot.type || 'application/octet-stream';
-
-        // @ts-ignore - RN FormData file shape
-        formData.append('file', { uri, name, type });
-
-        response = await apiService.upload(ENDPOINTS.SEND_MESSAGE, formData, 'POST', { timeout: SEND_MESSAGE_TIMEOUT_MS });
-      } else {
-        response = await apiService.post(
-          ENDPOINTS.SEND_MESSAGE,
+      let imgUrl: string | undefined;
+      if (mediaSnapshot?.uri) {
+        const mime = mediaSnapshot.type || 'application/octet-stream';
+        const isVid = String(mime).startsWith('video/');
+        imgUrl = await uploadMediaToR2(
           {
-            recipientId: isGroupConv ? undefined : recipientId,
-            conversationId: isGroupConv ? String(groupConvId) : undefined,
-            message: textSnapshot,
-            replyTo: replySnapshot?._id != null ? String(replySnapshot._id) : null,
+            uri: mediaSnapshot.uri,
+            type: mime,
+            fileName: mediaSnapshot.fileName || `upload_${Date.now()}`,
+            skipCompress: isVid,
           },
-          { timeout: SEND_MESSAGE_TIMEOUT_MS }
+          'messages',
         );
       }
+
+      response = await apiService.post(
+        ENDPOINTS.SEND_MESSAGE,
+        {
+          recipientId: isGroupConv ? undefined : recipientId,
+          conversationId: isGroupConv ? String(groupConvId) : undefined,
+          message: textSnapshot,
+          replyTo: replySnapshot?._id != null ? String(replySnapshot._id) : null,
+          ...(imgUrl ? { img: imgUrl } : {}),
+        },
+        { timeout: SEND_MESSAGE_TIMEOUT_MS },
+      );
 
       if (response) {
         const messageWithSender = normalizeOutgoingDeliveryFields({

@@ -29,6 +29,7 @@ import {
 } from '../utils/videoDuration';
 import { isCarouselPost, MAX_POST_CAROUSEL_IMAGES } from '../utils/postCarousel';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
+import { uploadMediaToR2, uploadManyMediaToR2 } from '../utils/directR2Upload';
 
 const MAX_LEN = 500;
 
@@ -204,25 +205,29 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     setSaving(true);
     try {
       if (isCarousel) {
-        const formData = new FormData();
-        formData.append('text', trimmed);
-        const imageSlots = carouselSlots.map((slot) =>
-          slot.kind === 'existing' ? { kind: 'keep', url: slot.url } : { kind: 'new' },
-        );
-        formData.append('imageSlots', JSON.stringify(imageSlots));
-        for (const slot of carouselSlots) {
-          if (slot.kind === 'new') {
-            formData.append('images', {
-              uri: slot.uri,
-              type: slot.mime,
-              name: slot.fileName,
-            } as any);
+        const newSlots = carouselSlots.filter((s) => s.kind === 'new');
+        const uploadedUrls =
+          newSlots.length > 0
+            ? await uploadManyMediaToR2(
+                newSlots.map((s) => ({
+                  uri: s.uri,
+                  type: s.mime,
+                  fileName: s.fileName,
+                })),
+                'posts',
+              )
+            : [];
+        let newIdx = 0;
+        const imageSlots = carouselSlots.map((slot) => {
+          if (slot.kind === 'existing') {
+            return { kind: 'keep', url: slot.url };
           }
-        }
-        const data = await apiService.upload(
+          const url = uploadedUrls[newIdx++];
+          return { kind: 'url', url };
+        });
+        const data = await apiService.put(
           `${ENDPOINTS.CAROUSEL_POST}/${post._id}/images`,
-          formData,
-          'PUT',
+          { text: trimmed, imageSlots },
         );
         const updated = data?.post ?? data;
         if (updated?._id) {
@@ -233,25 +238,26 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
           showToast(t('error'), t('failedToUpdatePost'), 'error');
         }
       } else if (willUploadNew) {
-        const formData = new FormData();
-        formData.append('text', trimmed);
         const mime =
           imageData?.type || (isVideo ? 'video/mp4' : 'image/jpeg');
         const fallbackExt = mime.includes('video') ? 'mp4' : 'jpg';
-        const imageFile = {
-          uri: imageUri,
-          type: mime,
-          name:
-            imageData?.fileName ||
-            (isVideo ? `video_${Date.now()}.${fallbackExt}` : `image_${Date.now()}.${fallbackExt}`),
-        };
-        formData.append('file', imageFile as any);
-
-        const data = await apiService.upload(
-          `${ENDPOINTS.UPDATE_POST}/${post._id}`,
-          formData,
-          'PUT'
+        const img = await uploadMediaToR2(
+          {
+            uri: imageUri!,
+            type: mime,
+            fileName:
+              imageData?.fileName ||
+              (isVideo
+                ? `video_${Date.now()}.${fallbackExt}`
+                : `image_${Date.now()}.${fallbackExt}`),
+            skipCompress: !!isVideo,
+          },
+          'posts',
         );
+        const data = await apiService.put(`${ENDPOINTS.UPDATE_POST}/${post._id}`, {
+          text: trimmed,
+          img,
+        });
         const updated = data?.post ?? data;
         if (updated?._id) {
           showToast(t('success'), t('postUpdatedSuccessfully'), 'success');

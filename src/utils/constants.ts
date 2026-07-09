@@ -54,6 +54,8 @@ export const ENDPOINTS = {
   HIDE_FEED_POST: '/api/post/feed/hide',
   GET_HIDDEN_FEED_POST_IDS: '/api/post/feed/hidden-ids',
   CREATE_POST: '/api/post/create',
+  /** POST /api/media/presign — signed R2 PUT URL (client uploads direct to Cloudflare) */
+  MEDIA_PRESIGN: '/api/media/presign',
   /** PUT /api/post/:id — update text (owner or collaborative contributor) */
   UPDATE_POST: '/api/post',
   DELETE_POST: '/api/post',
@@ -67,7 +69,7 @@ export const ENDPOINTS = {
   // Collaborative Posts
   ADD_CONTRIBUTOR: '/api/post/collaborative',
   REMOVE_CONTRIBUTOR: '/api/post/collaborative',
-  /** PUT multipart — one photo per contributor on a collaborative post */
+  /** PUT JSON — one photo per contributor on a collaborative post (R2 URL) */
   COLLABORATOR_IMAGE: '/api/post/collaborative',
   /** Owner only — background MP3 on collaborative posts */
   COLLABORATOR_AUDIO: '/api/post/collaborative',
@@ -160,6 +162,7 @@ export const SOCKET_EVENTS = {
   NEW_POST: 'newPost',
   POST_UPDATED: 'postUpdated',
   POST_DELETED: 'postDeleted',
+  POST_ENGAGEMENT: 'postEngagement',
   NEW_COMMENT: 'newComment',
   FOOTBALL_MATCH_UPDATE: 'footballMatchUpdate',
   CHESS_CHALLENGE: 'chessChallenge',

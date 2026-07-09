@@ -87,8 +87,10 @@ export function getPostCarouselAudio(post: any): string | null {
 export function shouldShowPostCarousel(post: any): boolean {
   const slides = getPostCarouselSlides(post);
   if (slides.length > 1) return true;
-  if (slides.length === 1 && Array.isArray(post?.images) && post.images.length > 0) return true;
   if (slides.length === 1 && getPostCarouselAudio(post)) return true;
+  // Multi-photo carousel only — a single stored image uses the normal post.img viewer.
+  if (slides.length === 1 && Array.isArray(post?.images) && post.images.length > 1) return true;
+  // Collaborative posts always use carousel UI (contributor badge, collab edit) even with 1 photo.
   if (post?.isCollaborative && slides.length > 0) return true;
   return false;
 }
@@ -99,7 +101,9 @@ export function isCarouselPost(post: any): boolean {
   const images = Array.isArray(post?.images)
     ? post.images.map(String).filter(Boolean)
     : [];
-  return images.length > 0;
+  if (images.length > 1) return true;
+  if (images.length === 1 && getPostCarouselAudio(post)) return true;
+  return false;
 }
 
 export function getMyCollaboratorImage(post: any, userId: string): string | null {

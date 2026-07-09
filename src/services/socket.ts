@@ -195,6 +195,13 @@ class SocketService {
     this.socket.emit(event, data);
   }
 
+  /** Emit only when connected — no console warning (for subscribe/unsubscribe on mount). */
+  emitIfConnected(event: string, data?: any): boolean {
+    if (!this.socket?.connected) return false;
+    this.socket.emit(event, data);
+    return true;
+  }
+
   getSocket(): Socket | null {
     return this.socket;
   }

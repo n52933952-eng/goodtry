@@ -27,9 +27,10 @@ type Props = {
   uri: string;
   containerStyle?: StyleProp<ViewStyle>;
   onPressImage?: () => void;
+  onImageLoad?: (e: any) => void;
 };
 
-const FeedPostImageZoom: React.FC<Props> = ({ uri, containerStyle, onPressImage }) => {
+const FeedPostImageZoom: React.FC<Props> = ({ uri, containerStyle, onPressImage, onImageLoad }) => {
   const { t } = useLanguage();
   const showToast = useShowToast();
   const [zoom, setZoom] = useState(1);
@@ -216,6 +217,7 @@ const FeedPostImageZoom: React.FC<Props> = ({ uri, containerStyle, onPressImage 
               },
             ]}
             resizeMode="contain"
+            onLoad={onImageLoad}
           />
         </Pressable>
         {zoom > 1 && <View style={styles.dragOverlay} {...panResponder.panHandlers} />}

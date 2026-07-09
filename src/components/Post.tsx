@@ -30,6 +30,7 @@ import {
   subscribeChessFeedEndedStore,
 } from '../utils/chessFeedEndedStore';
 import { useShowToast } from '../hooks/useShowToast';
+import { usePostEngagementSubscription } from '../hooks/usePostEngagementSubscription';
 import { useLanguage } from '../context/LanguageContext';
 import VideoFeedPreview from './VideoFeedPreview';
 import AddContributorModal from './AddContributorModal';
@@ -293,6 +294,7 @@ const Post: React.FC<PostProps> = ({
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
   const { socket, isUserOnline } = useSocket();
+  usePostEngagementSubscription(post?._id);
   const showToast = useShowToast();
 
   const [addContribOpen, setAddContribOpen] = useState(false);
@@ -305,6 +307,7 @@ const Post: React.FC<PostProps> = ({
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
   const [postImagePreviewOpen, setPostImagePreviewOpen] = useState(false);
   const [carouselPreviewUri, setCarouselPreviewUri] = useState<string | null>(null);
+  const [carouselPreviewIndex, setCarouselPreviewIndex] = useState(0);
 
   // Contributor hydration: sometimes API/socket returns contributor ids only. Fetch profiles so avatars show without reload.
   const [contribHydrateMap, setContribHydrateMap] = useState<Record<string, any>>({});
@@ -387,6 +390,7 @@ const Post: React.FC<PostProps> = ({
   const [feedVideoErrored, setFeedVideoErrored] = useState(false);
   /** Real video aspect ratio (width / height) so portrait clips aren't shown tiny in a 16:9 box. */
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
+  const [imageAspect, setImageAspect] = useState<number | null>(null);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
   const mediaShouldPlay = autoPlayMedia && screenFocused;
@@ -776,7 +780,7 @@ const Post: React.FC<PostProps> = ({
   useEffect(() => {
     setLocalLiked(post.likedByMe ?? post.likes?.includes(user?._id) ?? false);
     setLocalLikesCount(post.likeCount ?? post.likes?.length ?? 0);
-  }, [post.likes, post.likeCount, post.likedByMe, user?._id]);
+  }, [post.likes, post.likeCount, post.likedByMe, post.likePreview, user?._id]);
 
   useEffect(() => {
     setFeedVideoReady(false);
@@ -1468,6 +1472,10 @@ const Post: React.FC<PostProps> = ({
   const postImagePreviewUrl = String(post.img || '');
   const displayImageUrl = mediaDisplayUrl(String(post.img || ''));
   const displayVideoUrl = mediaDisplayUrl(String(post.img || ''));
+
+  useEffect(() => {
+    setImageAspect(null);
+  }, [displayImageUrl]);
   const thumbnailVideoUrl = String(post.img || '');
   const serverVideoThumbnail =
     post.thumbnail || post.videoThumbnail || post.thumb || post.thumbnailUrl || null;
@@ -1539,6 +1547,16 @@ const Post: React.FC<PostProps> = ({
   const feedMediaMaxHeight = Math.round(windowHeight * 0.52);
   const capFeedMediaHeight = (h: number) =>
     isFeedListCard ? Math.min(h, feedMediaMaxHeight) : h;
+  /** Single-image box: a bit shorter so likes / comments stay easy to tap (feed, profile, post detail). */
+  const singleImageMaxHeight = Math.round(
+    windowHeight * (disableNavigation ? 0.36 : 0.42),
+  );
+  const capSingleImageHeight = (h: number) => Math.min(h, singleImageMaxHeight);
+  /** Carousel box on post detail: cap height so comment field stays reachable. */
+  const carouselMaxHeight = Math.round(
+    windowHeight * (disableNavigation ? 0.36 : isFeedListCard ? 0.52 : 0.42),
+  );
+  const capCarouselHeight = (h: number) => Math.min(h, carouselMaxHeight);
   const showContributorNamesOnProfile = fromScreen === 'UserProfile';
   const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
   const feedWideContainerStyle = useFeedWideLayout
@@ -1569,9 +1587,6 @@ const Post: React.FC<PostProps> = ({
         overflow: 'hidden' as const,
       }
     : null;
-  const postImageStyle = useFeedWideLayout
-    ? [styles.postImage, feedMediaBleedStyle]
-    : styles.postImage;
   const carouselSlides = useMemo(
     () => getPostCarouselSlides(post),
     [post?.isCollaborative, post?.collaboratorImages, post?.images, post?.img, post?.contributors, post?.postedBy],
@@ -1579,14 +1594,20 @@ const Post: React.FC<PostProps> = ({
   const carouselAudio = useMemo(() => getPostCarouselAudio(post), [post?.audio]);
   const showPostMediaCarousel = shouldShowPostCarousel(post);
   /** Match portrait video posts — tall media area instead of a short 200px strip. */
-  const carouselMediaWidth = useFeedWideLayout ? feedCard.screenWidth : width - 30;
-  const CAROUSEL_PORTRAIT_ASPECT = 0.75;
-  const carouselHeight = capFeedMediaHeight(
+  const carouselMediaWidth = useFeedWideLayout
+    ? feedCard.screenWidth
+    : fullWidthCard
+      ? width
+      : width - 30;
+  const CAROUSEL_PORTRAIT_ASPECT = 0.82;
+  const carouselHeight = capCarouselHeight(
     Math.round(carouselMediaWidth / CAROUSEL_PORTRAIT_ASPECT),
   );
   const carouselContainerStyle = useFeedWideLayout
     ? [styles.postImage, feedMediaBleedStyle, { height: carouselHeight, marginBottom: 10 }]
-    : [styles.postImage, { height: carouselHeight, marginBottom: 10 }];
+    : fullWidthCard
+      ? [styles.postImage, { width: '100%', height: carouselHeight, borderRadius: 0, marginBottom: 10 }]
+      : [styles.postImage, { height: carouselHeight, marginBottom: 10 }];
   const videoContainerStyle = useFeedWideLayout
     ? [styles.videoContainer, feedMediaBleedStyle]
     : [styles.videoContainer, { height: feedMediaHeight }];
@@ -1609,6 +1630,39 @@ const Post: React.FC<PostProps> = ({
   const videoOnlyContainerStyle = useFeedWideLayout
     ? [styles.videoContainer, feedMediaBleedStyle, { height: dynamicVideoHeight }]
     : [styles.videoContainer, { height: dynamicVideoHeight }];
+
+  const SINGLE_IMAGE_DEFAULT_ASPECT = 0.82;
+
+  const singleImageMediaWidth = useFeedWideLayout
+    ? feedCard.screenWidth
+    : fullWidthCard
+      ? width
+      : width - 30;
+  const singleImageHeight = useMemo(() => {
+    const defaultH = capSingleImageHeight(
+      Math.round(singleImageMediaWidth / SINGLE_IMAGE_DEFAULT_ASPECT),
+    );
+    if (!imageAspect || !Number.isFinite(imageAspect) || imageAspect <= 0) {
+      return defaultH;
+    }
+    const clamped = Math.max(MIN_VIDEO_ASPECT, Math.min(imageAspect, MAX_VIDEO_ASPECT));
+    return capSingleImageHeight(Math.round(singleImageMediaWidth / clamped));
+  }, [
+    imageAspect,
+    singleImageMediaWidth,
+    singleImageMaxHeight,
+    disableNavigation,
+  ]);
+  const postImageStyle = useFeedWideLayout
+    ? [styles.postImage, feedMediaBleedStyle, { height: singleImageHeight }]
+    : fullWidthCard
+      ? [styles.postImage, { width: '100%', height: singleImageHeight, borderRadius: 0, marginBottom: 10 }]
+      : [styles.postImage, { height: singleImageHeight }];
+
+  const onPostImageLoad = useCallback((e: any) => {
+    const { width: w, height: h } = e?.nativeEvent?.source || {};
+    if (w > 0 && h > 0) setImageAspect(w / h);
+  }, []);
 
   const onAvatarPress = (e: any) => {
     e.stopPropagation();
@@ -2295,17 +2349,21 @@ const Post: React.FC<PostProps> = ({
               screenFocused={screenFocused}
               autoPlayMedia={mediaShouldPlay}
               showContributorNames={!!post.isCollaborative}
-              onPressImagePreview={(uri) => {
+              onPressImagePreview={(uri, index) => {
                 setCarouselPreviewUri(uri);
+                setCarouselPreviewIndex(typeof index === 'number' ? index : 0);
                 setPostImagePreviewOpen(true);
               }}
             />
             <PinchZoomImageModal
               visible={postImagePreviewOpen && !!(carouselPreviewUri || postImagePreviewUrl)}
+              uris={carouselSlides.map((s) => mediaDisplayUrl(s.img))}
+              initialIndex={carouselPreviewIndex}
               uri={carouselPreviewUri || postImagePreviewUrl}
               onClose={() => {
                 setPostImagePreviewOpen(false);
                 setCarouselPreviewUri(null);
+                setCarouselPreviewIndex(0);
               }}
               closeAccessibilityLabel={t('close')}
             />
@@ -2337,6 +2395,7 @@ const Post: React.FC<PostProps> = ({
                 source={{ uri: displayImageUrl }}
                 style={postImageStyle}
                 resizeMode="contain"
+                onLoad={onPostImageLoad}
               />
               {canPreviewPostImage ? (
                 <View style={styles.postImageExpandBtn} pointerEvents="none">
@@ -2356,6 +2415,7 @@ const Post: React.FC<PostProps> = ({
             uri={displayImageUrl}
             containerStyle={postImageStyle}
             onPressImage={() => navigateToPostDetail(post._id)}
+            onImageLoad={onPostImageLoad}
           />
         )
       ) : null}
@@ -3195,7 +3255,7 @@ const styles = StyleSheet.create({
   },
   postImageExpandBtn: {
     position: 'absolute',
-    right: 10,
+    left: 10,
     bottom: 18,
     width: 34,
     height: 34,

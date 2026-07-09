@@ -202,7 +202,7 @@ export const useImagePicker = () => {
 
       const result = await launchCamera({
         mediaType: 'video',
-        videoQuality: 'high',
+        videoQuality: 'medium',
         durationLimit: MAX_POST_VIDEO_DURATION_SEC,
       });
 

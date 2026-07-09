@@ -20,6 +20,8 @@ import { useShowToast } from '../hooks/useShowToast';
 import { useImagePicker } from '../hooks/useImagePicker';
 import { useUser } from '../context/UserContext';
 import { getMyCollaboratorImage } from '../utils/postCarousel';
+import { mediaDisplayUrl } from '../utils/mediaUrl';
+import { uploadMediaToR2 } from '../utils/directR2Upload';
 
 type Props = {
   visible: boolean;
@@ -34,9 +36,12 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
   const { user } = useUser();
   const showToast = useShowToast();
   const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const { imageUri, imageData, pickImage, clearImage } = useImagePicker();
   const currentUserId = user?._id != null ? String(user._id) : '';
-  const hasExistingPhoto = !!getMyCollaboratorImage(post, currentUserId);
+  const existingPhotoUrl = getMyCollaboratorImage(post, currentUserId);
+  const hasExistingPhoto = !!existingPhotoUrl;
+  const displayExistingPhoto = existingPhotoUrl ? mediaDisplayUrl(existingPhotoUrl) : '';
 
   useEffect(() => {
     if (visible) clearImage();
@@ -62,18 +67,19 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
 
     setSaving(true);
     try {
-      const formData = new FormData();
       const mime = imageData.type || 'image/jpeg';
-      formData.append('file', {
-        uri: imageUri,
-        type: mime,
-        name: imageData.fileName || `photo_${Date.now()}.jpg`,
-      } as any);
+      const img = await uploadMediaToR2(
+        {
+          uri: imageUri,
+          type: mime,
+          fileName: imageData.fileName || `photo_${Date.now()}.jpg`,
+        },
+        'posts',
+      );
 
-      const data = await apiService.upload(
+      const data = await apiService.put(
         `${ENDPOINTS.COLLABORATOR_IMAGE}/${post._id}/contributor-image`,
-        formData,
-        'PUT',
+        { img },
       );
       const updated = data?.post ?? data;
       if (updated?._id) {
@@ -89,6 +95,39 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
       setSaving(false);
     }
   };
+
+  const handleRemove = () => {
+    if (!post?._id || !hasExistingPhoto) return;
+    Alert.alert(t('removeYourPhoto'), t('removeYourPhotoQuestion'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('removeYourPhoto'),
+        style: 'destructive',
+        onPress: async () => {
+          setRemoving(true);
+          try {
+            const data = await apiService.delete(
+              `${ENDPOINTS.COLLABORATOR_IMAGE}/${post._id}/contributor-image`,
+            );
+            const updated = data?.post ?? data;
+            if (updated?._id) {
+              showToast(t('success'), t('photoRemoved'), 'success');
+              onSaved(updated);
+              onClose();
+            } else {
+              showToast(t('error'), t('failedToRemovePhoto'), 'error');
+            }
+          } catch (e: any) {
+            showToast(t('error'), e?.message || t('failedToRemovePhoto'), 'error');
+          } finally {
+            setRemoving(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  const busy = saving || removing;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -106,23 +145,39 @@ const AddCollaboratorPhotoModal: React.FC<Props> = ({ visible, onClose, post, on
           <TouchableOpacity
             style={[styles.pickBtn, { borderColor: colors.border }]}
             onPress={openPicker}
-            disabled={saving}
+            disabled={busy}
           >
             <Text style={{ color: colors.primary }}>{imageUri ? t('changeYourPhoto') : t('selectPhoto')}</Text>
           </TouchableOpacity>
 
           {imageUri ? (
             <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="contain" />
+          ) : hasExistingPhoto ? (
+            <Image source={{ uri: displayExistingPhoto }} style={styles.preview} resizeMode="contain" />
+          ) : null}
+
+          {hasExistingPhoto ? (
+            <TouchableOpacity
+              style={[styles.removeBtn, { borderColor: colors.error }]}
+              onPress={handleRemove}
+              disabled={busy}
+            >
+              {removing ? (
+                <ActivityIndicator color={colors.error} size="small" />
+              ) : (
+                <Text style={{ color: colors.error, fontWeight: '700' }}>{t('removeYourPhoto')}</Text>
+              )}
+            </TouchableOpacity>
           ) : null}
 
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={saving}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={busy}>
               <Text style={{ color: colors.textGray }}>{t('cancel')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.saveBtn, { backgroundColor: colors.primary, opacity: saving ? 0.7 : 1 }]}
               onPress={handleSave}
-              disabled={saving || !imageUri}
+              disabled={busy || !imageUri}
             >
               {saving ? (
                 <ActivityIndicator color="#fff" size="small" />
@@ -161,6 +216,13 @@ const styles = StyleSheet.create({
     height: 220,
     borderRadius: 10,
     backgroundColor: '#111',
+    marginBottom: 16,
+  },
+  removeBtn: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
     marginBottom: 16,
   },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16, alignItems: 'center' },

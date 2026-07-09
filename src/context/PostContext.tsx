@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useUser } from './UserContext';
+import { mergePostUpdate } from '../utils/postMerge';
 import { dedupeGamePostsForFeed } from '../utils/dedupeGameFeedPosts';
 import { getGameFeedDedupeKey, mergeGameFeedPostData } from '../utils/gameFeedPostUtils';
 import { apiService } from '../services/api';
@@ -450,9 +451,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       const target = String(postId);
       const next = safeArray.map((post) =>
-        String(post._id) === target ? { ...post, ...updates } : post
+        String(post._id) === target ? mergePostUpdate(post, updates) : post,
       );
-      // Re-sort so edited / contributor-updated posts rise like the server feed (updatedAt)
       return sortPostsNewestFirst(next);
     });
   }, [sortPostsNewestFirst]);

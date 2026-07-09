@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import Sound from 'react-native-sound';
 import SafeImage from './SafeImage';
+import { useLanguage } from '../context/LanguageContext';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
 import {
   FEED_VIDEO_PAUSE_ALL,
@@ -39,7 +40,7 @@ type Props = {
   /** Collaborative posts — show contributor name on each slide. */
   showContributorNames?: boolean;
   onPressSlide?: () => void;
-  onPressImagePreview?: (uri: string) => void;
+  onPressImagePreview?: (uri: string, index?: number) => void;
 };
 
 let soundCategoryReady = false;
@@ -64,6 +65,7 @@ const PostMediaCarousel: React.FC<Props> = ({
   onPressSlide,
   onPressImagePreview,
 }) => {
+  const { t } = useLanguage();
   const [activeIndex, setActiveIndex] = useState(0);
   const [layoutWidth, setLayoutWidth] = useState(0);
   const [feedSoundPrefTick, setFeedSoundPrefTick] = useState(0);
@@ -351,11 +353,11 @@ const PostMediaCarousel: React.FC<Props> = ({
             ? (_, index) => ({ length: slideW, offset: slideW * index, index })
             : undefined
         }
-        renderItem={({ item }) => (
+        renderItem={({ item, index }) => (
           <TouchableOpacity
             activeOpacity={0.95}
             onPress={() => {
-              if (onPressImagePreview) onPressImagePreview(item.img);
+              if (onPressImagePreview) onPressImagePreview(item.img, index);
               else if (onPressSlide) onPressSlide();
             }}
             disabled={!onPressSlide && !onPressImagePreview}
@@ -407,6 +409,23 @@ const PostMediaCarousel: React.FC<Props> = ({
             {activeIndex + 1}/{slides.length}
           </Text>
         </View>
+      ) : null}
+
+      {onPressImagePreview ? (
+        <TouchableOpacity
+          style={styles.expandButton}
+          onPress={(e) => {
+            e?.stopPropagation?.();
+            const uri = slides[activeIndex]?.img;
+            if (uri) onPressImagePreview(uri, activeIndex);
+          }}
+          activeOpacity={0.85}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel={t('viewFullImage')}
+        >
+          <Text style={styles.expandButtonText}>⛶</Text>
+        </TouchableOpacity>
       ) : null}
 
       {audioUrl ? (
@@ -505,6 +524,27 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontWeight: '700',
+  },
+  expandButton: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.52)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+    zIndex: 21,
+    elevation: 21,
+  },
+  expandButtonText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+    lineHeight: 20,
   },
   muteButton: {
     position: 'absolute',

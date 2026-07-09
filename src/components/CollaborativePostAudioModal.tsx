@@ -17,6 +17,7 @@ import { ENDPOINTS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useImagePicker } from '../hooks/useImagePicker';
 import { getPostCarouselAudio, isCarouselPost } from '../utils/postCarousel';
+import { uploadMediaToR2 } from '../utils/directR2Upload';
 
 type Props = {
   visible: boolean;
@@ -47,17 +48,19 @@ const CollaborativePostAudioModal: React.FC<Props> = ({ visible, onClose, post, 
 
     setSaving(true);
     try {
-      const formData = new FormData();
-      formData.append('audio', {
-        uri: audioFile.uri,
-        type: audioFile.type || 'audio/mpeg',
-        name: audioFile.fileName || `audio_${Date.now()}.mp3`,
-      } as any);
+      const audio = await uploadMediaToR2(
+        {
+          uri: audioFile.uri,
+          type: audioFile.type || 'audio/mpeg',
+          fileName: audioFile.fileName || `audio_${Date.now()}.mp3`,
+          skipCompress: true,
+        },
+        'posts',
+      );
 
-      const data = await apiService.upload(
+      const data = await apiService.put(
         `${ENDPOINTS.COLLABORATOR_AUDIO}/${post._id}/audio`,
-        formData,
-        'PUT',
+        { audio },
       );
       const updated = data?.post ?? data;
       if (updated?._id) {

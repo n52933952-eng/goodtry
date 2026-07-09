@@ -644,6 +644,16 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       updatePost(postId, post);
     });
 
+    socketService.on(SOCKET_EVENTS.POST_ENGAGEMENT, (payload: any) => {
+      const postId = payload?.postId?.toString?.();
+      if (!postId) return;
+      const updates: Record<string, unknown> = {};
+      if (typeof payload.likeCount === 'number') updates.likeCount = payload.likeCount;
+      if (payload.likePreview !== undefined) updates.likePreview = payload.likePreview;
+      if (typeof payload.replyCount === 'number') updates.replyCount = payload.replyCount;
+      if (Object.keys(updates).length) updatePost(postId, updates);
+    });
+
     // Listen for post deletions
     socketService.on(SOCKET_EVENTS.POST_DELETED, (payload) => {
       // Backend sends: { postId: post._id } or just postId string
@@ -933,6 +943,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off('messageDelivered');
       socketService.off(SOCKET_EVENTS.NEW_POST);
       socketService.off(SOCKET_EVENTS.POST_UPDATED);
+      socketService.off(SOCKET_EVENTS.POST_ENGAGEMENT);
       socketService.off(SOCKET_EVENTS.POST_DELETED);
       socketService.off(SOCKET_EVENTS.FOOTBALL_MATCH_UPDATE);
       socketService.off(SOCKET_EVENTS.CHESS_CHALLENGE);

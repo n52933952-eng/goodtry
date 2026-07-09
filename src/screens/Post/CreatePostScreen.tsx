@@ -35,6 +35,7 @@ import {
   MAX_POST_VIDEO_DURATION_SEC,
   MAX_POST_AUDIO_DURATION_SEC,
 } from '../../utils/videoDuration';
+import { uploadManyMediaToR2, uploadMediaToR2 } from '../../utils/directR2Upload';
 
 const MAX_CHAR = 500;
 const PREVIEW_ZOOM_MIN = 1;
@@ -242,136 +243,72 @@ const CreatePostScreen = ({ navigation }: any) => {
 
     setLoading(true);
     try {
+      const payload: any = {
+        text: text.trim() || '',
+        postedBy: user?._id,
+      };
+      if (isCollaborative) {
+        payload.isCollaborative = true;
+        payload.contributors = buildInitialContributorIds(user?._id, selectedCollaborators);
+      }
+
       if (carouselImages.length > 0 && !isCollaborative) {
-        const formData = new FormData();
-        formData.append('text', text.trim() || '');
-        formData.append('postedBy', user?._id || '');
-        if (isCollaborative) {
-          formData.append('isCollaborative', 'true');
-          formData.append(
-            'contributors',
-            JSON.stringify(buildInitialContributorIds(user?._id, selectedCollaborators))
-          );
-        }
-        for (const asset of carouselImages) {
-          const mime = asset.type || 'image/jpeg';
-          formData.append('images', {
-            uri: asset.uri,
-            type: mime,
-            name: asset.fileName || `image_${Date.now()}.jpg`,
-          } as any);
-        }
+        const imageUrls = await uploadManyMediaToR2(
+          carouselImages.map((asset) => ({
+            uri: asset.uri || '',
+            type: asset.type,
+            fileName: asset.fileName,
+          })),
+          'posts',
+        );
+        payload.images = imageUrls;
         if (audioFile) {
-          formData.append('audio', {
-            uri: audioFile.uri,
-            type: audioFile.type || 'audio/mpeg',
-            name: audioFile.fileName || `audio_${Date.now()}.mp3`,
-          } as any);
-        }
-        const response = await apiService.upload(ENDPOINTS.CREATE_POST, formData);
-        const postData = response.post || response;
-        if (postData?._id) {
-          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
-          setText('');
-          clearAllMedia();
-          setIsCollaborative(false);
-          setSelectedCollaborators([]);
-          setCarouselPreviewIndex(0);
-          await new Promise<void>((resolve) => setTimeout(resolve, 50));
-        } else {
-          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
+          payload.audio = await uploadMediaToR2(
+            {
+              uri: audioFile.uri,
+              type: audioFile.type,
+              fileName: audioFile.fileName,
+              skipCompress: true,
+            },
+            'posts',
+          );
         }
       } else if (imageUri && imageData) {
-        const formData = new FormData();
-        formData.append('text', text.trim() || '');
-        formData.append('postedBy', user?._id || '');
-        // Match web: only send collaborative flags when enabled (avoids string "false" being truthy on the server)
-        if (isCollaborative) {
-          formData.append('isCollaborative', 'true');
-          formData.append(
-            'contributors',
-            JSON.stringify(buildInitialContributorIds(user?._id, selectedCollaborators))
+        const mime = imageData?.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+        payload.img = await uploadMediaToR2(
+          {
+            uri: imageUri,
+            type: mime,
+            fileName: imageData?.fileName,
+            skipCompress: isVideo,
+          },
+          'posts',
+        );
+        if (audioFile) {
+          payload.audio = await uploadMediaToR2(
+            {
+              uri: audioFile.uri,
+              type: audioFile.type,
+              fileName: audioFile.fileName,
+              skipCompress: true,
+            },
+            'posts',
           );
         }
+      }
 
-        const mime =
-          imageData?.type ||
-          (isVideo ? 'video/mp4' : 'image/jpeg');
-        const fallbackExt = mime.includes('video') ? 'mp4' : 'jpg';
-        const imageFile = {
-          uri: imageUri,
-          type: mime,
-          name:
-            imageData?.fileName ||
-            (isVideo ? `video_${Date.now()}.${fallbackExt}` : `image_${Date.now()}.${fallbackExt}`),
-        };
-
-        formData.append('file', imageFile as any);
-
-        if (audioFile) {
-          formData.append('audio', {
-            uri: audioFile.uri,
-            type: audioFile.type || 'audio/mpeg',
-            name: audioFile.fileName || `audio_${Date.now()}.mp3`,
-          } as any);
-        }
-
-        const response = await apiService.upload(ENDPOINTS.CREATE_POST, formData);
-        console.log('📝 [CreatePost] Upload response:', response);
-        
-        // Backend returns { message: '...', post: { _id: '...', ... } }
-        const postData = response.post || response;
-        
-        if (postData && postData._id) {
-          // Don't add own posts to feed - feed only shows posts from users you follow
-          // The post will appear in feed after refresh when backend filters correctly
-          // addPost(postData); // Removed - feed shouldn't show own posts
-          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
-          
-          // Clear inputs immediately after successful post
-          console.log('🧹 [CreatePost] Clearing form - text, image, collaborative');
-          setText('');
-          clearAllMedia();
-          setIsCollaborative(false);
-          setSelectedCollaborators([]);
-          setCarouselPreviewIndex(0);
-
-          // Force a small delay to ensure UI updates
-          await new Promise<void>((resolve) => setTimeout(resolve, 50));
-        } else {
-          console.warn('⚠️ [CreatePost] Response missing _id:', response);
-          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
-        }
+      const response = await apiService.post(ENDPOINTS.CREATE_POST, payload);
+      const postData = response.post || response;
+      if (postData?._id) {
+        showToast(t('success'), t('postCreatedSuccessfully'), 'success');
+        setText('');
+        clearAllMedia();
+        setIsCollaborative(false);
+        setSelectedCollaborators([]);
+        setCarouselPreviewIndex(0);
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
       } else {
-        const postData: any = {
-          text: text.trim(),
-          postedBy: user?._id,
-        };
-        if (isCollaborative) {
-          postData.isCollaborative = true;
-          postData.contributors = buildInitialContributorIds(user?._id, selectedCollaborators);
-        }
-        const response = await apiService.post(ENDPOINTS.CREATE_POST, postData);
-        console.log('📝 [CreatePost] Post response:', response);
-        
-        // Backend returns { message: '...', post: { _id: '...', ... } }
-        const postDataFromResponse = response.post || response;
-        
-        if (postDataFromResponse && postDataFromResponse._id) {
-          showToast(t('success'), t('postCreatedSuccessfully'), 'success');
-          
-          setText('');
-          clearAllMedia();
-          setIsCollaborative(false);
-          setSelectedCollaborators([]);
-          setCarouselPreviewIndex(0);
-
-          // Force a small delay to ensure UI updates
-          await new Promise<void>((resolve) => setTimeout(resolve, 50));
-        } else {
-          console.warn('⚠️ [CreatePost] Response missing _id:', response);
-          showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
-        }
+        showToast(t('error'), t('postCreatedButResponseInvalid'), 'error');
       }
     } catch (error: any) {
       console.error('Error creating post:', error);

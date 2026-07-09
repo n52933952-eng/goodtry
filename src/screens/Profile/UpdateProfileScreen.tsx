@@ -16,6 +16,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import { uploadMediaToR2 } from '../../utils/directR2Upload';
 import { useLanguage } from '../../context/LanguageContext';
 
 const UpdateProfileScreen = ({ navigation }: any) => {
@@ -65,47 +66,33 @@ const UpdateProfileScreen = ({ navigation }: any) => {
 
     setUpdating(true);
     try {
-      let response: any = null;
       const url = `${ENDPOINTS.UPDATE_USER_PROFILE}/${user._id}`;
       console.log('🧑‍💼 [UpdateProfile] Updating profile via:', url);
 
-      // If image selected, upload via FormData
-      if (imageFile) {
-        const formData = new FormData();
-        formData.append('name', inputs.name);
-        formData.append('username', inputs.username);
-        formData.append('email', inputs.email);
-        formData.append('bio', inputs.bio || '');
-        formData.append('country', inputs.country || '');
-        if (inputs.password.trim()) {
-          formData.append('password', inputs.password);
-        }
-
-        const uri = imageFile.uri;
-        const name = imageFile.fileName || `profile_${Date.now()}.jpg`;
-        const type = imageFile.type || 'image/jpeg';
-
-        // @ts-ignore - RN FormData file shape
-        formData.append('file', { uri, name, type });
-
-        // Backend expects PUT method for /api/user/update/:id (same as web)
-        response = await apiService.upload(url, formData, 'PUT');
-      } else {
-        // No image - just send JSON
-        const payload: any = {
-          name: inputs.name,
-          username: inputs.username,
-          email: inputs.email,
-          bio: inputs.bio || '',
-          country: inputs.country || '',
-          profilePic: user.profilePic, // Keep existing profile pic
-        };
-        if (inputs.password.trim()) {
-          payload.password = inputs.password;
-        }
-
-        response = await apiService.put(`${ENDPOINTS.UPDATE_USER_PROFILE}/${user._id}`, payload);
+      const payload: any = {
+        name: inputs.name,
+        username: inputs.username,
+        email: inputs.email,
+        bio: inputs.bio || '',
+        country: inputs.country || '',
+        profilePic: user.profilePic,
+      };
+      if (inputs.password.trim()) {
+        payload.password = inputs.password;
       }
+
+      if (imageFile?.uri) {
+        payload.profilePic = await uploadMediaToR2(
+          {
+            uri: imageFile.uri,
+            type: imageFile.type || 'image/jpeg',
+            fileName: imageFile.fileName || `profile_${Date.now()}.jpg`,
+          },
+          'profile-pics',
+        );
+      }
+
+      const response = await apiService.put(url, payload);
 
       if (response) {
         // Update user context

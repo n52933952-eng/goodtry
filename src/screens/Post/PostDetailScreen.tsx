@@ -33,7 +33,11 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { useLanguage } from '../../context/LanguageContext';
 import { usePost } from '../../context/PostContext';
+import { useSocket } from '../../context/SocketContext';
 import { pauseAllFeedVideos } from '../../utils/feedVideoPlayback';
+import { SOCKET_EVENTS } from '../../utils/constants';
+import { mergePostUpdate } from '../../utils/postMerge';
+import { usePostEngagementSubscription, applyPostEngagement } from '../../hooks/usePostEngagementSubscription';
 import { hideChannelPostComments } from '../../utils/channelPostUtils';
 import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
 import CollapsingStackHeader from '../../components/CollapsingStackHeader';
@@ -71,6 +75,8 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const showToast = useShowToast();
   const { t } = useLanguage();
   const { deletePost, updatePost } = usePost();
+  const { socket } = useSocket();
+  usePostEngagementSubscription(postId);
 
   const {
     translateY: headerTranslateY,
@@ -226,6 +232,44 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     fetchPost();
   }, [postId]);
+
+  // Live collab / post edits while viewing this post (server already emits postUpdated)
+  useEffect(() => {
+    if (!socket || !postId) return;
+
+    const handlePostUpdated = (payload: any) => {
+      const updatedPost = payload?.post ?? payload;
+      const incomingId =
+        updatedPost?._id?.toString?.() ??
+        payload?.postId?.toString?.() ??
+        (payload?.postId ? String(payload.postId) : null);
+      if (!incomingId || String(postId) !== incomingId) return;
+      setPost((prev: any) => (prev ? mergePostUpdate(prev, updatedPost) : updatedPost));
+    };
+
+    const handlePostEngagement = (payload: any) => {
+      const incomingId =
+        payload?.postId?.toString?.() ??
+        (payload?.postId ? String(payload.postId) : null);
+      if (!incomingId || String(postId) !== incomingId) return;
+      setPost((prev: any) => (prev ? applyPostEngagement(prev, payload) : prev));
+    };
+
+    const bind = () => {
+      socket.off(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.off(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+      socket.on(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.on(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+    };
+
+    bind();
+    const removeReady = (socket as any)?.addSocketReadyListener?.(bind);
+    return () => {
+      socket.off(SOCKET_EVENTS.POST_UPDATED, handlePostUpdated);
+      socket.off(SOCKET_EVENTS.POST_ENGAGEMENT, handlePostEngagement);
+      removeReady?.();
+    };
+  }, [socket, postId]);
 
   // Scroll comment list when mention suggestions open inside the modal
   useEffect(() => {
