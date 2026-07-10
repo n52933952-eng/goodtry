@@ -1545,17 +1545,22 @@ const Post: React.FC<PostProps> = ({
   /** Feed list (not post detail): cap media height so image + likes fit on one screen. */
   const isFeedListCard = useFeedWideLayout && !disableNavigation;
   const feedMediaMaxHeight = Math.round(windowHeight * 0.52);
-  const capFeedMediaHeight = (h: number) =>
-    isFeedListCard ? Math.min(h, feedMediaMaxHeight) : h;
+  /** Post detail: keep media shorter so likes + "View comments" stay tappable. */
+  const detailMediaMaxHeight = Math.round(windowHeight * 0.36);
+  const capFeedMediaHeight = (h: number) => {
+    if (isFeedListCard) return Math.min(h, feedMediaMaxHeight);
+    if (disableNavigation) return Math.min(h, detailMediaMaxHeight);
+    return h;
+  };
   /** Single-image box: a bit shorter so likes / comments stay easy to tap (feed, profile, post detail). */
-  const singleImageMaxHeight = Math.round(
-    windowHeight * (disableNavigation ? 0.36 : 0.42),
-  );
+  const singleImageMaxHeight = disableNavigation
+    ? detailMediaMaxHeight
+    : Math.round(windowHeight * 0.42);
   const capSingleImageHeight = (h: number) => Math.min(h, singleImageMaxHeight);
   /** Carousel box on post detail: cap height so comment field stays reachable. */
-  const carouselMaxHeight = Math.round(
-    windowHeight * (disableNavigation ? 0.36 : isFeedListCard ? 0.52 : 0.42),
-  );
+  const carouselMaxHeight = disableNavigation
+    ? detailMediaMaxHeight
+    : Math.round(windowHeight * (isFeedListCard ? 0.52 : 0.42));
   const capCarouselHeight = (h: number) => Math.min(h, carouselMaxHeight);
   const showContributorNamesOnProfile = fromScreen === 'UserProfile';
   const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
