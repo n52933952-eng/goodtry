@@ -283,8 +283,6 @@ const Post: React.FC<PostProps> = ({
 
   const { user } = useUser();
   const {
-    likePost,
-    unlikePost,
     deletePost: deletePostContext,
     updatePost,
     hideFeedPostFromFeed,
@@ -370,7 +368,11 @@ const Post: React.FC<PostProps> = ({
     };
   }, [contributorIdsNeedingHydration]);
 
-  const [isLiking, setIsLiking] = useState(false);
+  /** Ignore stale like API responses when user taps faster than the network. */
+  const likeSeqRef = useRef(0);
+  const pendingLikeRef = useRef(false);
+  /** Skip stale post.likePreview sync right after our own like/unlike API response. */
+  const likeMutationAtRef = useRef(0);
   /** Optimistic per-match like (football stacked cards) — key = footballMatchId */
   const [matchLikeOverride, setMatchLikeOverride] = useState<
     Record<string, { liked: boolean; count: number }>
@@ -469,7 +471,11 @@ const Post: React.FC<PostProps> = ({
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [conversations, setConversations] = useState<any[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
+  const [shareConversationsHasMore, setShareConversationsHasMore] = useState(false);
   const [sendingShareToId, setSendingShareToId] = useState<string | null>(null);
+  const shareConversationsCursorRef = useRef<string | null>(null);
+  const SHARE_CONVERSATIONS_PAGE = 9;
   const [capsuleModalVisible, setCapsuleModalVisible] = useState(false);
   const [capsuleLoadingDuration, setCapsuleLoadingDuration] = useState<string | null>(null);
   const [capsuleLoading, setCapsuleLoading] = useState(false);
@@ -485,7 +491,43 @@ const Post: React.FC<PostProps> = ({
   const [localLikesCount, setLocalLikesCount] = useState(
     post.likeCount ?? post.likes?.length ?? 0,
   );
+  const [localLikePreview, setLocalLikePreview] = useState<any>(
+    post.likePreview ?? null,
+  );
   const [likesModalVisible, setLikesModalVisible] = useState(false);
+  const localLikedRef = useRef(localLiked);
+  const localLikesCountRef = useRef(localLikesCount);
+  const localLikePreviewRef = useRef(localLikePreview);
+  /** Last non-self liker — so unlike can restore their avatar without a reload. */
+  const lastOtherPreviewRef = useRef<any>(null);
+  localLikedRef.current = localLiked;
+  localLikesCountRef.current = localLikesCount;
+  localLikePreviewRef.current = localLikePreview;
+
+  const selfIdStr = useMemo(
+    () => (user?._id != null ? String(user._id) : ''),
+    [user?._id],
+  );
+
+  const previewUserId = useCallback((p: any) => {
+    if (!p?._id) return '';
+    return p._id?.toString?.() ?? String(p._id);
+  }, []);
+
+  const rememberOtherPreview = useCallback(
+    (p: any) => {
+      if (!p) return;
+      const pid = previewUserId(p);
+      if (!pid || (selfIdStr && pid === selfIdStr)) return;
+      lastOtherPreviewRef.current = p;
+    },
+    [previewUserId, selfIdStr],
+  );
+
+  useEffect(() => {
+    rememberOtherPreview(post.likePreview);
+    rememberOtherPreview(localLikePreview);
+  }, [post.likePreview, localLikePreview, rememberOtherPreview]);
 
   /** Server sends replyCount + empty replies[] on feed/detail; use replyCount as source of truth. */
   const commentCount = useMemo(() => {
@@ -776,11 +818,29 @@ const Post: React.FC<PostProps> = ({
     });
   }, [chessGameData, resolveGameOpponentId, navigation, showToast]);
 
-  // Update local state when post prop changes
+  // Sync liked/count/preview from parent (feed/socket). Never wipe a good avatar with null.
   useEffect(() => {
-    setLocalLiked(post.likedByMe ?? post.likes?.includes(user?._id) ?? false);
-    setLocalLikesCount(post.likeCount ?? post.likes?.length ?? 0);
-  }, [post.likes, post.likeCount, post.likedByMe, post.likePreview, user?._id]);
+    if (pendingLikeRef.current) return;
+    if (Date.now() - likeMutationAtRef.current < 1200) return;
+
+    const liked = post.likedByMe ?? post.likes?.includes(user?._id) ?? false;
+    const count = post.likeCount ?? post.likes?.length ?? 0;
+    setLocalLiked(liked);
+    setLocalLikesCount(count);
+    localLikedRef.current = liked;
+    localLikesCountRef.current = count;
+
+    const incoming = post.likePreview ?? null;
+    if (incoming) {
+      rememberOtherPreview(incoming);
+      setLocalLikePreview(incoming);
+      localLikePreviewRef.current = incoming;
+    } else if (count <= 0) {
+      setLocalLikePreview(null);
+      localLikePreviewRef.current = null;
+    }
+    // count > 0 + null incoming → keep current local preview (avoids flicker / lost avatar)
+  }, [post.likes, post.likeCount, post.likedByMe, post.likePreview, user?._id, rememberOtherPreview]);
 
   useEffect(() => {
     setFeedVideoReady(false);
@@ -934,17 +994,25 @@ const Post: React.FC<PostProps> = ({
   const isChannelPostFlag = isChannelPost(post);
   const hideChannelPostCommentsFlag = hideChannelPostComments(post);
 
-  const isLiked = localLiked; // Use local state for immediate UI update
+  const isLiked = localLiked;
 
-  // Inline "liked by [avatar]" preview. If the current viewer liked it, they are the most
-  // recent liker, so show their own avatar optimistically; otherwise use the server preview.
-  const likePreviewPic = localLiked
-    ? (user?.profilePic || null)
-    : (post.likePreview?.profilePic || null);
+  // While liked: always show MY avatar (stable — no flicker from sync races).
+  // While not liked: show other liker's preview.
+  const displayLikePreview = useMemo(() => {
+    if (localLiked && user) {
+      return {
+        _id: user._id,
+        username: user.username,
+        name: user.name,
+        profilePic: user.profilePic || null,
+      };
+    }
+    return localLikePreview || lastOtherPreviewRef.current || null;
+  }, [localLiked, user, localLikePreview]);
+
+  const likePreviewPic = displayLikePreview?.profilePic || null;
   const likePreviewInitial = (
-    (localLiked
-      ? (user?.name || user?.username || '')
-      : (post.likePreview?.name || post.likePreview?.username || '')) || '?'
+    (displayLikePreview?.name || displayLikePreview?.username || '') || '?'
   )
     .charAt(0)
     .toUpperCase();
@@ -1059,24 +1127,77 @@ const Post: React.FC<PostProps> = ({
     return other?._id || null;
   };
 
-  const fetchConversations = async () => {
+  const fetchConversations = async (opts?: { loadMore?: boolean }) => {
     if (!user) return;
-    setLoadingConversations(true);
+    const loadMore = !!opts?.loadMore;
+    if (loadMore) {
+      if (
+        loadingMoreConversations ||
+        loadingConversations ||
+        !shareConversationsHasMore ||
+        !shareConversationsCursorRef.current
+      ) {
+        return;
+      }
+      setLoadingMoreConversations(true);
+    } else {
+      setLoadingConversations(true);
+      shareConversationsCursorRef.current = null;
+      setShareConversationsHasMore(false);
+    }
+
     try {
-      const data: any = await apiService.get(`${ENDPOINTS.GET_CONVERSATIONS}?limit=30`);
-      const list = Array.isArray(data?.conversations) ? data.conversations : (Array.isArray(data) ? data : []);
-      setConversations(list);
+      const params = new URLSearchParams({
+        limit: String(SHARE_CONVERSATIONS_PAGE),
+      });
+      if (loadMore && shareConversationsCursorRef.current) {
+        params.set('cursor', shareConversationsCursorRef.current);
+      }
+      const data: any = await apiService.get(
+        `${ENDPOINTS.GET_CONVERSATIONS}?${params.toString()}`,
+      );
+      const list = Array.isArray(data?.conversations)
+        ? data.conversations
+        : Array.isArray(data)
+          ? data
+          : [];
+      const nextCursor =
+        typeof data?.nextCursor === 'string' && data.nextCursor
+          ? data.nextCursor
+          : null;
+      const hasMore = !!data?.hasMore && !!nextCursor;
+
+      shareConversationsCursorRef.current = nextCursor;
+      setShareConversationsHasMore(hasMore);
+      setConversations((prev) => {
+        if (!loadMore) return list;
+        const seen = new Set(prev.map((c) => String(c?._id || '')));
+        const fresh = list.filter((c: any) => {
+          const id = String(c?._id || '');
+          return id && !seen.has(id);
+        });
+        return [...prev, ...fresh];
+      });
     } catch (e) {
-      showToast('Error', 'Could not load chats', 'error');
+      if (!loadMore) showToast('Error', 'Could not load chats', 'error');
     } finally {
-      setLoadingConversations(false);
+      if (loadMore) setLoadingMoreConversations(false);
+      else setLoadingConversations(false);
     }
   };
 
   const openShareModal = async () => {
     if (!showFeedExtras || !user) return;
     setShareModalVisible(true);
-    await fetchConversations();
+    setConversations([]);
+    await fetchConversations({ loadMore: false });
+  };
+
+  const handleShareConversationsEndReached = () => {
+    if (!shareConversationsHasMore || loadingMoreConversations || loadingConversations) {
+      return;
+    }
+    fetchConversations({ loadMore: true });
   };
 
   const handleShareToConversation = async (conv: any) => {
@@ -1165,41 +1286,91 @@ const Post: React.FC<PostProps> = ({
   };
 
   const handleLike = async () => {
-    if (isLiking || !user) return;
+    if (!user) return;
 
-    // Optimistic update: Update UI immediately (like web)
-    const previousLiked = isLiked;
-    const previousCount = localLikesCount;
-    
-    setLocalLiked(!previousLiked);
-    setLocalLikesCount(previousLiked ? previousCount - 1 : previousCount + 1);
-    setIsLiking(true);
+    const seq = ++likeSeqRef.current;
+    const previousLiked = localLikedRef.current;
+    const previousCount = localLikesCountRef.current;
+    const previousPreview = localLikePreviewRef.current;
+
+    const buildSelfPreview = () => ({
+      _id: user._id,
+      username: user.username,
+      name: user.name,
+      profilePic: user.profilePic || null,
+    });
+
+    const resolvePreviewAfterUnlike = (count: number, previewFromServer: any) => {
+      if (previewFromServer) {
+        rememberOtherPreview(previewFromServer);
+        return previewFromServer;
+      }
+      if (count <= 0) return null;
+      if (lastOtherPreviewRef.current) return lastOtherPreviewRef.current;
+      const fromPost = post.likePreview;
+      const postPid = previewUserId(fromPost);
+      if (fromPost && postPid && postPid !== selfIdStr) return fromPost;
+      return null;
+    };
+
+    const nextLiked = !previousLiked;
+    const nextCount = Math.max(0, previousCount + (nextLiked ? 1 : -1));
+    rememberOtherPreview(previousPreview);
+
+    const optimisticPreview = nextLiked
+      ? buildSelfPreview()
+      : nextCount <= 0
+        ? null
+        : lastOtherPreviewRef.current ||
+          (previewUserId(previousPreview) !== selfIdStr ? previousPreview : null);
+
+    localLikedRef.current = nextLiked;
+    localLikesCountRef.current = nextCount;
+    localLikePreviewRef.current = optimisticPreview;
+    setLocalLiked(nextLiked);
+    setLocalLikesCount(nextCount);
+    setLocalLikePreview(optimisticPreview);
+
+    pendingLikeRef.current = true;
+    likeMutationAtRef.current = Date.now();
 
     try {
       const res: any = await apiService.put(`${ENDPOINTS.LIKE_POST}/${post._id}`);
+      if (seq !== likeSeqRef.current) return;
 
-      // Reconcile with the server's authoritative liked state + count (avoids optimistic drift).
-      if (res && typeof res.liked === 'boolean') {
-        setLocalLiked(res.liked);
-      }
-      if (res && typeof res.likeCount === 'number') {
-        setLocalLikesCount(Math.max(0, res.likeCount));
-      }
+      const liked = typeof res?.liked === 'boolean' ? res.liked : nextLiked;
+      const likeCount =
+        typeof res?.likeCount === 'number' ? Math.max(0, res.likeCount) : nextCount;
+      const likePreview = liked
+        ? res?.likePreview || buildSelfPreview()
+        : resolvePreviewAfterUnlike(likeCount, res?.likePreview ?? undefined);
 
-      // Update context after API call succeeds
-      if (previousLiked) {
-        unlikePost(post._id, user._id);
-      } else {
-        likePost(post._id, user._id);
-      }
+      setLocalLiked(liked);
+      setLocalLikesCount(likeCount);
+      setLocalLikePreview(likePreview);
+      localLikedRef.current = liked;
+      localLikesCountRef.current = likeCount;
+      localLikePreviewRef.current = likePreview;
+      likeMutationAtRef.current = Date.now();
+      rememberOtherPreview(likePreview);
+
+      const patch = { likedByMe: liked, likeCount, likePreview };
+      updatePost(String(post._id), patch);
+      onPostUpdated?.({ ...post, ...patch });
     } catch (error: any) {
+      if (seq !== likeSeqRef.current) return;
       console.error('Error liking post:', error);
-      // Revert optimistic update on error
       setLocalLiked(previousLiked);
       setLocalLikesCount(previousCount);
+      setLocalLikePreview(previousPreview);
+      localLikedRef.current = previousLiked;
+      localLikesCountRef.current = previousCount;
+      localLikePreviewRef.current = previousPreview;
       showToast('Error', 'Failed to like post', 'error');
     } finally {
-      setIsLiking(false);
+      if (seq === likeSeqRef.current) {
+        pendingLikeRef.current = false;
+      }
     }
   };
 
@@ -2709,28 +2880,45 @@ const Post: React.FC<PostProps> = ({
                 e.stopPropagation();
                 handleLike();
               }}
-              disabled={isLiking}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}
               style={styles.likeHeartSlot}
+              accessibilityRole="button"
+              accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
             >
-              <Text style={styles.actionIcon} includeFontPadding={false}>
-                {isLiked ? '❤️' : '🤍'}
+              <Text
+                style={[
+                  styles.likeHeartIcon,
+                  !isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
+                ]}
+                includeFontPadding={false}
+              >
+                🤍
+              </Text>
+              <Text
+                style={[
+                  styles.likeHeartIcon,
+                  isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
+                ]}
+                includeFontPadding={false}
+              >
+                ❤️
               </Text>
             </TouchableOpacity>
-            {localLikesCount > 0 ? (
-              <TouchableOpacity
-                onPress={(e) => {
-                  e.stopPropagation();
-                  if (post?._id) setLikesModalVisible(true);
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
-                style={[
-                  styles.likeMetaSlot,
-                  localLikesCount > 1 && styles.likeMetaSlotWithCount,
-                ]}
-              >
-                <View style={styles.likePreviewAvatarWrap}>
-                  {likePreviewPic ? (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                if (localLikesCount > 0 && post?._id) setLikesModalVisible(true);
+              }}
+              disabled={localLikesCount <= 0}
+              hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+              style={[
+                styles.likeMetaSlot,
+                localLikesCount <= 0 && styles.likeMetaSlotIdle,
+              ]}
+            >
+              <View style={styles.likePreviewAvatarWrap}>
+                {localLikesCount > 0 && displayLikePreview ? (
+                  likePreviewPic ? (
                     <SafeImage source={{ uri: likePreviewPic }} style={styles.likePreviewAvatar} />
                   ) : (
                     <View
@@ -2742,19 +2930,21 @@ const Post: React.FC<PostProps> = ({
                     >
                       <Text style={styles.likePreviewInitial}>{likePreviewInitial}</Text>
                     </View>
-                  )}
-                </View>
-                {localLikesCount > 1 ? (
-                  <Text
-                    style={[styles.likeCountText, { color: colors.textGray }]}
-                    numberOfLines={1}
-                    includeFontPadding={false}
-                  >
-                    {formatCompactCount(localLikesCount)}
-                  </Text>
+                  )
                 ) : null}
-              </TouchableOpacity>
-            ) : null}
+              </View>
+              <Text
+                style={[
+                  styles.likeCountText,
+                  { color: colors.textGray },
+                  localLikesCount <= 1 && styles.likeCountTextHidden,
+                ]}
+                numberOfLines={1}
+                includeFontPadding={false}
+              >
+                {localLikesCount > 1 ? formatCompactCount(localLikesCount) : '0'}
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {!hideChannelPostCommentsFlag && (
@@ -2815,9 +3005,6 @@ const Post: React.FC<PostProps> = ({
         <View style={styles.overlay}>
           <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>Share to chat</Text>
-            <Text style={[styles.modalSub, { color: colors.textGray }]} numberOfLines={1}>
-              {permalink}
-            </Text>
             {loadingConversations ? (
               <View style={styles.modalLoading}>
                 <ActivityIndicator size="small" color={colors.primary} />
@@ -2827,6 +3014,15 @@ const Post: React.FC<PostProps> = ({
                 data={conversations}
                 keyExtractor={(item, idx) => String(item?._id || `conv-${idx}`)}
                 style={{ maxHeight: 280 }}
+                onEndReached={handleShareConversationsEndReached}
+                onEndReachedThreshold={0.35}
+                ListFooterComponent={
+                  loadingMoreConversations ? (
+                    <View style={styles.modalLoading}>
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    </View>
+                  ) : null
+                }
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={[styles.modalRow, { borderColor: colors.border }]}
@@ -3503,22 +3699,43 @@ const styles = StyleSheet.create({
   likeActionCluster: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 28,
+    minHeight: 24,
+    width: 88,
   },
   likeHeartSlot: {
-    width: 28,
-    height: 28,
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  likeHeartIcon: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    fontSize: 16,
+    lineHeight: 24,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+  },
+  likeHeartIconOn: {
+    opacity: 1,
+  },
+  likeHeartIconOff: {
+    opacity: 0,
   },
   likeMetaSlot: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 20,
     marginLeft: 4,
+    minWidth: 60,
+    flex: 1,
   },
-  likeMetaSlotWithCount: {
-    minWidth: 56,
+  likeMetaSlotIdle: {
+    opacity: 0,
   },
   likePreviewAvatarWrap: {
     width: 20,
@@ -3535,11 +3752,14 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
   },
   likeCountText: {
-    fontSize: 14,
+    fontSize: 13,
     marginLeft: 5,
     minWidth: 32,
     textAlign: 'left',
     fontVariant: ['tabular-nums'],
+  },
+  likeCountTextHidden: {
+    opacity: 0,
   },
   likePreviewAvatar: {
     width: 20,
@@ -3549,6 +3769,9 @@ const styles = StyleSheet.create({
   likePreviewAvatarPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  likePreviewAvatarPending: {
+    opacity: 0.35,
   },
   likePreviewInitial: {
     fontSize: 10,

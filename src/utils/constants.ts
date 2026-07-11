@@ -6,10 +6,10 @@ export const API_URL = __DEV__
 export const SOCKET_URL = API_URL;
 
 /**
- * Web app origin (Vite SPA) — must match API cookie domain so the WebView is logged in.
- * Same host as API_URL in your current deploy; change if you split frontend to another domain.
+ * Public website origin for share links (not the Render API host).
+ * Keep API_URL for requests/sockets; use this for post permalinks users see/share.
  */
-export const WEB_APP_URL = API_URL.replace(/\/$/, '');
+export const WEB_APP_URL = 'https://playsocial.social';
 
 /**
  * Same value as backend `GOOGLE_WEB_CLIENT_ID`.

@@ -84,8 +84,22 @@ interface PostContextType {
   addPost: (post: Post) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
-  likePost: (postId: string, userId: string) => void;
-  unlikePost: (postId: string, userId: string) => void;
+  likePost: (
+    postId: string,
+    patch: {
+      likedByMe?: boolean;
+      likeCount?: number;
+      likePreview?: Post['likePreview'];
+    },
+  ) => void;
+  unlikePost: (
+    postId: string,
+    patch?: {
+      likedByMe?: boolean;
+      likeCount?: number;
+      likePreview?: Post['likePreview'];
+    },
+  ) => void;
   addComment: (postId: string, comment: any) => void;
   /** Post IDs the user hid from feed ("not interested"); synced from server per account. */
   hiddenFeedPostIds: Set<string>;
@@ -562,37 +576,50 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
-  const likePost = useCallback((postId: string, userId: string) => {
+  const likePost = useCallback((postId: string, patch: {
+    likedByMe?: boolean;
+    likeCount?: number;
+    likePreview?: Post['likePreview'];
+  }) => {
     setPosts((prevPosts) => {
-      // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       return safeArray.map((post) =>
-        post._id === postId
+        String(post._id) === String(postId)
           ? {
               ...post,
-              likes: [...(post.likes || []), userId],
-              // likeCount is the source of truth (server strips the `likes` array).
-              likeCount: (post.likeCount ?? post.likes?.length ?? 0) + 1,
-              likedByMe: true,
+              likedByMe: patch.likedByMe ?? true,
+              likeCount:
+                typeof patch.likeCount === 'number'
+                  ? patch.likeCount
+                  : (post.likeCount ?? post.likes?.length ?? 0) + 1,
+              likePreview:
+                patch.likePreview !== undefined ? patch.likePreview : post.likePreview,
             }
-          : post
+          : post,
       );
     });
   }, []);
 
-  const unlikePost = useCallback((postId: string, userId: string) => {
+  const unlikePost = useCallback((postId: string, patch: {
+    likedByMe?: boolean;
+    likeCount?: number;
+    likePreview?: Post['likePreview'];
+  } = {}) => {
     setPosts((prevPosts) => {
-      // Safety check: ensure prevPosts is an array
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
       return safeArray.map((post) =>
-        post._id === postId
+        String(post._id) === String(postId)
           ? {
               ...post,
-              likes: (post.likes || []).filter((id) => id !== userId),
-              likeCount: Math.max(0, (post.likeCount ?? post.likes?.length ?? 0) - 1),
-              likedByMe: false,
+              likedByMe: patch.likedByMe ?? false,
+              likeCount:
+                typeof patch.likeCount === 'number'
+                  ? patch.likeCount
+                  : Math.max(0, (post.likeCount ?? post.likes?.length ?? 0) - 1),
+              likePreview:
+                patch.likePreview !== undefined ? patch.likePreview : post.likePreview,
             }
-          : post
+          : post,
       );
     });
   }, []);

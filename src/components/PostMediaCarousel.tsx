@@ -12,6 +12,8 @@ import {
   LayoutChangeEvent,
   DeviceEventEmitter,
   Animated,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import Sound from 'react-native-sound';
 import SafeImage from './SafeImage';
@@ -71,14 +73,20 @@ const PostMediaCarousel: React.FC<Props> = ({
   const [feedSoundPrefTick, setFeedSoundPrefTick] = useState(0);
   const isAudioMuted = useMemo(() => isFeedMediaMuted(), [feedSoundPrefTick]);
   const [audioReady, setAudioReady] = useState(false);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const soundRef = useRef<Sound | null>(null);
   const soundUrlRef = useRef('');
   const pendingPlaybackRef = useRef<{ play: boolean; muted: boolean } | null>(null);
+  /** Keep looping while true (remote MP3 often ignores setNumberOfLoops). */
+  const wantPlayingRef = useRef(false);
+  const mutedRef = useRef(true);
   const listRef = useRef<FlatList<PostCarouselSlide>>(null);
   const autoPlayMediaRef = useRef(autoPlayMedia);
   autoPlayMediaRef.current = autoPlayMedia;
   const screenFocusedRef = useRef(screenFocused);
   screenFocusedRef.current = screenFocused;
+  const appActiveRef = useRef(appActive);
+  appActiveRef.current = appActive;
 
   const displayAudioUrl = useMemo(
     () => (audioUrl ? mediaDisplayUrl(audioUrl) : ''),
@@ -86,6 +94,7 @@ const PostMediaCarousel: React.FC<Props> = ({
   );
 
   const releaseSound = useCallback(() => {
+    wantPlayingRef.current = false;
     const s = soundRef.current;
     soundRef.current = null;
     if (!s) return;
@@ -102,24 +111,72 @@ const PostMediaCarousel: React.FC<Props> = ({
     }
   }, []);
 
-  const applySoundPlayback = useCallback((play: boolean, muted: boolean) => {
-    const s = soundRef.current;
-    if (!s) {
-      pendingPlaybackRef.current = { play, muted };
-      return;
-    }
-    pendingPlaybackRef.current = null;
+  const playLooping = useCallback((s: Sound, muted: boolean) => {
+    mutedRef.current = muted;
+    wantPlayingRef.current = true;
     try {
       s.setVolume(muted ? 0 : 1);
-      if (play) {
-        s.play((success) => {
-          if (!success) pendingPlaybackRef.current = { play: true, muted };
-        });
-      } else {
-        s.pause();
-      }
+      // Best-effort native loop (often ignored for remote URLs on Android).
+      try {
+        s.setNumberOfLoops(-1);
+      } catch (_) {}
+      const resumeFromStart = () => {
+        if (!wantPlayingRef.current || soundRef.current !== s) return;
+        if (!appActiveRef.current || !screenFocusedRef.current) {
+          wantPlayingRef.current = false;
+          return;
+        }
+        try {
+          s.setCurrentTime(0);
+        } catch (_) {}
+        try {
+          s.setVolume(mutedRef.current ? 0 : 1);
+          s.play((ok) => {
+            // Finished once — restart so MP3 keeps repeating.
+            if (ok) resumeFromStart();
+            else if (wantPlayingRef.current) {
+              pendingPlaybackRef.current = { play: true, muted: mutedRef.current };
+            }
+          });
+        } catch (_) {}
+      };
+      resumeFromStart();
     } catch (_) {}
   }, []);
+
+  const applySoundPlayback = useCallback(
+    (play: boolean, muted: boolean) => {
+      const s = soundRef.current;
+      mutedRef.current = muted;
+      if (!s) {
+        pendingPlaybackRef.current = { play, muted };
+        return;
+      }
+      pendingPlaybackRef.current = null;
+      try {
+        s.setVolume(muted ? 0 : 1);
+      } catch (_) {}
+
+      if (play) {
+        // Already playing → only change volume (unmute must not wait for scroll).
+        let alreadyPlaying = wantPlayingRef.current;
+        try {
+          if (typeof s.isPlaying === 'function' && s.isPlaying()) alreadyPlaying = true;
+        } catch (_) {}
+        if (alreadyPlaying) {
+          wantPlayingRef.current = true;
+          return;
+        }
+        playLooping(s, muted);
+      } else {
+        wantPlayingRef.current = false;
+        try {
+          s.pause();
+        } catch (_) {}
+      }
+    },
+    [playLooping],
+  );
 
   const syncAudioPlayback = useCallback(
     (play: boolean, muted: boolean) => {
@@ -129,22 +186,49 @@ const PostMediaCarousel: React.FC<Props> = ({
   );
 
   const stopAudio = useCallback(() => {
+    wantPlayingRef.current = false;
     syncAudioPlayback(false, true);
   }, [syncAudioPlayback]);
 
   const startFocusedPlayback = useCallback(
     (muted?: boolean) => {
-      if (!screenFocusedRef.current) return;
+      if (!screenFocusedRef.current || !appActiveRef.current) return;
       syncAudioPlayback(true, muted ?? isFeedMediaMuted());
     },
     [syncAudioPlayback],
   );
 
   const toggleMute = useCallback(() => {
-    const nextUnmuted = isFeedMediaMuted();
-    setFeedMediaSoundUnmuted(nextUnmuted);
-    startFocusedPlayback(!nextUnmuted);
-  }, [startFocusedPlayback]);
+    const willUnmute = isFeedMediaMuted();
+    setFeedMediaSoundUnmuted(willUnmute);
+    if (!screenFocusedRef.current || !appActiveRef.current) return;
+
+    if (willUnmute) {
+      // Unmute on this post → hear MP3 right away (no scroll required).
+      const s = soundRef.current;
+      mutedRef.current = false;
+      if (s) {
+        try {
+          s.setVolume(1);
+        } catch (_) {}
+        let alreadyPlaying = wantPlayingRef.current;
+        try {
+          if (typeof s.isPlaying === 'function' && s.isPlaying()) alreadyPlaying = true;
+        } catch (_) {}
+        if (!alreadyPlaying) {
+          playLooping(s, false);
+        } else {
+          wantPlayingRef.current = true;
+        }
+      } else {
+        startFocusedPlayback(false);
+      }
+      return;
+    }
+
+    // Mute → keep playing silently so unmute is instant later.
+    applySoundPlayback(true, true);
+  }, [applySoundPlayback, playLooping, startFocusedPlayback]);
 
   useEffect(() => {
     ensureSoundCategory();
@@ -182,11 +266,13 @@ const PostMediaCarousel: React.FC<Props> = ({
       }
 
       const muted = isFeedMediaMuted();
-      const shouldPlay = autoPlayMediaRef.current && screenFocusedRef.current;
+      const shouldPlay =
+        autoPlayMediaRef.current && screenFocusedRef.current && appActiveRef.current;
       applySoundPlayback(shouldPlay, muted);
     });
 
     return () => {
+      wantPlayingRef.current = false;
       if (soundRef.current === sound) {
         releaseSound();
         soundUrlRef.current = '';
@@ -195,21 +281,38 @@ const PostMediaCarousel: React.FC<Props> = ({
   }, [displayAudioUrl, postId, releaseSound, applySoundPlayback]);
 
   useEffect(() => {
-    if (!audioReady || !displayAudioUrl) return;
-    const muted = isFeedMediaMuted();
-    const shouldPlay = autoPlayMedia && screenFocused;
-    syncAudioPlayback(shouldPlay, muted);
-  }, [autoPlayMedia, screenFocused, audioReady, displayAudioUrl, syncAudioPlayback]);
+    const onAppState = (next: AppStateStatus) => {
+      const active = next === 'active';
+      appActiveRef.current = active;
+      setAppActive(active);
+      if (!active) {
+        stopAudio();
+        return;
+      }
+      if (autoPlayMediaRef.current && screenFocusedRef.current && soundRef.current) {
+        startFocusedPlayback(isFeedMediaMuted());
+      }
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => sub.remove();
+  }, [stopAudio, startFocusedPlayback]);
 
   useEffect(() => {
-    if (!displayAudioUrl || !autoPlayMedia || !screenFocused) return;
+    if (!audioReady || !displayAudioUrl) return;
+    const muted = isFeedMediaMuted();
+    const shouldPlay = autoPlayMedia && screenFocused && appActive;
+    syncAudioPlayback(shouldPlay, muted);
+  }, [autoPlayMedia, screenFocused, appActive, audioReady, displayAudioUrl, syncAudioPlayback]);
+
+  useEffect(() => {
+    if (!displayAudioUrl || !autoPlayMedia || !screenFocused || !appActive) return;
     const muted = isFeedMediaMuted();
     startFocusedPlayback(muted);
     const retries = [250, 600, 1200].map((ms) =>
       setTimeout(() => startFocusedPlayback(muted), ms),
     );
     return () => retries.forEach(clearTimeout);
-  }, [displayAudioUrl, autoPlayMedia, screenFocused, startFocusedPlayback]);
+  }, [displayAudioUrl, autoPlayMedia, screenFocused, appActive, startFocusedPlayback]);
 
   useEffect(() => {
     if (!postId) return undefined;
@@ -228,18 +331,23 @@ const PostMediaCarousel: React.FC<Props> = ({
     return () => sub.remove();
   }, [postId, startFocusedPlayback]);
 
+  const audioReadyRef = useRef(false);
+  audioReadyRef.current = audioReady;
+
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(
       FEED_MEDIA_SOUND_PREF,
       () => {
         setFeedSoundPrefTick((t) => t + 1);
-        if (screenFocusedRef.current && audioReady && autoPlayMediaRef.current) {
-          syncAudioPlayback(true, isFeedMediaMuted());
-        }
+        if (!appActiveRef.current || !screenFocusedRef.current) return;
+        if (!audioReadyRef.current || !soundRef.current) return;
+        // Active/visible carousel (or already playing after unmute) — apply volume immediately.
+        if (!autoPlayMediaRef.current && !wantPlayingRef.current) return;
+        applySoundPlayback(true, isFeedMediaMuted());
       },
     );
     return () => sub.remove();
-  }, [audioReady, syncAudioPlayback]);
+  }, [applySoundPlayback]);
 
   useEffect(() => {
     if (!screenFocused) stopAudio();
