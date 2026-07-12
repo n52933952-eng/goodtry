@@ -252,8 +252,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     setHasMore(true);
 
     fetchUserProfile();
-    if (!(userIdParam && !usernameParam)) {
-      fetchUserPosts(false);
+    // Pass route username explicitly — don't use stale profileUser from previous profile
+    if (!(userIdParam && !usernameParam) && username) {
+      fetchUserPosts(false, username);
     }
 
     return () => {};
@@ -292,17 +293,21 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       setPosts((prev) => {
         const idx = prev.findIndex((p) => String(p._id) === postId);
         if (idx !== -1) {
+          const merged = mergePostUpdate(prev[idx], updatedPost);
+          // Removed as collaborator → drop from this profile list
+          if (!postBelongsToProfile(merged, profileUser)) {
+            return prev.filter((p) => String(p._id) !== postId);
+          }
           return upsertProfilePost(prev, updatedPost, postId);
         }
-        const merged = mergePostUpdate({}, updatedPost);
-        if (postBelongsToProfile(merged, profileUser)) {
-          return upsertProfilePost(prev, merged, postId);
-        }
-        return prev;
+        // Only insert when this profile owns/contributes — never pull in followed users' posts
+        if (!postBelongsToProfile(updatedPost, profileUser)) return prev;
+        return upsertProfilePost(prev, updatedPost, postId);
       });
     };
 
-    const handleNewPost = (newPost: any) => {
+    const handleNewPost = (payload: any) => {
+      const newPost = payload?.post ?? payload;
       if (!postBelongsToProfile(newPost, profileUser)) return;
       const idStr = newPost?._id?.toString?.();
       if (!idStr) return;
@@ -330,6 +335,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     const handlePostEngagement = (payload: any) => {
       const postId = payload?.postId?.toString?.();
       if (!postId) return;
+      // Engagement only updates posts already on this profile — never inserts
       setPosts((prev) =>
         prev.map((p) => (String(p._id) === postId ? applyPostEngagement(p, payload) : p)),
       );
@@ -388,7 +394,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         void refetchSessionUser?.().then((me) => {
           fetchUserProfile(me?.following);
         });
-        fetchUserPosts(false);
+        fetchUserPosts(false, currentUser?.username || username);
         if (currentUser?._id) {
           apiService
             .get(`${ENDPOINTS.STORY_STATUS}/${currentUser._id}`)
@@ -479,10 +485,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   };
 
   const fetchUserPosts = async (isLoadMore = false, postsUsernameOverride?: string) => {
-    const postsUsername = postsUsernameOverride || profileUser?.username || username;
-    // Store current username to verify response is still relevant
-    const currentUsername = postsUsername;
-    
+    // Prefer override / route username — never stale profileUser when switching profiles
+    const currentUsername =
+      postsUsernameOverride ||
+      (usernameParam === 'self' ? currentUser?.username : usernameParam) ||
+      (username && username !== userIdParam ? username : undefined) ||
+      profileUser?.username;
+
     if (!currentUsername) {
       if (!isLoadMore) {
         setLoading(false);
@@ -490,34 +499,37 @@ const UserProfileScreen = ({ route, navigation }: any) => {
       }
       return;
     }
-    
+
     if (isLoadMore) {
       setLoadingMore(true);
     } else {
       setSkip(0);
       setHasMore(true);
     }
-    
+
     try {
       const currentSkip = isLoadMore ? skip : 0;
       const data = await apiService.get(
         `${ENDPOINTS.GET_USER_POSTS}/${currentUsername}?limit=${POSTS_PER_PAGE}&skip=${currentSkip}`
       );
-      
-      // Verify we're still viewing the same profile (prevent stale data)
-      if (currentUsername !== (postsUsernameOverride || profileUser?.username || username)) {
-        console.log('⚠️ [UserProfileScreen] Username changed during posts fetch, ignoring response');
+
+      const liveRoute =
+        usernameParam === 'self' ? currentUser?.username : usernameParam;
+      const stillOnProfile =
+        currentUsername === postsUsernameOverride ||
+        (liveRoute != null && currentUsername === liveRoute) ||
+        (username != null && currentUsername === username);
+      if (!stillOnProfile) {
         return;
       }
-      
+
       const newPosts = data.posts || data || [];
 
       if (typeof data.totalCount === 'number') {
         setTotalPostsCount(data.totalCount);
       }
-      
+
       if (isLoadMore) {
-        // Append new posts to existing ones, filtering out duplicates
         setPosts(prev => {
           const existingIds = new Set(prev.map(p => {
             const id = p._id?.toString?.() ?? String(p._id);
@@ -531,33 +543,28 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         });
         setSkip(prev => prev + POSTS_PER_PAGE);
       } else {
-        // Replace posts for initial load (never keep stale live pseudo-posts from API)
         setPosts(newPosts.filter((p: any) => !isLivePseudoPostId(p?._id)));
         setSkip(POSTS_PER_PAGE);
       }
-      
-      // Check if there are more posts (backend returns hasMore)
+
       if (data.hasMore !== undefined) {
         setHasMore(data.hasMore);
       } else {
-        // Fallback: check if we got a full page
         setHasMore(newPosts.length === POSTS_PER_PAGE);
       }
     } catch (error) {
-      // Only show error if we're still viewing the same profile
-      if (currentUsername === username) {
+      if (currentUsername === username || currentUsername === profileUser?.username) {
         console.error('Error fetching user posts:', error);
         showToast('Error', 'Failed to load posts', 'error');
       }
     } finally {
-      // Only update loading state if we're still viewing the same profile
-      if (currentUsername === username) {
+      if (currentUsername === username || currentUsername === profileUser?.username) {
         setLoadingMore(false);
         setRefreshing(false);
       }
     }
   };
-  
+
   const handleLoadMore = () => {
     if (!loadingMore && hasMore) {
       fetchUserPosts(true);
@@ -960,12 +967,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
+            progressViewOffset={stackHeaderHeight + (Platform.OS === 'android' ? 8 : 0)}
             onRefresh={() => {
               setRefreshing(true);
               void checkProfileLiveStatus();
               void refetchSessionUser?.().then((me) => {
                 fetchUserProfile(me?.following);
-                fetchUserPosts(false);
+                fetchUserPosts(false, profileUser?.username || username);
               });
             }}
           />

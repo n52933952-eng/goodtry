@@ -14,6 +14,7 @@ import {
   Dimensions,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  Platform,
 } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { usePost } from '../../context/PostContext';
@@ -985,6 +986,7 @@ const FeedScreen = ({ navigation }: any) => {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
+            progressViewOffset={feedHeaderHeight + (Platform.OS === 'android' ? 8 : 0)}
             onRefresh={handleRefresh}
             tintColor={COLORS.primary}
           />

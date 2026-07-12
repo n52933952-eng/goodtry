@@ -58,22 +58,33 @@ export function mergePostUpdate<T extends Record<string, any>>(
   return merged;
 }
 
-/** Profile lists authored posts and collaborative posts the user contributes to. */
+/** Profile lists authored posts and collaborative posts the user contributes to.
+ * Prefer IDs — username is only a fallback when author id is missing.
+ */
 export function postBelongsToProfile(post: any, profileUser: ProfileUser | null | undefined): boolean {
   if (!post || !profileUser) return false;
-  const profileId = profileUser._id?.toString?.() ?? String(profileUser._id || '');
-  const profileUsername = profileUser.username;
+  const profileId = profileUser._id != null ? String(profileUser._id) : '';
+  const profileUsername =
+    typeof profileUser.username === 'string' ? profileUser.username.trim() : '';
+  if (!profileId && !profileUsername) return false;
 
   const authorId = contributorIdStr(post.postedBy);
-  const authorUsername = post.postedBy?.username;
-  if (profileUsername && authorUsername === profileUsername) return true;
-  if (profileId && authorId === profileId) return true;
+  const authorUsername =
+    typeof post.postedBy === 'object' && post.postedBy?.username
+      ? String(post.postedBy.username).trim()
+      : '';
 
-  if (post.isCollaborative && Array.isArray(post.contributors)) {
+  if (profileId && authorId && authorId === profileId) return true;
+  if (!authorId && profileUsername && authorUsername && authorUsername === profileUsername) {
+    return true;
+  }
+
+  if (post.isCollaborative === true && Array.isArray(post.contributors)) {
     return post.contributors.some((c: any) => {
       const cid = contributorIdStr(c);
-      const uname = typeof c === 'object' ? c.username : null;
-      return (profileId && cid === profileId) || (profileUsername && uname === profileUsername);
+      if (profileId && cid && cid === profileId) return true;
+      const uname = typeof c === 'object' && c?.username ? String(c.username).trim() : '';
+      return !cid && !!profileUsername && !!uname && uname === profileUsername;
     });
   }
   return false;
