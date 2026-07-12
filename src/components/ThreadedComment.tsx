@@ -93,7 +93,7 @@ export const ThreadedComment: React.FC<Props> = ({
     return (
       <Text style={[styles.bodyText, { color: colors.text }]}>
         <Text style={[styles.usernameInline, { color: colors.text }]}>
-          {reply?.username || 'Unknown'}{' '}
+          {reply?.name || reply?.username || 'Unknown'}{' '}
         </Text>
         {parts.map((part, idx) => {
           if (part.startsWith('@') && part.length > 1) {
