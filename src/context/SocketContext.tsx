@@ -73,6 +73,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   /** User ids we send in `presenceSubscribe` — never use legacy `onlineUsers` fallback for these (avoids "offline on list, online in chat"). */
   const presenceSubscribedUserIdsRef = useRef<Set<string>>(new Set());
   const presenceSubscribeRef = useRef<(() => void) | null>(null);
+  /** Last emitted presenceSubscribe set — skip duplicate emits/logs. */
+  const lastPresenceSubscribeKeyRef = useRef<string>('');
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
   const newMessageHandlerBodyRef = useRef<(data: any) => void>(() => {});
   const onNewMessageForSocket = useCallback((data: any) => {
@@ -853,10 +855,19 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           return;
         }
 
-        if (uniqueIds.length > 0) {
-          console.log(`📡 [SocketContext] Subscribing to presence for ${uniqueIds.length} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`);
-          socketService.emit('presenceSubscribe', { userIds: uniqueIds });
+        if (uniqueIds.length === 0) return;
+
+        // Skip re-emit + log spam when the subscribed set did not change.
+        const nextKey = Array.from(nextSubscribed).sort().join('|');
+        if (nextKey === lastPresenceSubscribeKeyRef.current) return;
+        lastPresenceSubscribeKeyRef.current = nextKey;
+
+        if (__DEV__) {
+          console.log(
+            `📡 [SocketContext] Subscribing to presence for ${nextSubscribed.size} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`,
+          );
         }
+        socketService.emit('presenceSubscribe', { userIds: Array.from(nextSubscribed) });
       } catch (e) {
         console.error('❌ [SocketContext] Error subscribing to presence:', e);
       }
@@ -870,6 +881,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const removeConnectListener = socketService.addConnectListener(() => {
       setSocketReachable(true);
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
+      // Force re-subscribe after reconnect even if the id set is unchanged.
+      lastPresenceSubscribeKeyRef.current = '';
       subscribeToPresence();
       refreshNotificationCountRef.current?.();
 

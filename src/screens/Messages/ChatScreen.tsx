@@ -34,7 +34,7 @@ import { uploadMediaToR2 } from '../../utils/directR2Upload';
 import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
-import { parseLiveShareMessage } from '../../utils/liveShareMessage';
+import { parseLiveShareMessage, liveSharePreviewText } from '../../utils/liveShareMessage';
 import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
 import {
   getOutgoingDeliveryTicks,
@@ -1133,6 +1133,32 @@ const ChatScreen = ({ route, navigation }: any) => {
 
         if (!currentConversationId && response.conversationId) {
           setCurrentConversationId(response.conversationId);
+        }
+
+        const previewConversationId = String(
+          response.conversationId ||
+            currentConversationId ||
+            groupConvId ||
+            routeConversationIdStr ||
+            '',
+        );
+        if (previewConversationId) {
+          const previewText =
+            liveSharePreviewText(textSnapshot) ||
+            textSnapshot ||
+            (imgUrl ? '📷 Image' : '');
+          DeviceEventEmitter.emit('conversationPreviewUpdated', {
+            conversationId: previewConversationId,
+            updatedAt: response.createdAt || new Date().toISOString(),
+            lastMessage: {
+              text: previewText,
+              createdAt: response.createdAt || new Date().toISOString(),
+              sender: messageWithSender.sender,
+              messageId: response._id,
+              delivered: messageWithSender.delivered === true,
+              seen: messageWithSender.seen === true,
+            },
+          });
         }
 
         // Inverted list: snap to newest after server ack (instant, even if user was reading history).

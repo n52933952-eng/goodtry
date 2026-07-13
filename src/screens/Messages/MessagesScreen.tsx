@@ -41,6 +41,7 @@ import {
   searchRecentFollowProfiles,
   subscribeRecentFollowProfiles,
 } from '../../utils/recentFollowProfiles';
+import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 
 const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
@@ -83,6 +84,8 @@ const MessagesScreen = ({ navigation }: any) => {
   const { socket, selectedConversationId, setPresenceWatchUserIds, isUserOnline, refreshPresenceSubscription } = useSocket();
   const { colors } = useTheme();
   const { t } = useLanguage();
+  const { tabBarHeight } = useTabBarCollapse();
+  const listBottomPad = 20 + tabBarHeight;
   const [conversations, setConversations] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
@@ -120,6 +123,12 @@ const MessagesScreen = ({ navigation }: any) => {
   const CONV_LIST_STORY_FOCUS_MIN_MS = 30_000;
   /** Promote opened chat to top on return without waiting for a full list refetch. */
   const lastOpenedConversationIdRef = useRef<string | null>(null);
+  /**
+   * Keep recently opened chat at top across refetches. Opening alone does not change
+   * server `updatedAt`, so a plain replace jumps the row back when someone else sent last.
+   */
+  const preferTopConversationIdRef = useRef<string | null>(null);
+  const pinnedConversationSnapshotRef = useRef<any | null>(null);
   /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
   const lastPresenceWatchKeyRef = useRef('');
   const convCursorRef = useRef<string | null>(null);
@@ -138,6 +147,31 @@ const MessagesScreen = ({ navigation }: any) => {
     requestAnimationFrame(() => {
       conversationListRef.current?.scrollToOffset({ offset: 0, animated: false });
     });
+  }, []);
+
+  const pinConversationToTop = useCallback((list: any[], pinId: string | null | undefined) => {
+    const id = pinId ? String(pinId) : '';
+    if (!id || !Array.isArray(list) || !list.length) return list;
+    const idx = list.findIndex((c) => conversationIdKey(c) === id);
+    if (idx === 0) return list;
+    if (idx > 0) return [list[idx], ...list.filter((_, i) => i !== idx)];
+    return list;
+  }, []);
+
+  /** Force pinned/opened chat to stay #1 even if the API page omitted it. */
+  const applyPinnedConversation = useCallback((list: any[]) => {
+    const pinId = preferTopConversationIdRef.current
+      ? String(preferTopConversationIdRef.current)
+      : '';
+    if (!pinId || !Array.isArray(list)) return list || [];
+    const fromList = list.find((c) => conversationIdKey(c) === pinId);
+    const snap = pinnedConversationSnapshotRef.current;
+    const pinned =
+      fromList ||
+      (snap && conversationIdKey(snap) === pinId ? snap : null);
+    if (!pinned) return list;
+    const rest = list.filter((c) => conversationIdKey(c) !== pinId);
+    return [pinned, ...rest];
   }, []);
 
   /** Tab focus: first page only + scroll to top (instant, no delayed jump). Returns true if list was trimmed. */
@@ -230,9 +264,17 @@ const MessagesScreen = ({ navigation }: any) => {
         }
 
         // Otherwise move to top WITHOUT full re-sort (new message => most recent)
+        if (conversationId !== preferTopConversationIdRef.current) {
+          preferTopConversationIdRef.current = null;
+          pinnedConversationSnapshotRef.current = null;
+        } else {
+          pinnedConversationSnapshotRef.current = updatedConversation;
+        }
         return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
       } else {
         // New conversation - fetch it from API to get full conversation data
+        preferTopConversationIdRef.current = null;
+        pinnedConversationSnapshotRef.current = null;
         if (fetchConversationsRef.current) {
           fetchConversationsRef.current(false, { silent: true });
         }
@@ -434,6 +476,51 @@ const MessagesScreen = ({ navigation }: any) => {
     };
   }, [handleMessageDelivered]);
 
+  // ChatScreen ignores own socket echoes — push list preview (text + ticks) from the sender side.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      'conversationPreviewUpdated',
+      (payload: {
+        conversationId?: string;
+        lastMessage?: any;
+        updatedAt?: string | Date;
+      }) => {
+        const conversationId = payload?.conversationId != null ? String(payload.conversationId) : '';
+        if (!conversationId || !payload?.lastMessage) return;
+
+        setConversations((prevConvos) => {
+          const existingIndex = prevConvos.findIndex(
+            (conv) => conversationIdKey(conv) === conversationId,
+          );
+          if (existingIndex < 0) {
+            fetchConversationsRef.current?.(false, { silent: true });
+            return prevConvos;
+          }
+
+          const updatedConversation = {
+            ...prevConvos[existingIndex],
+            lastMessage: normalizeConversationLastMessage(payload.lastMessage),
+            updatedAt: payload.updatedAt || new Date(),
+            unreadCount: 0,
+          };
+          preferTopConversationIdRef.current = conversationId;
+          pinnedConversationSnapshotRef.current = updatedConversation;
+
+          if (existingIndex === 0) {
+            const updated = [...prevConvos];
+            updated[0] = updatedConversation;
+            return updated;
+          }
+          return [
+            updatedConversation,
+            ...prevConvos.filter((_, i) => i !== existingIndex),
+          ];
+        });
+      },
+    );
+    return () => sub.remove();
+  }, []);
+
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;
     try {
@@ -518,7 +605,15 @@ const MessagesScreen = ({ navigation }: any) => {
         }
         setHasMoreConversations(hasMore);
         hasMoreConversationsRef.current = hasMore;
-        setConversations(convos);
+        setConversations((prev) => {
+          // Keep a local snapshot fresh if the pin is already on screen.
+          const pinId = preferTopConversationIdRef.current;
+          if (pinId) {
+            const local = prev.find((c) => conversationIdKey(c) === String(pinId));
+            if (local) pinnedConversationSnapshotRef.current = local;
+          }
+          return applyPinnedConversation(convos);
+        });
         userHasScrolledListRef.current = false;
       }
     } catch (error: any) {
@@ -548,18 +643,19 @@ const MessagesScreen = ({ navigation }: any) => {
       const openedId = lastOpenedConversationIdRef.current?.toString();
       lastOpenedConversationIdRef.current = null;
 
+      let returnedFromChat = false;
       let needsCursorRefresh = false;
       if (!first) {
         if (openedId) {
+          returnedFromChat = true;
+          preferTopConversationIdRef.current = openedId;
           userHasScrolledListRef.current = false;
           lastLoadMoreAtRef.current = 0;
           let hadMore = false;
           setConversations((prev) => {
-            const idx = prev.findIndex((c) => c._id?.toString() === openedId);
-            const ordered =
-              idx > 0
-                ? [prev[idx], ...prev.filter((_, i) => i !== idx)]
-                : prev;
+            const existing = prev.find((c) => conversationIdKey(c) === openedId);
+            if (existing) pinnedConversationSnapshotRef.current = existing;
+            const ordered = pinConversationToTop(prev, openedId);
             if (ordered.length > CONVERSATIONS_PAGE_SIZE) {
               hadMore = true;
             }
@@ -569,6 +665,7 @@ const MessagesScreen = ({ navigation }: any) => {
             setHasMoreConversations(true);
             hasMoreConversationsRef.current = true;
           }
+          // Cursor only — do not replace the list order (server sorts by last message).
           needsCursorRefresh = hadMore;
           scrollConversationListToTop();
         } else {
@@ -581,12 +678,15 @@ const MessagesScreen = ({ navigation }: any) => {
         first ||
         conversationsLenRef.current === 0 ||
         now - lastConvListAndStoryFetchAtRef.current >= CONV_LIST_STORY_FOCUS_MIN_MS;
-      if (listStale) {
+
+      // Returning from chat: soft-refresh last message + ticks, but keep opened chat first via pin.
+      if (returnedFromChat) {
+        fetchConversationsRef.current?.(false, { silent: true });
+      } else if (listStale) {
         lastConvListAndStoryFetchAtRef.current = now;
         fetchStoryStrip();
         fetchConversationsRef.current?.(false, { silent: !first });
       } else if (needsCursorRefresh) {
-        // Restore nextCursor after trim — only when we dropped pages locally.
         fetchConversationsRef.current?.(false, { silent: true });
       }
 
@@ -594,7 +694,13 @@ const MessagesScreen = ({ navigation }: any) => {
         lastPresenceRefreshAtRef.current = now;
         refreshPresenceSubscription();
       }
-    }, [refreshPresenceSubscription, fetchStoryStrip, resetConversationListToFirstPage, scrollConversationListToTop])
+    }, [
+      refreshPresenceSubscription,
+      fetchStoryStrip,
+      resetConversationListToFirstPage,
+      scrollConversationListToTop,
+      pinConversationToTop,
+    ])
   );
 
   // When returning from background, refresh conversations (push may arrive while offline/reconnecting).
@@ -846,7 +952,11 @@ const MessagesScreen = ({ navigation }: any) => {
       });
 
       if (existingConvo) {
-        lastOpenedConversationIdRef.current = existingConvo._id?.toString?.() ?? String(existingConvo._id);
+        const convId =
+          existingConvo._id?.toString?.() ?? String(existingConvo._id);
+        lastOpenedConversationIdRef.current = convId;
+        preferTopConversationIdRef.current = convId;
+        pinnedConversationSnapshotRef.current = existingConvo;
         // Navigate to existing conversation
         navigation.navigate('ChatScreen', {
           conversationId: existingConvo._id,
@@ -948,6 +1058,10 @@ const MessagesScreen = ({ navigation }: any) => {
       const otherUserData = !isGroupConv && otherUser && typeof otherUser !== 'string' ? otherUser : null;
       const convId = toIdString(item._id);
       lastOpenedConversationIdRef.current = convId || null;
+      if (convId) {
+        preferTopConversationIdRef.current = convId;
+        pinnedConversationSnapshotRef.current = item;
+      }
       navigation.navigate('ChatScreen', {
         conversationId: convId,
         otherUser: isGroupConv ? null : otherUserData,
@@ -1206,6 +1320,7 @@ const MessagesScreen = ({ navigation }: any) => {
             <SectionList
               sections={searchSections}
               keyExtractor={(item, index) => item._id?.toString?.() ?? String(item._id ?? index)}
+              contentContainerStyle={{ paddingBottom: listBottomPad }}
               renderSectionHeader={({ section }) => (
                 <Text style={[styles.searchSectionTitle, { color: colors.textGray, backgroundColor: colors.background }]}>
                   {section.title}
@@ -1234,6 +1349,7 @@ const MessagesScreen = ({ navigation }: any) => {
           data={conversations}
           renderItem={renderConversation}
           keyExtractor={conversationKeyExtractor}
+          contentContainerStyle={{ paddingBottom: listBottomPad }}
           windowSize={5}
           maxToRenderPerBatch={6}
           initialNumToRender={6}
@@ -1243,17 +1359,19 @@ const MessagesScreen = ({ navigation }: any) => {
           onScrollBeginDrag={onConversationListScrollBeginDrag}
           scrollEventThrottle={16}
           onEndReached={onConversationListEndReached}
-          onEndReachedThreshold={0.2}
+          onEndReachedThreshold={0.35}
           ListFooterComponent={
             loadingMoreConversations ? (
-              <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <View style={{ paddingTop: 16, paddingBottom: 8, alignItems: 'center' }}>
                 <ActivityIndicator size="small" color={colors.primary} />
               </View>
             ) : hasMoreConversations && conversations.length >= CONVERSATIONS_PAGE_SIZE ? (
-              <View style={{ paddingVertical: 12, alignItems: 'center' }}>
+              <View style={{ paddingTop: 12, paddingBottom: 8, alignItems: 'center' }}>
                 <Text style={{ color: colors.textGray, fontSize: 12 }}>{t('scrollForMore') || 'Scroll for more'}</Text>
               </View>
-            ) : null
+            ) : (
+              <View style={{ height: 8 }} />
+            )
           }
           ListEmptyComponent={
             loading ? (
