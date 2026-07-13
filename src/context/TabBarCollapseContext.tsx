@@ -2,6 +2,7 @@ import React, {
   createContext,
   useCallback,
   useContext,
+  useId,
   useMemo,
   useRef,
 } from 'react';
@@ -134,6 +135,13 @@ export function useTabBarCollapse() {
 
 /** Enable tab-bar hide/show while this screen is focused (Feed, User Profile). */
 export function useTabBarCollapseOnFocus(screenId: string, enabled = true) {
+  const reactId = useId();
+  const instanceIdRef = useRef<string | null>(null);
+  if (!instanceIdRef.current) {
+    instanceIdRef.current = `${screenId}-${reactId}`;
+  }
+  const instanceId = instanceIdRef.current;
+
   const {
     registerCollapsibleScreen,
     unregisterCollapsibleScreen,
@@ -145,13 +153,13 @@ export function useTabBarCollapseOnFocus(screenId: string, enabled = true) {
   useFocusEffect(
     useCallback(() => {
       if (!enabled) return undefined;
-      registerCollapsibleScreen(screenId);
+      registerCollapsibleScreen(instanceId);
       return () => {
-        unregisterCollapsibleScreen(screenId);
+        unregisterCollapsibleScreen(instanceId);
       };
     }, [
       enabled,
-      screenId,
+      instanceId,
       registerCollapsibleScreen,
       unregisterCollapsibleScreen,
     ]),

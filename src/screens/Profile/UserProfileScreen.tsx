@@ -136,6 +136,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     resetTabBar();
   }, [resetHeader, resetTabBar]);
 
+  useEffect(() => {
+    const unsub = navigation.addListener('scrollToTop', () => {
+      scrollProfileToTop();
+    });
+    return unsub;
+  }, [navigation, scrollProfileToTop]);
+
   const handleProfileScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const y = e.nativeEvent.contentOffset.y;
@@ -250,6 +257,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     setLoading(true);
     setSkip(0);
     setHasMore(true);
+    setShowScrollTop(false);
+    lastScrollYRef.current = 0;
+    scrollDirAccumRef.current = 0;
+    pastThresholdRef.current = false;
+    profileListRef.current?.scrollToOffset({ offset: 0, animated: false });
+    resetHeader();
+    resetTabBar();
 
     fetchUserProfile();
     // Pass route username explicitly — don't use stale profileUser from previous profile

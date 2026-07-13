@@ -265,7 +265,9 @@ const MainTabsNavigator = ({
   bottomInset: number;
 }) => {
   const { colors } = useTheme();
+  const { user } = useUser();
   const { tabBarTranslateStyle } = useTabBarCollapse();
+  const myUsername = user?.username ? String(user.username) : '';
 
   return (
   <Tab.Navigator
@@ -365,6 +367,43 @@ const MainTabsNavigator = ({
                 return;
               }
 
+              // Profile: handle before tabPress emit — default tabPress runs POP_TO_TOP and
+              // warns when the stack is already a single screen.
+              if (route.name === 'Profile') {
+                const activeRoute = nestedState?.routes?.[nestedStackIndex];
+                const activeUsername =
+                  activeRoute?.name === 'UserProfile'
+                    ? String(activeRoute?.params?.username || '')
+                    : '';
+                const onOwnProfile =
+                  activeRoute?.name === 'UserProfile' &&
+                  (activeUsername === 'self' ||
+                    (!!myUsername && activeUsername === myUsername));
+                const atOwnProfileRoot =
+                  isFocused &&
+                  onOwnProfile &&
+                  nestedStackIndex === 0 &&
+                  (nestedState?.routes?.length ?? 1) <= 1;
+
+                if (atOwnProfileRoot) {
+                  props.navigation.emit({ type: 'scrollToTop', target: route.key });
+                  return;
+                }
+
+                props.navigation.navigate({
+                  name: 'Profile',
+                  params: {
+                    state: {
+                      index: 0,
+                      routes: [
+                        { name: 'UserProfile', params: { username: 'self' } },
+                      ],
+                    },
+                  },
+                });
+                return;
+              }
+
               const event = props.navigation.emit({
                 type: 'tabPress',
                 target: route.key,
@@ -373,21 +412,11 @@ const MainTabsNavigator = ({
               if (event.defaultPrevented) return;
 
               if (!isFocused) {
-                if (route.name === 'Profile') {
-                  props.navigation.navigate('Profile', {
-                    screen: 'UserProfile',
-                    params: { username: 'self' },
-                  });
-                } else if (route.name === 'Search') {
+                if (route.name === 'Search') {
                   props.navigation.navigate('Search', { screen: 'SearchMain' });
                 } else {
                   props.navigation.navigate(route.name);
                 }
-              } else if (isFocused && route.name === 'Profile') {
-                props.navigation.navigate('Profile', {
-                  screen: 'UserProfile',
-                  params: { username: 'self' },
-                });
               } else if (isFocused && route.name === 'Search') {
                 if (nestedStackIndex > 0) {
                   props.navigation.navigate('Search', { screen: 'SearchMain' });

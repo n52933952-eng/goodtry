@@ -1053,6 +1053,7 @@ const Post: React.FC<PostProps> = ({
   const isSomeoneElsesProfile =
     fromScreen === 'UserProfile' && userProfileParams?.isOwnProfile === false;
   const canActAsContributor = !!isContributor && !isSomeoneElsesProfile;
+  const canManagePostOnThisScreen = !isSomeoneElsesProfile;
 
   const canAddCollaborator =
     !!post.isCollaborative && (isOwner || canActAsContributor);
@@ -1602,6 +1603,7 @@ const Post: React.FC<PostProps> = ({
     !isChessPost &&
     !isCardPost &&
     !post?.channelAddedBy &&
+    canManagePostOnThisScreen &&
     (isOwner || (!!post.isCollaborative && canActAsContributor));
 
   const canMessagePostOwner =
@@ -2065,7 +2067,7 @@ const Post: React.FC<PostProps> = ({
               <Text style={styles.editButton}>✏️</Text>
             </TouchableOpacity>
           )}
-          {isOwner && (
+          {isOwner && canManagePostOnThisScreen && (
             <TouchableOpacity onPress={handleDelete} disabled={isDeleting}>
               <Text style={styles.deleteButton}>🗑️</Text>
             </TouchableOpacity>
