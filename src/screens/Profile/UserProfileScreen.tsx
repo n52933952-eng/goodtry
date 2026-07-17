@@ -49,10 +49,13 @@ import CollapsingStackHeader from '../../components/CollapsingStackHeader';
 import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
 import { SOCKET_EVENTS } from '../../utils/constants';
 import { mergePostUpdate, postBelongsToProfile, upsertProfilePost } from '../../utils/postMerge';
+import { usePost } from '../../context/PostContext';
+import { injectFollowedUserPostsIntoFeed } from '../../utils/injectFollowedUserPostsIntoFeed';
 
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam, userId: userIdParam } = route.params || {};
   const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
+  const { injectPostsIntoFeed } = usePost();
   const { socket, liveStreams } = useSocket();
   const { isLive: isSelfBroadcasting } = useLiveBroadcast();
   const { colors } = useTheme();
@@ -643,6 +646,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
 
       if (nextIsFollowing) {
         rememberFollowProfile(profileUser);
+        void injectFollowedUserPostsIntoFeed(profileUserId, injectPostsIntoFeed);
       } else {
         removeFollowProfile(profileUserId);
       }

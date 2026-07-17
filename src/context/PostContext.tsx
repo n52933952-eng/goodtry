@@ -82,6 +82,11 @@ interface PostContextType {
   /** Append new posts at the end without re-sorting existing posts (used for load more). */
   appendPosts: (newPosts: Post[]) => void;
   addPost: (post: Post) => void;
+  /**
+   * Merge posts into the feed immediately (does not queue behind "New posts").
+   * Used when following someone so their recent posts appear on the home feed.
+   */
+  injectPostsIntoFeed: (incoming: Post[]) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
   likePost: (
@@ -460,6 +465,22 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     setPosts((prevPosts) => mergePostIntoFeed(prevPosts, post));
   }, [mergePostIntoFeed, queuePendingFeedPost]);
 
+  const injectPostsIntoFeed = useCallback(
+    (incoming: Post[]) => {
+      if (!Array.isArray(incoming) || incoming.length === 0) return;
+      // Oldest first so mergePostIntoFeed's insert-at-front leaves newest on top.
+      const sorted = [...incoming].sort((a, b) => getSortTimeMs(a) - getSortTimeMs(b));
+      setPosts((prev) => {
+        let next = prev;
+        for (const post of sorted) {
+          next = mergePostIntoFeed(next, post);
+        }
+        return next;
+      });
+    },
+    [mergePostIntoFeed],
+  );
+
   const updatePost = useCallback((postId: string, updates: Partial<Post>) => {
     setPosts((prevPosts) => {
       const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
@@ -662,6 +683,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           }),
         appendPosts,
         addPost,
+        injectPostsIntoFeed,
         updatePost,
         deletePost,
         likePost,

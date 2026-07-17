@@ -21,6 +21,8 @@ import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { isFollowedInSessionList, toUserIdStr } from '../../utils/followState';
 import { rememberFollowProfile, removeFollowProfile } from '../../utils/recentFollowProfiles';
+import { usePost } from '../../context/PostContext';
+import { injectFollowedUserPostsIntoFeed } from '../../utils/injectFollowedUserPostsIntoFeed';
 
 /** Keep search text on the left (same as English) when typing Arabic on RTL devices. */
 const SEARCH_INPUT_LTR = {
@@ -30,6 +32,7 @@ const SEARCH_INPUT_LTR = {
 
 const SearchScreen = ({ navigation }: any) => {
   const { user: currentUser, updateUser, refetchSessionUser } = useUser();
+  const { injectPostsIntoFeed } = usePost();
   const { colors } = useTheme();
   const showToast = useShowToast();
   const [searchQuery, setSearchQuery] = useState('');
@@ -268,6 +271,7 @@ const SearchScreen = ({ navigation }: any) => {
       if (newFollowState) {
         rememberFollowProfile(targetUser);
         setSuggestedUsers((prev) => prev.filter((u) => u?._id?.toString() !== targetId));
+        void injectFollowedUserPostsIntoFeed(targetId, injectPostsIntoFeed);
       } else {
         removeFollowProfile(targetId);
       }

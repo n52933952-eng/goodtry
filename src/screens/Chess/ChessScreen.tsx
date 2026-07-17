@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,14 @@ import { useSocket } from '../../context/SocketContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { apiService } from '../../services/api';
-import { fetchOnlineGameOpponents } from '../../utils/fetchOnlineGameOpponents';
+import {
+  createOpponentPagerState,
+  fetchNextOnlineOpponentBatch,
+  GAME_OPPONENT_PAGE_SIZE,
+  GAME_OPPONENT_SCAN_PAGE_SIZE,
+  type GameOpponentUser,
+  type OpponentPagerState,
+} from '../../utils/fetchOnlineGameOpponents';
 
 interface ChessChallenge {
   _id: string;
@@ -25,23 +32,22 @@ interface ChessChallenge {
   createdAt: string;
 }
 
-interface AvailableUser {
-  _id: string;
-  name: string;
-  username: string;
-  profilePic?: string;
-}
+type AvailableUser = GameOpponentUser;
 
 const ChessScreen = ({ navigation }: any) => {
   const { user, refetchSessionUser } = useUser();
-  const { socket, isUserOnline, refreshPresenceSubscription } = useSocket();
+  const { socket, isUserOnline, refreshPresenceSubscription, setPresenceWatchUserIds } = useSocket();
   const showToast = useShowToast();
 
   const [challenges, setChallenges] = useState<ChessChallenge[]>([]);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [loadingMoreUsers, setLoadingMoreUsers] = useState(false);
+  const [hasMoreOpponents, setHasMoreOpponents] = useState(false);
   const [showChallengeModal, setShowChallengeModal] = useState(false);
+  const opponentPagerRef = useRef<OpponentPagerState>(createOpponentPagerState());
+  const opponentShownIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setLoading(false);
@@ -108,49 +114,96 @@ const ChessScreen = ({ navigation }: any) => {
     }
   };
 
-  const fetchAvailableUsers = async () => {
-    if (!user) return;
+  const fetchAvailableUsers = useCallback(async (mode: 'replace' | 'append' = 'replace') => {
+    if (!user?._id) return;
+    if (mode === 'append') {
+      if (loadingMoreUsers || loadingUsers || opponentPagerRef.current.done) return;
+      setLoadingMoreUsers(true);
+    } else {
+      setLoadingUsers(true);
+      opponentPagerRef.current = createOpponentPagerState();
+      opponentShownIdsRef.current = new Set();
+      setAvailableUsers([]);
+      setHasMoreOpponents(false);
+    }
 
-    setLoadingUsers(true);
     try {
       let busyChessUserIds: string[] = [];
       let busyCardUserIds: string[] = [];
-      try {
-        const busyRes = await apiService.get('/api/user/busyChessUsers');
-        busyChessUserIds = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
-      } catch {
-        /* ignore */
-      }
-      try {
-        const busyCardRes = await apiService.get('/api/user/busyCardUsers');
-        busyCardUserIds = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
-      } catch {
-        /* ignore */
+      if (mode === 'replace') {
+        try {
+          const busyRes = await apiService.get('/api/user/busyChessUsers');
+          busyChessUserIds = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+        } catch {
+          /* ignore */
+        }
+        try {
+          const busyCardRes = await apiService.get('/api/user/busyCardUsers');
+          busyCardUserIds = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+        } catch {
+          /* ignore */
+        }
+        await refetchSessionUser?.();
+        refreshPresenceSubscription?.();
       }
 
-      await refetchSessionUser?.();
-      refreshPresenceSubscription?.();
-
-      const onlineAvailableUsers = await fetchOnlineGameOpponents(
-        String(user._id),
+      const watchedPresenceIds: string[] = [];
+      let presencePrimed = false;
+      const { users, pager } = await fetchNextOnlineOpponentBatch({
+        currentUserId: String(user._id),
         isUserOnline,
-        busyChessUserIds,
-        busyCardUserIds,
-      );
-
-      setAvailableUsers(onlineAvailableUsers);
+        busyUserIds: [...busyChessUserIds, ...busyCardUserIds],
+        pager: opponentPagerRef.current,
+        alreadyShownIds: opponentShownIdsRef.current,
+        targetCount: GAME_OPPONENT_PAGE_SIZE,
+        connectionPageSize: GAME_OPPONENT_SCAN_PAGE_SIZE,
+        beforeFilterPage: async (pageUsers) => {
+          for (const u of pageUsers) {
+            if (!watchedPresenceIds.includes(u._id)) watchedPresenceIds.push(u._id);
+          }
+          setPresenceWatchUserIds?.(watchedPresenceIds);
+          refreshPresenceSubscription?.();
+          if (!presencePrimed) {
+            presencePrimed = true;
+            await new Promise((r) => setTimeout(r, 120));
+          }
+        },
+      });
+      opponentPagerRef.current = pager;
+      for (const u of users) opponentShownIdsRef.current.add(u._id);
+      setAvailableUsers((prev) => (mode === 'replace' ? users : [...prev, ...users]));
+      setHasMoreOpponents(!pager.done);
     } catch (error) {
       console.error('[Chess] Error fetching available users:', error);
-      showToast('Error', 'Failed to fetch users', 'error');
+      if (mode === 'replace') {
+        showToast('Error', 'Failed to fetch users', 'error');
+        setAvailableUsers([]);
+        setHasMoreOpponents(false);
+      }
     } finally {
-      setLoadingUsers(false);
+      if (mode === 'replace') setLoadingUsers(false);
+      else setLoadingMoreUsers(false);
     }
-  };
+  }, [
+    user?._id,
+    loadingMoreUsers,
+    loadingUsers,
+    isUserOnline,
+    refetchSessionUser,
+    refreshPresenceSubscription,
+    setPresenceWatchUserIds,
+    showToast,
+  ]);
 
   const handleCreateChallenge = () => {
     setShowChallengeModal(true);
-    fetchAvailableUsers();
+    void fetchAvailableUsers('replace');
   };
+
+  const handleLoadMoreOpponents = useCallback(() => {
+    if (!hasMoreOpponents || loadingMoreUsers || loadingUsers) return;
+    void fetchAvailableUsers('append');
+  }, [hasMoreOpponents, loadingMoreUsers, loadingUsers, fetchAvailableUsers]);
 
   const handleSendChallenge = (opponent: AvailableUser) => {
     if (!socket) {
@@ -304,6 +357,15 @@ const ChessScreen = ({ navigation }: any) => {
                 data={availableUsers}
                 keyExtractor={(item) => item._id}
                 style={styles.userList}
+                onEndReached={handleLoadMoreOpponents}
+                onEndReachedThreshold={0.4}
+                ListFooterComponent={
+                  loadingMoreUsers ? (
+                    <View style={styles.modalLoading}>
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    </View>
+                  ) : null
+                }
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.userItem}

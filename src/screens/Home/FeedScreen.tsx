@@ -11,10 +11,10 @@ import {
   Modal,
   DeviceEventEmitter,
   Animated,
-  Dimensions,
   NativeSyntheticEvent,
   NativeScrollEvent,
   Platform,
+  Vibration,
 } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { usePost } from '../../context/PostContext';
@@ -37,13 +37,22 @@ import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
 import ChannelsModal from '../../components/ChannelsModal';
 import ActivityModal from '../../components/ActivityModal';
+import {
+  createOpponentPagerState,
+  fetchNextOnlineOpponentBatch,
+  GAME_OPPONENT_PAGE_SIZE,
+  GAME_OPPONENT_SCAN_PAGE_SIZE,
+  type GameOpponentUser,
+  type OpponentPagerState,
+} from '../../utils/fetchOnlineGameOpponents';
 
-interface AvailableUser {
-  _id: string;
-  name: string;
-  username: string;
-  profilePic?: string;
-}
+type AvailableUser = GameOpponentUser;
+
+/** Survives FeedScreen remounts (`detachInactiveScreens`) so tab switches don't refetch every time. */
+let lastFeedRefreshAtMs = 0;
+const FEED_FOCUS_REFRESH_MIN_MS = 30_000;
+/** After jump-to-top: land this many px above 0, then ease in (IG-style, not full-feed scroll). */
+const TOP_LAND_PREVIEW_PX = 56;
 
 const FeedScreen = ({ navigation }: any) => {
   const {
@@ -62,7 +71,7 @@ const FeedScreen = ({ navigation }: any) => {
     pendingNewPostsCount,
   } = usePost();
   const { user, logout } = useUser();
-  const { socket, isUserOnline, notificationCount, refreshNotificationCount } = useSocket();
+  const { socket, isUserOnline, notificationCount, refreshNotificationCount, setPresenceWatchUserIds, refreshPresenceSubscription } = useSocket();
   const { isLive } = useLiveBroadcast();
   const { t } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
@@ -102,6 +111,10 @@ const FeedScreen = ({ navigation }: any) => {
   const [showCardModal, setShowCardModal] = useState(false);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [loadingMoreUsers, setLoadingMoreUsers] = useState(false);
+  const [hasMoreOpponents, setHasMoreOpponents] = useState(false);
+  const opponentPagerRef = useRef<OpponentPagerState>(createOpponentPagerState());
+  const opponentShownIdsRef = useRef<Set<string>>(new Set());
   const [busyChessUserIds, setBusyChessUserIds] = useState<string[]>([]);
   const [busyCardUserIds, setBusyCardUserIds] = useState<string[]>([]);
   const [showChannelsModal, setShowChannelsModal] = useState(false);
@@ -120,8 +133,6 @@ const FeedScreen = ({ navigation }: any) => {
   const activeVideoPostIdRef = useRef<string | null>(null);
   const pendingVideoSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedListRef = useRef<FlatList>(null);
-  const lastFeedFocusRefreshAtRef = useRef(0);
-  const FEED_FOCUS_REFRESH_MIN_MS = 30_000;
   const LOAD_MORE_DEBOUNCE_MS = 600;
   const FEED_PAGE_SIZE = 12;
   const viewabilityConfig = useRef({
@@ -148,6 +159,10 @@ const FeedScreen = ({ navigation }: any) => {
   const prevTopIdRef = useRef<string | null>(null);
   const knownPostIdsRef = useRef<Set<string>>(new Set());
   const scrollTopBtnAnim = useRef(new Animated.Value(0)).current;
+  const newPostsAppearAnim = useRef(new Animated.Value(0)).current;
+  const newPostsPulseAnim = useRef(new Animated.Value(1)).current;
+  /** Soft settle bounce after teleport-to-top (does not scroll through posts). */
+  const feedLandAnim = useRef(new Animated.Value(0)).current;
   const NEW_POSTS_MIN_OFFSET = 300;
   const deferIncomingRef = useRef(false);
 
@@ -161,21 +176,71 @@ const FeedScreen = ({ navigation }: any) => {
   const { mergeTabBarScroll, resetTabBar, tabBarHeight } = useTabBarCollapseOnFocus('feed');
 
   const scrollFeedToTop = useCallback(() => {
-    flushPendingFeedPosts();
     const list = feedListRef.current;
-    if (list) {
-      const y = scrollOffsetRef.current;
-      const winH = Dimensions.get('window').height;
-      list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
+    const flushingNewPosts = pendingNewPostsCount > 0 || hasNewPosts;
+
+    // Light tap — same class of feedback IG/FB use on scroll-to-top.
+    try {
+      Vibration.vibrate(Platform.OS === 'android' ? 12 : 10);
+    } catch {
+      /* ignore */
     }
-    setShowScrollTop(false);
-    setHasNewPosts(false);
-    scrollOffsetRef.current = 0;
+
+    pastThresholdRef.current = false;
+    scrollDirAccumRef.current = 0;
     deferIncomingRef.current = false;
     setDeferIncomingFeedPosts(false);
+    setShowScrollTop(false);
+    setHasNewPosts(false);
     resetHeader();
     resetTabBar();
-  }, [flushPendingFeedPosts, setDeferIncomingFeedPosts, resetHeader, resetTabBar]);
+
+    const playLandBounce = () => {
+      feedLandAnim.setValue(10);
+      Animated.spring(feedLandAnim, {
+        toValue: 0,
+        friction: 7,
+        tension: 110,
+        useNativeDriver: true,
+      }).start();
+    };
+
+    if (flushingNewPosts) {
+      // New posts + MVC: pin at 0 instantly, then soft land bounce only.
+      if (list) list.scrollToOffset({ offset: 0, animated: false });
+      scrollOffsetRef.current = 0;
+      lastScrollYRef.current = 0;
+      flushPendingFeedPosts();
+      requestAnimationFrame(() => {
+        list?.scrollToOffset({ offset: 0, animated: false });
+        playLandBounce();
+      });
+      return;
+    }
+
+    // Arrow: teleport near top (never through hundreds of posts), then short settle.
+    if (list) {
+      list.scrollToOffset({ offset: TOP_LAND_PREVIEW_PX, animated: false });
+    }
+    scrollOffsetRef.current = TOP_LAND_PREVIEW_PX;
+    lastScrollYRef.current = TOP_LAND_PREVIEW_PX;
+    flushPendingFeedPosts();
+
+    requestAnimationFrame(() => {
+      list?.scrollToOffset({ offset: 0, animated: true });
+      playLandBounce();
+      scrollOffsetRef.current = 0;
+      lastScrollYRef.current = 0;
+    });
+  }, [
+    flushPendingFeedPosts,
+    setDeferIncomingFeedPosts,
+    resetHeader,
+    resetTabBar,
+    pendingNewPostsCount,
+    hasNewPosts,
+    feedLandAnim,
+  ]);
 
   const handleFeedScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -190,6 +255,20 @@ const FeedScreen = ({ navigation }: any) => {
         setDeferIncomingFeedPosts(shouldDefer);
       }
 
+      // Near top: never show the arrow (avoids flash on bounce / reach-top).
+      if (y < 40) {
+        pastThresholdRef.current = false;
+        scrollDirAccumRef.current = 0;
+        setShowScrollTop((prev) => (prev ? false : prev));
+        if (pendingNewPostsCount > 0) flushPendingFeedPosts();
+        setHasNewPosts(false);
+        if (deferIncomingRef.current) {
+          deferIncomingRef.current = false;
+          setDeferIncomingFeedPosts(false);
+        }
+        return;
+      }
+
       // Accumulate distance in the current direction so a single jittery frame
       // (momentum wobble) can't toggle the button. Reset the accumulator whenever
       // the direction flips.
@@ -202,15 +281,6 @@ const FeedScreen = ({ navigation }: any) => {
         setShowScrollTop((prev) => (prev ? false : prev));
       } else if (scrollDirAccumRef.current > 14 && pastThresholdRef.current) {
         setShowScrollTop((prev) => (prev ? prev : true));
-      }
-
-      if (y < 40) {
-        if (pendingNewPostsCount > 0) flushPendingFeedPosts();
-        setHasNewPosts(false);
-        if (deferIncomingRef.current) {
-          deferIncomingRef.current = false;
-          setDeferIncomingFeedPosts(false);
-        }
       }
     },
     [pendingNewPostsCount, flushPendingFeedPosts, setDeferIncomingFeedPosts],
@@ -233,15 +303,63 @@ const FeedScreen = ({ navigation }: any) => {
     knownPostIdsRef.current = new Set(list.map((p: any) => String(p._id)));
   }, [visiblePosts]);
 
-  // Fade the floating button in/out.
+  // Bottom arrow: only when scrolled down and not showing the new-posts pill.
   useEffect(() => {
-    const visible = showScrollTop || hasNewPosts;
-    Animated.timing(scrollTopBtnAnim, {
+    const visible = showScrollTop && !hasNewPosts;
+    Animated.spring(scrollTopBtnAnim, {
       toValue: visible ? 1 : 0,
-      duration: 180,
+      friction: 8,
+      tension: 140,
       useNativeDriver: true,
     }).start();
   }, [showScrollTop, hasNewPosts, scrollTopBtnAnim]);
+
+  // New-posts pill: IG-style appear + soft breathe while waiting.
+  useEffect(() => {
+    if (!hasNewPosts) {
+      Animated.timing(newPostsAppearAnim, {
+        toValue: 0,
+        duration: 160,
+        useNativeDriver: true,
+      }).start();
+      newPostsPulseAnim.stopAnimation();
+      newPostsPulseAnim.setValue(1);
+      return;
+    }
+
+    try {
+      Vibration.vibrate(Platform.OS === 'android' ? 10 : 8);
+    } catch {
+      /* ignore */
+    }
+
+    Animated.spring(newPostsAppearAnim, {
+      toValue: 1,
+      friction: 7,
+      tension: 120,
+      useNativeDriver: true,
+    }).start();
+
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(newPostsPulseAnim, {
+          toValue: 1.04,
+          duration: 850,
+          useNativeDriver: true,
+        }),
+        Animated.timing(newPostsPulseAnim, {
+          toValue: 1,
+          duration: 850,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+    return () => {
+      pulse.stop();
+      newPostsPulseAnim.setValue(1);
+    };
+  }, [hasNewPosts, newPostsAppearAnim, newPostsPulseAnim]);
 
   useEffect(() => {
     feedSessionUserIdRef.current = user?._id;
@@ -323,10 +441,12 @@ const FeedScreen = ({ navigation }: any) => {
       refreshNotificationCount?.();
       fetchStoryStrip();
 
+      // Only refetch when empty or older than FEED_FOCUS_REFRESH_MIN_MS (module-level timer).
       const now = Date.now();
-      const feedStale = now - lastFeedFocusRefreshAtRef.current >= FEED_FOCUS_REFRESH_MIN_MS;
-      if (feedStale && !isFetchingRef.current) {
-        lastFeedFocusRefreshAtRef.current = now;
+      const hasPosts = postsRef.current.length > 0;
+      const feedStale = now - lastFeedRefreshAtMs >= FEED_FOCUS_REFRESH_MIN_MS;
+      if ((!hasPosts || feedStale) && !isFetchingRef.current) {
+        lastFeedRefreshAtMs = now;
         fetchFeed();
       }
 
@@ -348,10 +468,6 @@ const FeedScreen = ({ navigation }: any) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fetchStoryStrip, refreshNotificationCount])
   );
-
-  useEffect(() => {
-    fetchFeed();
-  }, []);
 
   /** First visit to home after login: ask camera + mic so calls/live do not block on permission dialogs. */
   useEffect(() => {
@@ -412,8 +528,6 @@ const FeedScreen = ({ navigation }: any) => {
       console.log('🃏 [FeedScreen] User available for card game:', data.userId);
       if (data.userId) {
         setBusyCardUserIds(prev => prev.filter(id => id?.toString() !== data.userId?.toString()));
-        // Refresh available users list
-        fetchAvailableUsers();
       }
     };
 
@@ -481,7 +595,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('livekit:streamStarted', handleStreamStarted);
       socket.off('livekit:streamEnded', handleStreamEnded);
     };
-  }, [socket, user, navigation, deletePost, setPosts, addPost]);
+  }, [socket, user, navigation, deletePost, setPosts, addPost, showToast]);
 
   // Backup: same server status check as pull-to-refresh (~15s, matches backend disconnect grace).
   useEffect(() => {
@@ -580,6 +694,9 @@ const FeedScreen = ({ navigation }: any) => {
       }
       
       setHasMore(responseHasMore);
+      if (!loadMore) {
+        lastFeedRefreshAtMs = Date.now();
+      }
       console.log(`✅ [FeedScreen] Fetched ${uniquePosts.length} unique posts (hasMore=${responseHasMore})`);
     } catch (error: any) {
       console.error('❌ Error fetching feed:', error);
@@ -622,92 +739,110 @@ const FeedScreen = ({ navigation }: any) => {
     fetchFeed(true);
   };
 
-  const fetchAvailableUsers = async () => {
-    if (!user) return;
+  const fetchAvailableUsers = useCallback(async (mode: 'replace' | 'append' = 'replace') => {
+    if (!user?._id) return;
+    if (mode === 'append') {
+      if (loadingMoreUsers || loadingUsers || opponentPagerRef.current.done) return;
+      setLoadingMoreUsers(true);
+    } else {
+      setLoadingUsers(true);
+      opponentPagerRef.current = createOpponentPagerState();
+      opponentShownIdsRef.current = new Set();
+      setAvailableUsers([]);
+      setHasMoreOpponents(false);
+    }
 
-    setLoadingUsers(true);
     try {
-      // Busy users — use local arrays for filtering (state updates are async and would be stale here)
-      let chessBusy: string[] = [];
-      let cardBusy: string[] = [];
-      try {
-        const busyRes = await apiService.get('/api/user/busyChessUsers');
-        chessBusy = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
-        setBusyChessUserIds(chessBusy);
-      } catch {
-        setBusyChessUserIds([]);
-      }
-      try {
-        const busyCardRes = await apiService.get('/api/user/busyCardUsers');
-        cardBusy = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
-        setBusyCardUserIds(cardBusy);
-      } catch {
-        setBusyCardUserIds([]);
-      }
-
-      /**
-       * getUserPro no longer returns following/followers id lists (scalable profile API).
-       * Use dedicated endpoints — same data the Follow lists use (up to 500 each, full user objects).
-       */
-      const [followingRaw, followersRaw] = await Promise.all([
-        apiService.get(ENDPOINTS.GET_FOLLOWING).catch(() => []),
-        apiService.get(ENDPOINTS.GET_FOLLOWERS_USERS).catch(() => []),
-      ]);
-
-      const normalizeList = (data: any): any[] => {
-        if (Array.isArray(data)) return data;
-        if (data && Array.isArray(data.users)) return data.users;
-        return [];
-      };
-
-      const followingList = normalizeList(followingRaw);
-      const followersList = normalizeList(followersRaw);
-
-      const byId = new Map<string, AvailableUser>();
-      for (const u of [...followingList, ...followersList]) {
-        if (!u?._id) continue;
-        const id = u._id.toString();
-        if (!byId.has(id)) {
-          byId.set(id, {
-            _id: id,
-            name: u.name ?? '',
-            username: u.username ?? '',
-            profilePic: u.profilePic,
-          });
+      let chessBusy: string[] = busyChessUserIds;
+      let cardBusy: string[] = busyCardUserIds;
+      if (mode === 'replace') {
+        try {
+          const busyRes = await apiService.get('/api/user/busyChessUsers');
+          chessBusy = (busyRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+          setBusyChessUserIds(chessBusy);
+        } catch {
+          chessBusy = [];
+          setBusyChessUserIds([]);
         }
+        try {
+          const busyCardRes = await apiService.get('/api/user/busyCardUsers');
+          cardBusy = (busyCardRes?.busyUserIds || []).map((x: any) => x?.toString()).filter(Boolean);
+          setBusyCardUserIds(cardBusy);
+        } catch {
+          cardBusy = [];
+          setBusyCardUserIds([]);
+        }
+        refreshPresenceSubscription?.();
       }
 
-      const allUsers = Array.from(byId.values());
-      const currentUserIdStr = user._id?.toString();
-
-      const onlineAvailableUsers = allUsers.filter((u) => {
-        const userIdStr = u._id?.toString();
-        if (!userIdStr || !currentUserIdStr) return false;
-        if (userIdStr === currentUserIdStr) return false;
-        if (!isUserOnline(userIdStr)) return false;
-        if (chessBusy.some((b) => b === userIdStr)) return false;
-        if (cardBusy.some((b) => b === userIdStr)) return false;
-        return true;
+      const watchedPresenceIdsRef = { current: [] as string[] };
+      let presencePrimed = false;
+      const { users, pager } = await fetchNextOnlineOpponentBatch({
+        currentUserId: String(user._id),
+        isUserOnline,
+        busyUserIds: [...chessBusy, ...cardBusy],
+        pager: opponentPagerRef.current,
+        alreadyShownIds: opponentShownIdsRef.current,
+        targetCount: GAME_OPPONENT_PAGE_SIZE,
+        connectionPageSize: GAME_OPPONENT_SCAN_PAGE_SIZE,
+        beforeFilterPage: async (pageUsers) => {
+          const merged = new Set([
+            ...watchedPresenceIdsRef.current,
+            ...Array.from(opponentShownIdsRef.current),
+            ...pageUsers.map((u) => u._id),
+          ]);
+          watchedPresenceIdsRef.current = Array.from(merged);
+          setPresenceWatchUserIds?.(watchedPresenceIdsRef.current);
+          refreshPresenceSubscription?.();
+          // One short presence settle — not per API page (that made the modal feel slow).
+          if (!presencePrimed) {
+            presencePrimed = true;
+            await new Promise((r) => setTimeout(r, 120));
+          }
+        },
       });
+      opponentPagerRef.current = pager;
+      for (const u of users) opponentShownIdsRef.current.add(u._id);
 
-      setAvailableUsers(onlineAvailableUsers);
+      setAvailableUsers((prev) => (mode === 'replace' ? users : [...prev, ...users]));
+      setHasMoreOpponents(!pager.done);
     } catch (error) {
       console.error('Error fetching available users:', error);
-      showToast('Error', 'Failed to fetch users', 'error');
+      if (mode === 'replace') {
+        showToast('Error', 'Failed to fetch users', 'error');
+        setAvailableUsers([]);
+        setHasMoreOpponents(false);
+      }
     } finally {
-      setLoadingUsers(false);
+      if (mode === 'replace') setLoadingUsers(false);
+      else setLoadingMoreUsers(false);
     }
-  };
+  }, [
+    user?._id,
+    loadingMoreUsers,
+    loadingUsers,
+    busyChessUserIds,
+    busyCardUserIds,
+    isUserOnline,
+    refreshPresenceSubscription,
+    setPresenceWatchUserIds,
+    showToast,
+  ]);
 
   const handleOpenChessModal = () => {
     setShowChessModal(true);
-    fetchAvailableUsers();
+    void fetchAvailableUsers('replace');
   };
 
   const handleOpenCardModal = () => {
     setShowCardModal(true);
-    fetchAvailableUsers();
+    void fetchAvailableUsers('replace');
   };
+
+  const handleLoadMoreOpponents = useCallback(() => {
+    if (!hasMoreOpponents || loadingMoreUsers || loadingUsers) return;
+    void fetchAvailableUsers('append');
+  }, [hasMoreOpponents, loadingMoreUsers, loadingUsers, fetchAvailableUsers]);
 
   const handleSendChallenge = (opponent: AvailableUser) => {
     if (!socket?.isSocketConnected?.()) {
@@ -970,6 +1105,12 @@ const FeedScreen = ({ navigation }: any) => {
         </View>
       </Animated.View>
 
+      <Animated.View
+        style={[
+          styles.feedListWrap,
+          { transform: [{ translateY: feedLandAnim }] },
+        ]}
+      >
       <FlatList
         ref={feedListRef}
         data={loading ? [] : visiblePosts}
@@ -1026,56 +1167,97 @@ const FeedScreen = ({ navigation }: any) => {
           ) : null
         }
       />
+      </Animated.View>
 
-      {/* Floating scroll-to-top / new posts button (always mounted; visibility is animated) */}
-      {(
-        <Animated.View
-          pointerEvents={showScrollTop || hasNewPosts ? 'box-none' : 'none'}
-          style={[
-            styles.scrollTopWrap,
-            { bottom: tabBarHeight + 20 },
-            {
-              opacity: scrollTopBtnAnim,
-              transform: [
-                {
-                  translateY: scrollTopBtnAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [24, 0],
-                  }),
-                },
-                {
-                  scale: scrollTopBtnAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.8, 1],
-                  }),
-                },
-              ],
-            },
-          ]}
+      {/* Instagram-style "New posts" pill — top center under header */}
+      <Animated.View
+        pointerEvents={hasNewPosts ? 'box-none' : 'none'}
+        style={[
+          styles.newPostsWrap,
+          { top: Math.max(feedHeaderHeight, 56) + 10 },
+          {
+            opacity: newPostsAppearAnim,
+            transform: [
+              {
+                translateY: newPostsAppearAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-14, 0],
+                }),
+              },
+              { scale: newPostsPulseAnim },
+            ],
+          },
+        ]}
+      >
+        <TouchableOpacity
+          activeOpacity={0.88}
+          onPress={scrollFeedToTop}
+          accessibilityRole="button"
+          accessibilityLabel="See new posts"
+          style={[styles.newPostsPill, { backgroundColor: colors.primary }]}
         >
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={scrollFeedToTop}
-            accessibilityRole="button"
-            accessibilityLabel={hasNewPosts ? 'See new posts' : 'Scroll to top'}
-            style={[
-              hasNewPosts ? styles.newPostsPill : styles.scrollTopButton,
-              { backgroundColor: colors.primary },
-            ]}
-          >
-            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+          <View style={styles.newPostsIconWrap}>
+            <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
               <Path
                 d="M6 15l6-6 6 6"
                 stroke="#FFFFFF"
-                strokeWidth={2.4}
+                strokeWidth={2.6}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
             </Svg>
-            {hasNewPosts && <Text style={styles.newPostsText}>New posts</Text>}
-          </TouchableOpacity>
-        </Animated.View>
-      )}
+          </View>
+          <Text style={styles.newPostsText}>
+            {pendingNewPostsCount > 1
+              ? `${pendingNewPostsCount} new posts`
+              : 'New posts'}
+          </Text>
+        </TouchableOpacity>
+      </Animated.View>
+
+      {/* Floating scroll-to-top arrow (bottom) — hidden while new-posts pill is up */}
+      <Animated.View
+        pointerEvents={showScrollTop && !hasNewPosts ? 'box-none' : 'none'}
+        style={[
+          styles.scrollTopWrap,
+          { bottom: tabBarHeight + 20 },
+          {
+            opacity: scrollTopBtnAnim,
+            transform: [
+              {
+                translateY: scrollTopBtnAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [24, 0],
+                }),
+              },
+              {
+                scale: scrollTopBtnAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.8, 1],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={scrollFeedToTop}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to top"
+          style={[styles.scrollTopButton, { backgroundColor: colors.primary }]}
+        >
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+            <Path
+              d="M6 15l6-6 6 6"
+              stroke="#FFFFFF"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* Channels Modal */}
       <ChannelsModal
@@ -1143,6 +1325,15 @@ const FeedScreen = ({ navigation }: any) => {
                 data={availableUsers}
                 keyExtractor={(item) => item._id}
                 style={styles.userList}
+                onEndReached={handleLoadMoreOpponents}
+                onEndReachedThreshold={0.4}
+                ListFooterComponent={
+                  loadingMoreUsers ? (
+                    <View style={styles.modalLoading}>
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    </View>
+                  ) : null
+                }
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.userItem}
@@ -1211,6 +1402,15 @@ const FeedScreen = ({ navigation }: any) => {
                   return id || `user-${index}`;
                 }}
                 style={styles.userList}
+                onEndReached={handleLoadMoreOpponents}
+                onEndReachedThreshold={0.4}
+                ListFooterComponent={
+                  loadingMoreUsers ? (
+                    <View style={styles.modalLoading}>
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                    </View>
+                  ) : null
+                }
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.userItem}
@@ -1250,6 +1450,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  feedListWrap: {
+    flex: 1,
   },
   header: {
     flexDirection: 'row',
@@ -1389,6 +1592,16 @@ const styles = StyleSheet.create({
   scrollTopWrap: {
     position: 'absolute',
     alignSelf: 'center',
+    zIndex: 30,
+  },
+  newPostsWrap: {
+    position: 'absolute',
+    alignSelf: 'center',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 40,
+    elevation: 40,
   },
   scrollTopButton: {
     width: 46,
@@ -1405,20 +1618,30 @@ const styles = StyleSheet.create({
   newPostsPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 22,
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 18,
+    paddingVertical: 11,
+    borderRadius: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 5,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  newPostsIconWrap: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   newPostsText: {
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+    letterSpacing: 0.2,
   },
   quickAccessHeaderContainer: {
     paddingVertical: 10,
