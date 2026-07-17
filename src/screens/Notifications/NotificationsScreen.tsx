@@ -5,6 +5,7 @@ import {
   FlatList,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   Image,
   ActivityIndicator,
   RefreshControl,
@@ -18,6 +19,7 @@ import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 import { useFocusEffect } from '@react-navigation/native';
+import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 
 interface NotificationsScreenProps {
   navigation: any;
@@ -32,9 +34,12 @@ const NOTIF_LTR = {
 const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation }) => {
   const { user } = useUser();
   const { socket, notificationCount, setNotificationCount, refreshNotificationCount } = useSocket();
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
+  const { tabBarHeight } = useTabBarCollapse();
+  const pressedRowBg =
+    theme === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.10)';
   
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -359,13 +364,21 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
     const fromName = getNotificationFromName(item);
     const actionText = getNotificationActionText(item);
     const useSplitName = item.type !== 'capsule_opened' && !!item.from;
+    const idleBg = !item.read ? colors.cardBg : colors.backgroundLight;
 
     return (
-    <TouchableOpacity
-      style={[
+    <Pressable
+      style={({ pressed }) => [
         styles.notificationItem,
-        { backgroundColor: !item.read ? colors.cardBg : colors.backgroundLight, borderBottomColor: colors.border },
+        {
+          backgroundColor: pressed ? pressedRowBg : idleBg,
+          borderColor: colors.border,
+        },
       ]}
+      android_ripple={{
+        color: theme === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)',
+        borderless: false,
+      }}
       onPress={() => handleNotificationPress(item)}
     >
       <View style={styles.notificationContent}>
@@ -476,7 +489,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
           <Text style={styles.deleteButtonText}>🗑️</Text>
         </TouchableOpacity>
       </View>
-    </TouchableOpacity>
+    </Pressable>
   );
   };
 
@@ -508,7 +521,10 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
         data={notifications}
         renderItem={renderNotification}
         keyExtractor={(item) => item._id}
-        contentContainerStyle={styles.listContainer}
+        contentContainerStyle={[
+          styles.listContainer,
+          { paddingBottom: 28 + tabBarHeight },
+        ]}
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.4}
         refreshControl={
@@ -576,6 +592,9 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 20,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    flexGrow: 1,
   },
   footerLoader: {
     paddingVertical: 16,
@@ -585,9 +604,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
   unreadNotification: {
     backgroundColor: COLORS.backgroundLight,

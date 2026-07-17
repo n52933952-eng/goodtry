@@ -83,8 +83,8 @@ android {
         applicationId "com.playsocial"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 38
-        versionName "4.9.16"
+        versionCode 39
+        versionName "4.9.17"
     }
     signingConfigs {
         debug {

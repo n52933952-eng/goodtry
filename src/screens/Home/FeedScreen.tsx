@@ -175,6 +175,41 @@ const FeedScreen = ({ navigation }: any) => {
   } = useCollapsingHeader();
   const { mergeTabBarScroll, resetTabBar, tabBarHeight } = useTabBarCollapseOnFocus('feed');
 
+  /** Feed stack has no UserProfile — open via Profile tab (same as Post.tsx). */
+  const navigateToUserProfile = useCallback(
+    (usernameOrId: string) => {
+      const query = String(usernameOrId || '').trim();
+      if (!query) return;
+      const params = { username: query };
+
+      const tryPush = (nav: any): boolean => {
+        if (!nav) return false;
+        try {
+          const names = (nav.getState?.() as { routeNames?: string[] } | undefined)?.routeNames ?? [];
+          if (names.includes('UserProfile')) {
+            if (typeof nav.push === 'function') nav.push('UserProfile', params);
+            else nav.navigate('UserProfile', params);
+            return true;
+          }
+        } catch {
+          /* ignore */
+        }
+        return false;
+      };
+
+      if (tryPush(navigation)) return;
+      if (tryPush(navigation.getParent?.())) return;
+
+      const tabNav = navigation.getParent?.();
+      if (tabNav?.navigate) {
+        tabNav.navigate('Profile', { screen: 'UserProfile', params });
+        return;
+      }
+      navigation.navigate('Profile', { screen: 'UserProfile', params });
+    },
+    [navigation],
+  );
+
   const scrollFeedToTop = useCallback(() => {
     const list = feedListRef.current;
     const flushingNewPosts = pendingNewPostsCount > 0 || hasNewPosts;
@@ -1276,18 +1311,23 @@ const FeedScreen = ({ navigation }: any) => {
       <ActivityModal
         visible={showActivityModal}
         onClose={() => setShowActivityModal(false)}
+        onUserPress={(username) => {
+          setShowActivityModal(false);
+          // Defer so modal unmount doesn't swallow the navigation.
+          requestAnimationFrame(() => navigateToUserProfile(username));
+        }}
         onActivityClick={(activity) => {
-          // Navigate to post or user profile based on activity
           if (activity.postId?._id) {
-            // PostDetail is in the same FeedStack, so direct navigation works
             navigation.navigate('PostDetail', { postId: activity.postId._id });
             setShowActivityModal(false);
           } else if (activity.targetUser?.username) {
-            navigation.navigate('UserProfile', { username: activity.targetUser.username });
             setShowActivityModal(false);
+            requestAnimationFrame(() =>
+              navigateToUserProfile(activity.targetUser!.username),
+            );
           } else if (activity.userId?.username) {
-            navigation.navigate('UserProfile', { username: activity.userId.username });
             setShowActivityModal(false);
+            requestAnimationFrame(() => navigateToUserProfile(activity.userId.username));
           }
         }}
       />

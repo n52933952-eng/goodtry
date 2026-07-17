@@ -90,27 +90,41 @@ export const ThreadedComment: React.FC<Props> = ({
   const renderBody = () => {
     const text = reply?.text || '';
     const parts = text.split(/(@\w+)/g);
+    const displayName = reply?.name || reply?.username || 'Unknown';
+
+    // Name first, then comment below — keeps Arabic names LTR like English (no bidi flip).
     return (
-      <Text style={[styles.bodyText, { color: colors.text }]}>
-        <Text style={[styles.usernameInline, { color: colors.text }]}>
-          {reply?.name || reply?.username || 'Unknown'}{' '}
+      <View style={styles.bodyBlock}>
+        <Text
+          style={[styles.usernameInline, styles.bodyLtr, { color: colors.text }]}
+          numberOfLines={1}
+        >
+          {displayName}
         </Text>
-        {parts.map((part, idx) => {
-          if (part.startsWith('@') && part.length > 1) {
-            const username = part.slice(1);
-            return (
-              <Text
-                key={`${idx}-${part}`}
-                style={styles.mention}
-                onPress={() => onMentionPress?.(username)}
-              >
-                {part}
-              </Text>
-            );
-          }
-          return <Text key={`${idx}-${part}`}>{part}</Text>;
-        })}
-      </Text>
+        {text ? (
+          <Text style={[styles.bodyText, styles.bodyLtr, { color: colors.text }]}>
+            {parts.map((part, idx) => {
+              if (part.startsWith('@') && part.length > 1) {
+                const username = part.slice(1);
+                return (
+                  <Text
+                    key={`${idx}-${part}`}
+                    style={[styles.mention, styles.bodyLtr]}
+                    onPress={() => onMentionPress?.(username)}
+                  >
+                    {part}
+                  </Text>
+                );
+              }
+              return (
+                <Text key={`${idx}-${part}`} style={styles.bodyLtr}>
+                  {part}
+                </Text>
+              );
+            })}
+          </Text>
+        ) : null}
+      </View>
     );
   };
 
@@ -225,6 +239,7 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    direction: 'ltr',
   },
   avatar: {
     marginRight: 12,
@@ -242,15 +257,27 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingRight: 4,
+    direction: 'ltr',
+    alignItems: 'flex-start',
+  },
+  bodyBlock: {
+    alignSelf: 'stretch',
+    alignItems: 'flex-start',
+    direction: 'ltr',
   },
   bodyText: {
     fontSize: 14,
     lineHeight: 20,
+    marginTop: 2,
+  },
+  bodyLtr: {
+    textAlign: 'left',
+    writingDirection: 'ltr',
   },
   usernameInline: {
     fontWeight: '700',
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 18,
   },
   mention: {
     color: '#0095F6',
@@ -263,6 +290,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
     marginTop: 6,
+    direction: 'ltr',
+    alignSelf: 'stretch',
   },
   metaText: {
     fontSize: 12,

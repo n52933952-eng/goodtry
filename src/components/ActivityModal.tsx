@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   Modal,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   ScrollView,
   ActivityIndicator,
@@ -45,6 +46,8 @@ interface ActivityModalProps {
   visible: boolean;
   onClose: () => void;
   onActivityClick?: (activity: Activity) => void;
+  /** Navigate to a user profile when a blue name is pressed. */
+  onUserPress?: (username: string) => void;
 }
 
 const formatTimeAgo = (dateString: string) => {
@@ -66,14 +69,19 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
   visible,
   onClose,
   onActivityClick,
+  onUserPress,
 }) => {
   const { user } = useUser();
   const { socket } = useSocket();
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const showToast = useShowToast();
   
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
+  /** Blocks row press when a blue name was just tapped (RN parent Pressable otherwise wins). */
+  const namePressLockRef = useRef(false);
+  const pressedRowBg =
+    theme === 'dark' ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.10)';
 
   useEffect(() => {
     if (visible) {
@@ -173,37 +181,103 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
     }
   };
 
-  const getActivityText = (activity: Activity) => {
-    const userName = activity.userId?.name || activity.userId?.username || 'Someone';
-    
+  const openUserProfile = (username?: string | null) => {
+    const u = typeof username === 'string' ? username.trim() : '';
+    if (!u || !onUserPress) return;
+    namePressLockRef.current = true;
+    onUserPress(u);
+    // Clear after the row's onPress would have fired (same tick / next).
+    setTimeout(() => {
+      namePressLockRef.current = false;
+    }, 80);
+  };
+
+  /** Blue pressable names — separate Pressables so they don't open the post. */
+  const renderActivityText = (activity: Activity) => {
+    const actorName = activity.userId?.name || activity.userId?.username || 'Someone';
+    const actorUsername = activity.userId?.username;
+    const targetName =
+      activity.targetUser?.name || activity.targetUser?.username || 'someone';
+    const targetUsername = activity.targetUser?.username;
+    const nameColor = colors.primary;
+    const bodyColor = colors.cardText;
+
+    const Name = ({
+      label,
+      username,
+    }: {
+      label: string;
+      username?: string;
+    }) => (
+      <Pressable
+        onPressIn={() => {
+          namePressLockRef.current = true;
+        }}
+        onPress={() => openUserProfile(username)}
+        hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+      >
+        <Text style={[styles.activityName, { color: nameColor }]}>{label}</Text>
+      </Pressable>
+    );
+
+    const Rest = ({ children }: { children: string }) => (
+      <Text style={[styles.activityTextPart, { color: bodyColor }]}>{children}</Text>
+    );
+
     switch (activity.type) {
       case 'like':
-        return `${userName} liked a post`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> liked a post</Rest>
+          </View>
+        );
       case 'comment':
-        return `${userName} commented on a post`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> commented on a post</Rest>
+          </View>
+        );
       case 'follow':
-        return `${userName} started following ${activity.targetUser?.name || activity.targetUser?.username || 'someone'}`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> started following </Rest>
+            <Name label={targetName} username={targetUsername} />
+          </View>
+        );
       case 'post':
-        return `${userName} created a new post`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> created a new post</Rest>
+          </View>
+        );
       case 'reply':
-        return `${userName} replied to a comment`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> replied to a comment</Rest>
+          </View>
+        );
       default:
-        return `${userName} performed an action`;
+        return (
+          <View style={styles.activityTextRow}>
+            <Name label={actorName} username={actorUsername} />
+            <Rest> performed an action</Rest>
+          </View>
+        );
     }
   };
 
   const handleActivityPress = (activity: Activity) => {
+    if (namePressLockRef.current) {
+      namePressLockRef.current = false;
+      return;
+    }
     if (onActivityClick) {
       onActivityClick(activity);
-    } else {
-      // Default navigation behavior
-      if (activity.postId?._id) {
-        // Navigate to post detail - this will be handled by parent
-        console.log('Activity clicked - post:', activity.postId._id);
-      } else if (activity.userId?._id) {
-        // Navigate to user profile - this will be handled by parent
-        console.log('Activity clicked - user:', activity.userId.username);
-      }
     }
   };
 
@@ -227,8 +301,18 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
   };
 
   const renderActivity = ({ item }: { item: Activity }) => (
-    <TouchableOpacity
-      style={[styles.activityItem, { backgroundColor: colors.cardBg, borderBottomColor: colors.border }]}
+    <Pressable
+      style={({ pressed }) => [
+        styles.activityItem,
+        {
+          backgroundColor: pressed ? pressedRowBg : colors.cardBg,
+          borderColor: colors.border,
+        },
+      ]}
+      android_ripple={{
+        color: theme === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)',
+        borderless: false,
+      }}
       onPress={() => handleActivityPress(item)}
     >
       <View style={styles.activityContent}>
@@ -248,7 +332,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
         )}
         
         <View style={styles.activityTextContainer}>
-          <Text style={[styles.activityText, { color: colors.cardText }]}>{getActivityText(item)}</Text>
+          {renderActivityText(item)}
           <Text style={[styles.activityTime, { color: colors.cardText, opacity: 0.6 }]}>{formatTimeAgo(item.createdAt)}</Text>
         </View>
       </View>
@@ -256,10 +340,11 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
       <TouchableOpacity
         style={styles.deleteButton}
         onPress={(e) => handleDeleteActivity(item._id, e)}
+        activeOpacity={0.6}
       >
         <Text style={styles.deleteButtonText}>🗑️</Text>
       </TouchableOpacity>
-    </TouchableOpacity>
+    </Pressable>
   );
 
   return (
@@ -366,14 +451,19 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 20,
+    paddingHorizontal: 10,
+    paddingTop: 8,
   },
   activityItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
   activityContent: {
     flexDirection: 'row',
@@ -403,11 +493,30 @@ const styles = StyleSheet.create({
   activityTextContainer: {
     flex: 1,
   },
+  activityTextRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    marginBottom: 4,
+    direction: 'ltr',
+  },
   activityText: {
     fontSize: 15,
     color: COLORS.text,
     fontWeight: '600',
     marginBottom: 4,
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  activityTextPart: {
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'left',
+    writingDirection: 'ltr',
+  },
+  activityName: {
+    fontSize: 15,
+    fontWeight: '700',
   },
   activityTime: {
     fontSize: 13,
