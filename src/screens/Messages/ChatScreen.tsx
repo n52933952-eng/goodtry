@@ -40,6 +40,7 @@ import {
   getOutgoingDeliveryTicks,
   normalizeOutgoingDeliveryFields,
 } from '../../utils/messageDeliveryTicks';
+import { wasConversationLocallyDeleted } from '../../utils/localConversationDeletions';
 
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
 const sharedPostCache = new Map<string, any>();
@@ -374,30 +375,26 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
   }, [user?._id, userId, otherUser?._id, socket, isGroup, groupConversation?.isGroup, toIdString]);
 
-  // Real-time: reaction on a message – backend emits messageReactionUpdated with { conversationId, messageId } (same as web)
-  const handleMessageReactionUpdated = useCallback(async (data: { conversationId?: string; messageId?: string }) => {
+  // Real-time reaction: merge the canonical array into one message.
+  // No page refetch, so loaded history is preserved and server load stays O(1).
+  const handleMessageReactionUpdated = useCallback((data: {
+    conversationId?: string;
+    messageId?: string;
+    reactions?: any[];
+  }) => {
     const convId = data?.conversationId?.toString?.() ?? data?.conversationId;
     const currentConvId = currentConversationIdRef.current?.toString?.() ?? currentConversationIdRef.current;
     if (!convId || convId !== currentConvId) return;
-
-    // Backend only sends conversationId + messageId; refetch messages to get updated reactions (same as web)
-    try {
-      const isGroupConv = !!(isGroup || groupConversation?.isGroup);
-      const existingConversationId = toIdString(currentConversationIdRef.current) || routeConversationIdStr || routeGroupConversationIdStr;
-      const groupConvId = existingConversationId;
-      const otherUserId = otherUser?._id ?? userId;
-      if (!existingConversationId && !isGroupConv && !otherUserId) return;
-      if (isGroupConv && !groupConvId) return;
-      const url = existingConversationId
-        ? `${ENDPOINTS.GET_MESSAGES}/${String(existingConversationId)}?conversationId=${String(existingConversationId)}&limit=${MESSAGE_PAGE_SIZE}`
-        : `${ENDPOINTS.GET_MESSAGES}/${typeof otherUserId === 'string' ? otherUserId : (otherUserId as any)?._id ?? otherUserId}?limit=${MESSAGE_PAGE_SIZE}`;
-      const response = await apiService.get(url);
-      const messagesData = response?.messages ?? (Array.isArray(response) ? response : []);
-      setMessages(messagesData);
-    } catch (e) {
-      console.warn('❌ [ChatScreen] messageReactionUpdated refetch failed:', e);
-    }
-  }, [otherUser?._id, userId, isGroup, groupConversation?.isGroup, routeConversationIdStr, routeGroupConversationIdStr, toIdString]);
+    const messageId = data?.messageId != null ? String(data.messageId) : '';
+    if (!messageId || !Array.isArray(data?.reactions)) return;
+    setMessages((prev) =>
+      prev.map((message) =>
+        String(message?._id) === messageId
+          ? { ...message, reactions: data.reactions }
+          : message,
+      ),
+    );
+  }, []);
 
   // Real-time: message deleted – backend emits messageDeleted with { conversationId, messageId } (same as web)
   const handleMessagesSeen = useCallback(
@@ -542,15 +539,18 @@ const ChatScreen = ({ route, navigation }: any) => {
     const handleGroupDeleted = ({ conversationId: deletedId }: { conversationId: string }) => {
       const thisId = toIdString(currentConversationId) || routeConversationIdStr;
       if (deletedId && String(deletedId) === String(thisId)) {
+        // We initiated this deletion (GroupInfo already popped) — skip the socket echo.
+        if (wasConversationLocallyDeleted(deletedId)) return;
         Alert.alert(t('groupDeletedTitle'), t('groupDeletedByAdmin'));
-        navigation.pop(1);
+        if (navigation.canGoBack()) navigation.pop(1);
       }
     };
 
     const handleConversationDeleted = ({ conversationId: deletedId }: { conversationId: string }) => {
       const thisId = toIdString(currentConversationId) || routeConversationIdStr;
       if (deletedId && thisId && String(deletedId) === String(thisId)) {
-        navigation.pop(1);
+        if (wasConversationLocallyDeleted(deletedId)) return;
+        if (navigation.canGoBack()) navigation.pop(1);
       }
     };
 

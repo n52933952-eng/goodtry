@@ -81,7 +81,14 @@ const toIdString = (value: any): string => {
 
 const MessagesScreen = ({ navigation }: any) => {
   const { user } = useUser();
-  const { socket, selectedConversationId, setPresenceWatchUserIds, isUserOnline, refreshPresenceSubscription } = useSocket();
+  const {
+    socket,
+    selectedConversationId,
+    setSelectedConversationId,
+    setPresenceWatchUserIds,
+    isUserOnline,
+    refreshPresenceSubscription,
+  } = useSocket();
   const { colors } = useTheme();
   const { t } = useLanguage();
   const { tabBarHeight } = useTabBarCollapse();
@@ -132,6 +139,8 @@ const MessagesScreen = ({ navigation }: any) => {
   /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
   const lastPresenceWatchKeyRef = useRef('');
   const convCursorRef = useRef<string | null>(null);
+  /** Load-more requested while another fetch was in flight — run it right after. */
+  const pendingLoadMoreRef = useRef(false);
   /** Block onEndReached until the user scrolls — stops auto-loading every page on mount. */
   const userHasScrolledListRef = useRef(false);
   const lastLoadMoreAtRef = useRef(0);
@@ -292,12 +301,40 @@ const MessagesScreen = ({ navigation }: any) => {
     fetchConversationsRef.current?.(false, { silent: true });
   }, []);
 
-  /** DM removed (e.g. unfollow) — drop from list without waiting for refetch. */
+  /** DM / group removed — drop from list without waiting for refetch. */
   const handleConversationDeleted = React.useCallback((data: any) => {
-    const conversationId = data?.conversationId?.toString();
+    const conversationId = data?.conversationId != null ? String(data.conversationId) : '';
     if (!conversationId) return;
+    if (preferTopConversationIdRef.current === conversationId) {
+      preferTopConversationIdRef.current = null;
+      pinnedConversationSnapshotRef.current = null;
+    }
+    if (lastOpenedConversationIdRef.current === conversationId) {
+      lastOpenedConversationIdRef.current = null;
+    }
     setConversations((prev) =>
-      prev.filter((conv) => conv._id?.toString() !== conversationId),
+      prev.filter((conv) => conversationIdKey(conv) !== conversationId),
+    );
+    if (selectedConversationIdRef.current === conversationId) {
+      setSelectedConversationId(null);
+    }
+  }, [setSelectedConversationId]);
+
+  /** Admin deleted the group — same local list tombstone as conversationDeleted. */
+  const handleGroupDeleted = React.useCallback((data: any) => {
+    handleConversationDeleted(data);
+  }, [handleConversationDeleted]);
+
+  /** Deleted message was the list preview — server sends the repaired lastMessage. */
+  const handleMessageDeletedForList = React.useCallback((data: any) => {
+    const conversationId = data?.conversationId != null ? String(data.conversationId) : '';
+    if (!conversationId || data?.lastMessage === undefined) return;
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conversationIdKey(conv) === conversationId
+          ? { ...conv, lastMessage: normalizeConversationLastMessage(data.lastMessage) }
+          : conv,
+      ),
     );
   }, []);
 
@@ -431,6 +468,8 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
       socket.off('conversationDeleted', handleConversationDeleted);
+      socket.off('groupDeleted', handleGroupDeleted);
+      socket.off('messageDeleted', handleMessageDeletedForList);
       socket.on('newMessage', handleNewMessage);
       socket.on('unreadCountUpdate', handleUnreadCountUpdate);
       socket.on('conversationMarkedRead', handleConversationMarkedRead);
@@ -439,6 +478,8 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.on('liveShareExpired', handleLiveShareCleanup);
       socket.on('livekit:streamEnded', handleLiveShareCleanup);
       socket.on('conversationDeleted', handleConversationDeleted);
+      socket.on('groupDeleted', handleGroupDeleted);
+      socket.on('messageDeleted', handleMessageDeletedForList);
     };
 
     bindConversationListeners();
@@ -456,6 +497,8 @@ const MessagesScreen = ({ navigation }: any) => {
       socket.off('liveShareExpired', handleLiveShareCleanup);
       socket.off('livekit:streamEnded', handleLiveShareCleanup);
       socket.off('conversationDeleted', handleConversationDeleted);
+      socket.off('groupDeleted', handleGroupDeleted);
+      socket.off('messageDeleted', handleMessageDeletedForList);
     };
   }, [
     socket,
@@ -467,6 +510,8 @@ const MessagesScreen = ({ navigation }: any) => {
     handleMessagesSeenByRecipient,
     handleLiveShareCleanup,
     handleConversationDeleted,
+    handleGroupDeleted,
+    handleMessageDeletedForList,
   ]);
 
   useEffect(() => {
@@ -521,6 +566,21 @@ const MessagesScreen = ({ navigation }: any) => {
     return () => sub.remove();
   }, []);
 
+  // Deleted/left a group from GroupInfo/Chat — drop it from the list right away (no reload).
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      'conversationRemovedLocal',
+      (payload: { conversationId?: string }) => {
+        const removedId = payload?.conversationId != null ? String(payload.conversationId) : '';
+        if (!removedId) return;
+        setConversations((prev) =>
+          prev.filter((c) => conversationIdKey(c) !== removedId),
+        );
+      },
+    );
+    return () => sub.remove();
+  }, []);
+
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;
     try {
@@ -554,8 +614,14 @@ const MessagesScreen = ({ navigation }: any) => {
     loadMore = false,
     opts: { silent?: boolean } = {}
   ) => {
-    // Prevent duplicate requests (but allow the very first fetch even if loading=true initially)
-    if (isFetchingConversationsRef.current) return;
+    // Prevent duplicate requests (but allow the very first fetch even if loading=true initially).
+    // A load-more that lands while another fetch is in flight (e.g. the silent focus refresh
+    // after returning from a chat) must NOT be dropped: onEndReached is edge-triggered and
+    // won't fire again at the bottom, which left the list stuck at the first page.
+    if (isFetchingConversationsRef.current) {
+      if (loadMore) pendingLoadMoreRef.current = true;
+      return;
+    }
     if (loadMore && (loadingMoreConversationsRef.current || !hasMoreConversationsRef.current)) return;
     if (loadMore && !convCursorRef.current) return;
 
@@ -614,7 +680,13 @@ const MessagesScreen = ({ navigation }: any) => {
           }
           return applyPinnedConversation(convos);
         });
-        userHasScrolledListRef.current = false;
+        // Only block auto load-more for visible (initial) loads. Silent focus
+        // refreshes must NOT clear the flag: the user may already be scrolling,
+        // and clearing it here leaves them stuck at the first page ("Scroll for
+        // more" shows but onEndReached is ignored).
+        if (!opts.silent) {
+          userHasScrolledListRef.current = false;
+        }
       }
     } catch (error: any) {
       console.error('❌ [MessagesScreen] fetchConversations: Error', error);
@@ -625,6 +697,13 @@ const MessagesScreen = ({ navigation }: any) => {
       isFetchingConversationsRef.current = false;
       setLoading(false);
       setLoadingMoreConversations(false);
+      // Run the load-more that was requested while this fetch was in flight.
+      if (pendingLoadMoreRef.current) {
+        pendingLoadMoreRef.current = false;
+        if (hasMoreConversationsRef.current && convCursorRef.current) {
+          setTimeout(() => fetchConversationsRef.current?.(true), 0);
+        }
+      }
     }
   };
   fetchConversationsRef.current = fetchConversations;
@@ -942,6 +1021,10 @@ const MessagesScreen = ({ navigation }: any) => {
 
   const handleStartConversation = async (selectedUser: any) => {
     try {
+      // Release the search input before navigating so it cannot keep the
+      // keyboard/touch responder when this screen becomes focused again.
+      Keyboard.dismiss();
+
       // Check if a 1-to-1 conversation already exists (exclude groups — a group can
       // contain the searched user but is not a direct chat with them)
       const existingConvo = conversations.find((conv: any) => {
@@ -1136,25 +1219,44 @@ const MessagesScreen = ({ navigation }: any) => {
     return id || `conversation-${index}`;
   }, []);
 
+  const maybeLoadMoreConversations = useCallback(() => {
+    if (!userHasScrolledListRef.current) return;
+    if (loadingMoreConversationsRef.current || !hasMoreConversationsRef.current) return;
+    const now = Date.now();
+    if (now - lastLoadMoreAtRef.current < 600) return;
+    lastLoadMoreAtRef.current = now;
+    if (!convCursorRef.current) {
+      // hasMore without a cursor = pagination out of sync (e.g. refetch failed).
+      // Re-sync with a silent first-page fetch so the next pull can load more.
+      fetchConversationsRef.current?.(false, { silent: true });
+      return;
+    }
+    fetchConversationsRef.current?.(true);
+  }, []);
+
   const onConversationListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (e.nativeEvent.contentOffset.y > 8) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    if (contentOffset.y > 8) {
       userHasScrolledListRef.current = true;
     }
-  }, []);
+    // onEndReached is edge-triggered: with a short first page the list renders
+    // already inside the threshold, the event fires once while still blocked
+    // (user hasn't scrolled), and never fires again. Check "near bottom" on
+    // every scroll instead so a real user scroll always paginates.
+    const distanceFromEnd =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    if (distanceFromEnd < layoutMeasurement.height * 0.5) {
+      maybeLoadMoreConversations();
+    }
+  }, [maybeLoadMoreConversations]);
 
   const onConversationListScrollBeginDrag = useCallback(() => {
     userHasScrolledListRef.current = true;
   }, []);
 
   const onConversationListEndReached = useCallback(() => {
-    if (!userHasScrolledListRef.current) return;
-    if (loadingMoreConversationsRef.current || !hasMoreConversationsRef.current) return;
-    if (!convCursorRef.current) return;
-    const now = Date.now();
-    if (now - lastLoadMoreAtRef.current < 600) return;
-    lastLoadMoreAtRef.current = now;
-    fetchConversationsRef.current?.(true);
-  }, []);
+    maybeLoadMoreConversations();
+  }, [maybeLoadMoreConversations]);
 
   const searchSections = React.useMemo(() => {
     const sections: Array<{ key: string; title: string; data: any[] }> = [];
@@ -1346,6 +1448,7 @@ const MessagesScreen = ({ navigation }: any) => {
       {!searchQuery.trim() && (
         <FlatList
           ref={conversationListRef}
+          style={styles.conversationsList}
           data={conversations}
           renderItem={renderConversation}
           keyExtractor={conversationKeyExtractor}
@@ -1638,6 +1741,9 @@ const styles = StyleSheet.create({
     flex: 1,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+  },
+  conversationsList: {
+    flex: 1,
   },
   searchSectionTitle: {
     fontSize: 13,

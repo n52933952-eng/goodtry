@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   TextInput,
   Modal,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -19,6 +20,10 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useSocket } from '../../context/SocketContext';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
+import {
+  markConversationLocallyDeleted,
+  wasConversationLocallyDeleted,
+} from '../../utils/localConversationDeletions';
 
 const FOLLOWING_PAGE_SIZE = 30;
 
@@ -62,8 +67,10 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
 
     const onGroupDeleted = ({ conversationId }: any) => {
       if (idStr(conversationId) !== convId) return;
+      // We initiated this deletion — navigation already handled locally, skip the echo.
+      if (wasConversationLocallyDeleted(conversationId)) return;
       Alert.alert(t('groupDeletedTitle') || 'Group Deleted', t('groupDeletedByAdmin') || 'This group has been deleted.');
-      navigation.pop(2);
+      if (navigation.canGoBack()) navigation.pop(2);
     };
 
     const onMemberAdded = ({ conversationId, conversation: updatedConv }: any) => {
@@ -217,6 +224,10 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
             setLeaving(true);
             try {
               await apiService.post(`${ENDPOINTS.LEAVE_GROUP}/${conversation._id}/leave`, {});
+              // Remove from the Messages list immediately (no reload needed).
+              DeviceEventEmitter.emit('conversationRemovedLocal', {
+                conversationId: conversation._id,
+              });
               // Pop back to messages list
               navigation.pop(2);
             } catch (e: any) {
@@ -242,7 +253,12 @@ const GroupInfoScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             setDeletingGroup(true);
             try {
+              markConversationLocallyDeleted(conversation._id);
               await apiService.delete(`${ENDPOINTS.DELETE_GROUP}/${conversation._id}`);
+              // Remove from the Messages list immediately (no reload needed).
+              DeviceEventEmitter.emit('conversationRemovedLocal', {
+                conversationId: conversation._id,
+              });
               navigation.pop(2);
             } catch (e: any) {
               Alert.alert(t('error'), e?.message || t('failedToDeleteGroup'));

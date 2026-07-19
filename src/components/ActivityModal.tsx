@@ -19,6 +19,12 @@ import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
 
+// How long an activity stays visible. Must match backend ACTIVITY_RETENTION_HOURS.
+const ACTIVITY_RETENTION_HOURS = 12;
+const ACTIVITY_RETENTION_MS = ACTIVITY_RETENTION_HOURS * 60 * 60 * 1000;
+// Must match backend ACTIVITY_MAX_PER_USER.
+const ACTIVITY_MAX = 40;
+
 interface Activity {
   _id: string;
   type: string;
@@ -109,13 +115,17 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
       }
       
       setActivities(prev => {
-        // Filter out activities older than 6 hours
-        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-        const recentActivities = prev.filter(a => 
-          new Date(a.createdAt) >= sixHoursAgo
+        // Filter out activities past the retention window
+        const retentionCutoff = new Date(Date.now() - ACTIVITY_RETENTION_MS);
+        const recentActivities = prev.filter(a =>
+          new Date(a.createdAt) >= retentionCutoff
         );
-        // Add new activity at the beginning, keep only 15
-        return [activity, ...recentActivities].slice(0, 15);
+        // Dedupe by id, add newest first, keep only 15
+        const newId = activity?._id != null ? String(activity._id) : '';
+        const deduped = newId
+          ? recentActivities.filter(a => String(a?._id) !== newId)
+          : recentActivities;
+        return [activity, ...deduped].slice(0, ACTIVITY_MAX);
       });
     };
 
@@ -140,11 +150,11 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
             return activityUserId && followingIds.includes(activityUserId);
           })
           .filter((activity: Activity) => {
-            // Filter out activities older than 6 hours
-            const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-            return new Date(activity.createdAt) >= sixHoursAgo;
+            // Filter out activities past the retention window
+            const retentionCutoff = new Date(Date.now() - ACTIVITY_RETENTION_MS);
+            return new Date(activity.createdAt) >= retentionCutoff;
           })
-          .slice(0, 15); // Limit to 15 most recent
+          .slice(0, ACTIVITY_MAX); // Limit to most recent
         
         setActivities(filteredActivities);
       } else if (data.activities && Array.isArray(data.activities)) {
@@ -155,10 +165,10 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
             return activityUserId && followingIds.includes(activityUserId);
           })
           .filter((activity: Activity) => {
-            const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-            return new Date(activity.createdAt) >= sixHoursAgo;
+            const retentionCutoff = new Date(Date.now() - ACTIVITY_RETENTION_MS);
+            return new Date(activity.createdAt) >= retentionCutoff;
           })
-          .slice(0, 15);
+          .slice(0, ACTIVITY_MAX);
         
         setActivities(filteredActivities);
       }

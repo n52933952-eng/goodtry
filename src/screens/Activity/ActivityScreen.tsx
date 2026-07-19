@@ -15,6 +15,12 @@ import { API_URL, COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 
+// How long an activity stays visible. Must match backend ACTIVITY_RETENTION_HOURS.
+const ACTIVITY_RETENTION_HOURS = 12;
+const ACTIVITY_RETENTION_MS = ACTIVITY_RETENTION_HOURS * 60 * 60 * 1000;
+// Must match backend ACTIVITY_MAX_PER_USER.
+const ACTIVITY_MAX = 40;
+
 function parseActivityCreatedAt(value: unknown): Date | null {
   if (value == null) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -129,13 +135,17 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
       }
       
       setActivities(prev => {
-        // Filter out activities older than 6 hours
-        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-        const recentActivities = prev.filter(a => 
-          new Date(a.createdAt) >= sixHoursAgo
+        // Filter out activities past the retention window
+        const retentionCutoff = new Date(Date.now() - ACTIVITY_RETENTION_MS);
+        const recentActivities = prev.filter(a =>
+          new Date(a.createdAt) >= retentionCutoff
         );
-        // Add new activity at the beginning, keep only 15
-        return [activity, ...recentActivities].slice(0, 15);
+        // Dedupe by id, add newest first, keep only 15
+        const newId = activity?._id != null ? String(activity._id) : '';
+        const deduped = newId
+          ? recentActivities.filter(a => String(a?._id) !== newId)
+          : recentActivities;
+        return [activity, ...deduped].slice(0, ACTIVITY_MAX);
       });
     };
 
@@ -156,11 +166,11 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
       const data = await response.json();
       
       if (response.ok && data.activities) {
-        // Filter out activities older than 6 hours and limit to 15
-        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+        // Filter out activities past the retention window and limit to 15
+        const retentionCutoff = new Date(Date.now() - ACTIVITY_RETENTION_MS);
         const recentActivities = data.activities
-          .filter((activity: Activity) => new Date(activity.createdAt) >= sixHoursAgo)
-          .slice(0, 15);
+          .filter((activity: Activity) => new Date(activity.createdAt) >= retentionCutoff)
+          .slice(0, ACTIVITY_MAX);
         setActivities(recentActivities);
       }
     } catch (error) {
