@@ -11,6 +11,7 @@ import { useGroupCall } from '../context/GroupCallContext';
 import { useTheme } from '../context/ThemeContext';
 import fcmService from '../services/fcmService';
 import { navigateFromPushData } from '../services/pushNavigation';
+import { consumePendingChatPush, clearPendingChatPushNative } from '../services/chatPushPrefs';
 import { getPendingCallData, clearCallData } from '../services/callData';
 
 // Auth Screens
@@ -732,7 +733,7 @@ const AppNavigator = () => {
     getIncomingCallFromNotificationCallerId,
   } = useWebRTC();
   const pendingCancel = false;
-  const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket } = useSocket();
+  const { chessChallenges, clearChessChallenge, cardChallenges, clearCardChallenge, socket, refreshPresenceSubscription } = useSocket();
   const { isLive, isMinimized, isSharing, endLiveForCall } = useLiveBroadcast();
   const isLiveRef = useRef(isLive);
   useEffect(() => {
@@ -1106,6 +1107,14 @@ const AppNavigator = () => {
     }
     if (!data?.type) return;
 
+    // Opening from a notification = user is looking at the app → mark online for friends.
+    DeviceEventEmitter.emit('playsocial:forcePresenceOnline');
+    try {
+      refreshPresenceSubscription?.();
+    } catch (_) {
+      /* ignore */
+    }
+
     const nav = navigationRef.current;
     const navIsReady = nav?.isReady?.() ?? !!nav?.navigate;
     if (!nav?.navigate || !navReadyRef.current || !navIsReady || !user) {
@@ -1113,8 +1122,14 @@ const AppNavigator = () => {
       return;
     }
     pendingPushNavRef.current = null;
-    navigateFromPushData(navigationRef, data);
-  }, [user]);
+    const ok = navigateFromPushData(navigationRef, data);
+    if (
+      ok &&
+      (data.type === 'message' || data.type === 'group_message' || data.type === 'group_added')
+    ) {
+      void clearPendingChatPushNative();
+    }
+  }, [user, refreshPresenceSubscription]);
 
   const flushPendingPushNavigation = useCallback(() => {
     const pending = pendingPushNavRef.current;
@@ -1127,11 +1142,38 @@ const AppNavigator = () => {
 
     console.log('✅ [AppNavigator] Setting up navigation refs...');
     fcmService.setNavigationRef(navigationRef);
+
+    let chatPushRetryTimer: ReturnType<typeof setTimeout> | null = null;
     if (user) {
-      fcmService.getInitialPushData().then((data) => {
-        if (data) tryNavigateFromPush(data);
-        else flushPendingPushNavigation();
-      }).catch(() => flushPendingPushNavigation());
+      const openFromSources = async () => {
+        try {
+          const initial = await fcmService.getInitialPushData();
+          if (initial) {
+            tryNavigateFromPush(initial);
+            return;
+          }
+        } catch (_) {
+          /* fall through */
+        }
+        try {
+          const pendingNative = await consumePendingChatPush();
+          if (pendingNative) {
+            tryNavigateFromPush(pendingNative);
+            return;
+          }
+        } catch (_) {
+          /* fall through */
+        }
+        flushPendingPushNavigation();
+      };
+      void openFromSources();
+      // Native may emit / persist ChatPushPrefs a beat after NavigationContainer mounts.
+      chatPushRetryTimer = setTimeout(() => {
+        void consumePendingChatPush().then((pending) => {
+          if (pending) tryNavigateFromPush(pending);
+          else flushPendingPushNavigation();
+        });
+      }, 900);
     }
 
     const guard = cancelGuardRef.current;
@@ -1139,12 +1181,16 @@ const AppNavigator = () => {
     if ((guard.pendingCancel || guard.hasPendingCancelFromPrefs) && !pendingHasAnswer) {
       console.log('⏸️ [AppNavigator] Skipping pending-call processing - cancel guard active', guard);
       pendingNavigationEvent.current = null;
-      return;
+      return () => {
+        if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
+      };
     }
     if (!pendingHasAnswer && guard.callEnded) {
       console.log('⏸️ [AppNavigator] Skipping pending-call processing - call ended', guard);
       pendingNavigationEvent.current = null;
-      return;
+      return () => {
+        if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
+      };
     }
 
     // Process pending NavigateToCallScreen event if any (e.g. user pressed Answer, nav wasn't ready)
@@ -1236,6 +1282,10 @@ const AppNavigator = () => {
 
       console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
     }
+
+    return () => {
+      if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
+    };
   }, [navReady, user, setIncomingCallFromNotification, tryNavigateFromPush, flushPendingPushNavigation]);
 
   // All social / message push deep links — wait until NavigationContainer is ready

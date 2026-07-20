@@ -9,6 +9,32 @@ import { DeviceEventEmitter, Platform, PermissionsAndroid } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from './api';
 import { API_URL, STORAGE_KEYS } from '../utils/constants';
+import { stashEarlyChatPush } from './chatPushPrefs';
+
+function normalizeOpenedPushData(data: Record<string, string> | undefined | null): Record<string, string> | null {
+  if (!data || typeof data !== 'object') return null;
+  const raw: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value == null) continue;
+    raw[key] = String(value);
+  }
+  if (!raw.type && raw.conversationId) {
+    raw.type = raw.isGroup === 'true' ? 'group_message' : 'message';
+  }
+  if (!raw.type) return null;
+  return raw;
+}
+
+/** Capture native chat-push events before AppNavigator mounts (auth loading returns null). */
+DeviceEventEmitter.addListener('NavigateToChatFromPush', (data: any) => {
+  stashEarlyChatPush(data);
+});
+DeviceEventEmitter.addListener('NavigateFromPush', (data: any) => {
+  const type = data?.type != null ? String(data.type) : '';
+  if (type === 'message' || type === 'group_message' || type === 'group_added' || data?.conversationId) {
+    stashEarlyChatPush(data);
+  }
+});
 
 async function ackDeliveredViaHttp(messageId: string) {
   try {
@@ -195,13 +221,16 @@ class FCMService {
 
   private setupNotificationOpenedHandlers() {
     messaging().onNotificationOpenedApp((remoteMessage) => {
-      const data = remoteMessage?.data as Record<string, string> | undefined;
-      if (!data?.type) return;
+      const data = normalizeOpenedPushData(remoteMessage?.data as Record<string, string> | undefined);
+      if (!data) return;
       if (data.type === 'incoming_call') {
         emitNavigateToCallFromPushData(data);
         return;
       }
       if (data.type === 'call_ended') return;
+      if (data.type === 'message' || data.type === 'group_message' || data.type === 'group_added') {
+        stashEarlyChatPush(data);
+      }
       DeviceEventEmitter.emit('NavigateFromPush', data);
     });
   }
@@ -213,8 +242,8 @@ class FCMService {
   async getInitialPushData(): Promise<Record<string, string> | null> {
     try {
       const remoteMessage = await messaging().getInitialNotification();
-      const data = remoteMessage?.data as Record<string, string> | undefined;
-      if (!data?.type) return null;
+      const data = normalizeOpenedPushData(remoteMessage?.data as Record<string, string> | undefined);
+      if (!data) return null;
       if (data.type === 'incoming_call') {
         emitNavigateToCallFromPushData(data);
         return null;

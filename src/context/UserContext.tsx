@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode, useRef } from 'react';
-import { AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus, DeviceEventEmitter } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
 import socketService from '../services/socket';
@@ -221,6 +221,26 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
       schedulePresenceOnlineRetries();
     });
     return () => remove?.();
+  }, [user?._id]);
+
+  // Push open / deep-link: force online + retries (cold start often skips AppState `active` transition).
+  useEffect(() => {
+    if (!user?._id) return;
+    const forceOnline = () => {
+      const uid = user._id;
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+      socketService.connect(uid);
+      if (socketService.isSocketConnected()) {
+        socketService.emit('clientPresence', { status: 'online' });
+      }
+      schedulePresenceOnlineRetries();
+      console.log('📱 [UserContext] forcePresenceOnline');
+    };
+    const sub = DeviceEventEmitter.addListener('playsocial:forcePresenceOnline', forceOnline);
+    return () => sub.remove();
   }, [user?._id]);
 
   const loadUserFromStorage = async () => {

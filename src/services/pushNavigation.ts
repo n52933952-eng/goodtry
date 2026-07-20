@@ -8,9 +8,14 @@ export function navigateFromPushData(
   raw: Record<string, string> | undefined | null
 ): boolean {
   const nav = navigationRef?.current;
-  if (!nav || !raw?.type) return false;
+  if (!nav || !raw) return false;
 
-  const type = String(raw.type);
+  let type = raw.type ? String(raw.type) : '';
+  if (!type && raw.conversationId) {
+    type = raw.isGroup === 'true' ? 'group_message' : 'message';
+  }
+  if (!type) return false;
+
   if (type === 'incoming_call' || type === 'call_ended' || type === 'call_canceled' || type === 'call_cancelled') {
     return false;
   }

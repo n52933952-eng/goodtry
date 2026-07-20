@@ -478,10 +478,44 @@ class MainActivity : ReactActivity() {
   }
   
   /**
+   * Persist chat deep-link so JS can open the conversation even if the DeviceEvent
+   * fires before AppNavigator listeners exist (common on cold start while auth loads).
+   */
+  private fun persistChatPushPrefs(intent: Intent) {
+    try {
+      val prefs = getSharedPreferences("ChatPushPrefs", android.content.Context.MODE_PRIVATE)
+      val editor = prefs.edit().clear()
+      intent.extras?.keySet()?.forEach { key ->
+        val value = intent.extras?.get(key) ?: return@forEach
+        when (value) {
+          is String -> editor.putString(key, value)
+          is Boolean -> editor.putString(key, value.toString())
+          is Int -> editor.putString(key, value.toString())
+          is Long -> editor.putString(key, value.toString())
+          is Double -> editor.putString(key, value.toString())
+          is Float -> editor.putString(key, value.toString())
+          else -> editor.putString(key, value.toString())
+        }
+      }
+      val type = intent.getStringExtra("type")?.trim().orEmpty()
+      if (type.isEmpty()) {
+        val isGroup = intent.getStringExtra("isGroup") == "true"
+        editor.putString("type", if (isGroup) "group_message" else "message")
+      }
+      editor.putBoolean("hasPendingChatPush", true)
+      editor.apply()
+      android.util.Log.e("MainActivity", "✅ [MainActivity] ChatPushPrefs persisted")
+    } catch (e: Exception) {
+      android.util.Log.e("MainActivity", "❌ [MainActivity] Failed to persist ChatPushPrefs", e)
+    }
+  }
+
+  /**
    * Emit chat push payload to React Native (message / group_message deep links).
    */
   private fun emitNavigateToChatFromPush(intent: Intent) {
     android.util.Log.e("MainActivity", "💬 [MainActivity] Emitting NavigateToChatFromPush")
+    persistChatPushPrefs(intent)
     var attempts = 0
     val maxAttempts = 24
 

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
+import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
@@ -34,6 +35,8 @@ const SearchScreen = ({ navigation }: any) => {
   const { user: currentUser, updateUser, refetchSessionUser } = useUser();
   const { injectPostsIntoFeed } = usePost();
   const { colors } = useTheme();
+  const { tabBarHeight } = useTabBarCollapse();
+  const listBottomPad = 28 + tabBarHeight;
   const showToast = useShowToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestedUsers, setSuggestedUsers] = useState<any[]>([]);
@@ -428,10 +431,11 @@ const SearchScreen = ({ navigation }: any) => {
           data={searchResults}
           renderItem={renderUser}
           keyExtractor={(item) => item._id}
+          style={{ flex: 1 }}
           contentContainerStyle={
             searchResults.length === 0
               ? styles.listEmptyGrow
-              : [styles.listContent, { paddingTop: 14, backgroundColor: colors.background }]
+              : [styles.listContent, { paddingTop: 14, paddingBottom: listBottomPad, backgroundColor: colors.background }]
           }
           refreshControl={
             <RefreshControl
@@ -456,10 +460,11 @@ const SearchScreen = ({ navigation }: any) => {
             data={suggestedUsers}
             renderItem={renderUser}
             keyExtractor={(item) => item._id}
+            style={{ flex: 1 }}
             contentContainerStyle={
               suggestedUsers.length === 0
                 ? styles.listEmptyGrow
-                : [styles.listContent, { paddingTop: 8, paddingBottom: 20, backgroundColor: colors.background }]
+                : [styles.listContent, { paddingTop: 8, paddingBottom: listBottomPad, backgroundColor: colors.background }]
             }
             refreshControl={
               <RefreshControl
