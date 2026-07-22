@@ -22,7 +22,7 @@ const NOTIFICATION_COUNT_KEY = '@notification_count';
 interface SocketContextType {
   socket: typeof socketService;
   onlineUsers: any[];
-  /** Single source for UI dots/labels: merges targeted `presenceMap` + legacy `onlineUsers`; false when socket is down. */
+  /** Single source for UI dots/labels: presenceMap when known; onlineUsers while snapshot is pending; false when socket is down. */
   isUserOnline: (userId: unknown) => boolean;
   /** Re-send presenceSubscribe (force refreshes snapshot even if id set unchanged). */
   refreshPresenceSubscription: (opts?: { force?: boolean }) => void;
@@ -70,11 +70,18 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const selectedConversationPartnerIdRef = useRef<string | null>(null);
   const [presenceWatchUserIds, setPresenceWatchUserIdsState] = useState<string[]>([]);
   const presenceWatchUserIdsRef = useRef<string[]>([]);
-  /** User ids we send in `presenceSubscribe` — never use legacy `onlineUsers` fallback for these (avoids "offline on list, online in chat"). */
+  /** Keep following/followers fresh for presenceSubscribe without re-binding all socket listeners. */
+  const userFollowingRef = useRef(user?.following);
+  const userFollowersRef = useRef(user?.followers);
+  userFollowingRef.current = user?.following;
+  userFollowersRef.current = user?.followers;
+  /** User ids we send in `presenceSubscribe` — prefer presenceMap for these; fall back to onlineUsers only while snapshot is pending. */
   const presenceSubscribedUserIdsRef = useRef<Set<string>>(new Set());
   const presenceSubscribeRef = useRef<((opts?: { force?: boolean }) => void) | null>(null);
   /** Last emitted presenceSubscribe set — skip duplicate emits/logs. */
   const lastPresenceSubscribeKeyRef = useRef<string>('');
+  /** Light reconnect retries — cleared on next schedule / unmount. */
+  const presenceRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
   const newMessageHandlerBodyRef = useRef<(data: any) => void>(() => {});
   const onNewMessageForSocket = useCallback((data: any) => {
@@ -269,20 +276,21 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       const id = normalizePresenceUserId(rawUserId);
       if (!id) return false;
 
-      const subscribed = presenceSubscribedUserIdsRef.current;
-      if (subscribed.has(id)) {
-        if (Object.prototype.hasOwnProperty.call(presenceMap, id)) {
-          return presenceMap[id] === true;
-        }
-        return false;
-      }
+      const inOnlineList = (): boolean => {
+        const list = onlineUsers;
+        if (!Array.isArray(list) || list.length === 0) return false;
+        return list.some((entry: unknown) => extractOnlineEntryUserId(entry as any) === id);
+      };
 
+      // Explicit presenceMap wins (subscribed or not).
       if (Object.prototype.hasOwnProperty.call(presenceMap, id)) {
         return presenceMap[id] === true;
       }
-      const list = onlineUsers;
-      if (!Array.isArray(list) || list.length === 0) return false;
-      return list.some((entry: unknown) => extractOnlineEntryUserId(entry as any) === id);
+
+      // After reconnect, subscribed friends may briefly lack a map key until presenceSnapshot —
+      // don't paint them gray if getOnlineUser already lists them (and they weren't explicit-offline).
+      if (presenceExplicitOfflineRef.current.has(id)) return false;
+      return inOnlineList();
     },
     [socketReachable, presenceMap, onlineUsers]
   );
@@ -320,6 +328,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setBusyUsers(new Set());
       presenceExplicitOfflineRef.current.clear();
       presenceSubscribedUserIdsRef.current = new Set();
+      lastPresenceSubscribeKeyRef.current = '';
     });
   }, []);
 
@@ -336,6 +345,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       setSocketReachable(false);
       presenceExplicitOfflineRef.current.clear();
       presenceSubscribedUserIdsRef.current = new Set();
+      lastPresenceSubscribeKeyRef.current = '';
       return;
     }
 
@@ -832,8 +842,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     // Backend expects userIds (user _id), not conversation doc ids. Partner = other user in chat.
     const subscribeToPresence = (opts?: { force?: boolean }) => {
       try {
-        const followingIds = (user?.following || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
-        const followerIds = (user?.followers || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
+        const followingIds = (userFollowingRef.current || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
+        const followerIds = (userFollowersRef.current || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
         const partnerUserId = selectedConversationPartnerIdRef.current;
         const watchedIds = presenceWatchUserIdsRef.current || [];
         const allIds = [...followingIds, ...followerIds, ...watchedIds];
@@ -883,7 +893,15 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
       // Force re-subscribe after reconnect even if the id set is unchanged.
       lastPresenceSubscribeKeyRef.current = '';
-      subscribeToPresence();
+      subscribeToPresence({ force: true });
+      // One delayed retry — first emit can race handshake / server reinforce.
+      for (const t of presenceRetryTimersRef.current) clearTimeout(t);
+      presenceRetryTimersRef.current = [800, 2000].map((ms) =>
+        setTimeout(() => {
+          lastPresenceSubscribeKeyRef.current = '';
+          presenceSubscribeRef.current?.({ force: true });
+        }, ms),
+      );
       refreshNotificationCountRef.current?.();
 
       // Ack undelivered incoming (internet back) + FCM queue so sender gets ✓✓.
@@ -948,6 +966,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       fcmSub.remove();
       removeSocketReady();
       removeConnectListener();
+      for (const t of presenceRetryTimersRef.current) clearTimeout(t);
+      presenceRetryTimersRef.current = [];
       socketService.off('getOnlineUser');
       socketService.off('callBusy');
       socketService.off('cancleCall');
@@ -1007,23 +1027,34 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     presenceSubscribeRef.current?.({ force: opts?.force !== false });
   }, []);
 
-  // When app returns to foreground, force a presence snapshot so friends who returned while we
-  // were backgrounded (or whose online delta we missed) show green again.
+  // When app returns to foreground, force a few light presence snapshots so friends who stayed
+  // online (while we cleared presenceMap on disconnect) show green again without opening Messages.
   useEffect(() => {
     if (!user?._id) return;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const retryTimers: ReturnType<typeof setTimeout>[] = [];
     const onAppState = (state: AppStateStatus) => {
       if (state !== 'active') return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        presenceSubscribeRef.current?.({ force: true });
-      }, 400);
+        for (const t of retryTimers) clearTimeout(t);
+        retryTimers.length = 0;
+        // Staggered: early attempt + after typical reconnect; cheap emits, server coalesces.
+        for (const ms of [0, 700, 2000]) {
+          retryTimers.push(
+            setTimeout(() => {
+              presenceSubscribeRef.current?.({ force: true });
+            }, ms),
+          );
+        }
+      }, 200);
     };
     const sub = AppState.addEventListener('change', onAppState);
     return () => {
       sub.remove();
       if (debounceTimer) clearTimeout(debounceTimer);
+      for (const t of retryTimers) clearTimeout(t);
     };
   }, [user?._id]);
 

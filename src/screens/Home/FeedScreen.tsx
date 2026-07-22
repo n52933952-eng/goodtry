@@ -469,6 +469,10 @@ const FeedScreen = ({ navigation }: any) => {
     }
   }, [user?._id]);
 
+  const lastPresenceRefreshAtRef = useRef(0);
+  /** Throttle presence force-refresh on feed focus — light, same idea as Messages. */
+  const PRESENCE_REFRESH_FOCUS_MIN_MS = 8_000;
+
   useFocusEffect(
     useCallback(() => {
       // Kill any in-flight WebView audio immediately (create post cancel, profile, etc.).
@@ -488,6 +492,13 @@ const FeedScreen = ({ navigation }: any) => {
       setStoryRingReplayKey((k) => k + 1);
       refreshNotificationCount?.();
       fetchStoryStrip();
+
+      // Repair grey friend dots after reconnect without waiting for Messages.
+      const presenceNow = Date.now();
+      if (presenceNow - lastPresenceRefreshAtRef.current >= PRESENCE_REFRESH_FOCUS_MIN_MS) {
+        lastPresenceRefreshAtRef.current = presenceNow;
+        refreshPresenceSubscription?.();
+      }
 
       // Only refetch when empty or older than FEED_FOCUS_REFRESH_MIN_MS (module-level timer).
       const now = Date.now();
@@ -514,7 +525,7 @@ const FeedScreen = ({ navigation }: any) => {
       };
       // fetchFeed intentionally omitted — use refs above to avoid focus-loop on loading/state changes
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fetchStoryStrip, refreshNotificationCount])
+    }, [fetchStoryStrip, refreshNotificationCount, refreshPresenceSubscription])
   );
 
   /** First visit to home after login: ask camera + mic so calls/live do not block on permission dialogs. */
