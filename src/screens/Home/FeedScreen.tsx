@@ -35,6 +35,7 @@ import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
 import Svg, { Path } from 'react-native-svg';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
+import FeedNativeAd, { FEED_AD_EVERY } from '../../components/ads/FeedNativeAd';
 import ChannelsModal from '../../components/ChannelsModal';
 import ActivityModal from '../../components/ActivityModal';
 import {
@@ -99,6 +100,18 @@ const FeedScreen = ({ navigation }: any) => {
     () => visiblePosts.some((p: any) => p?.isLive),
     [visiblePosts],
   );
+
+  /** Feed rows = posts + AdMob native ads every FEED_AD_EVERY posts. */
+  const feedRows = useMemo(() => {
+    const rows: Array<{ kind: 'post'; post: any } | { kind: 'ad'; key: string }> = [];
+    visiblePosts.forEach((post: any, index: number) => {
+      rows.push({ kind: 'post', post });
+      if ((index + 1) % FEED_AD_EVERY === 0) {
+        rows.push({ kind: 'ad', key: `ad-${index}` });
+      }
+    });
+    return rows;
+  }, [visiblePosts]);
 
   const postsRef = useRef(posts);
   postsRef.current = posts;
@@ -927,15 +940,19 @@ const FeedScreen = ({ navigation }: any) => {
   };
 
   const renderPost = ({ item }: { item: any }) => {
+    if (item?.kind === 'ad') {
+      return <FeedNativeAd slotKey={item.key} />;
+    }
+    const post = item?.kind === 'post' ? item.post : item;
     // Live stream pseudo-post — show dedicated live card
-    if (item.isLive) return <LivePostCard post={item} />;
+    if (post.isLive) return <LivePostCard post={post} />;
 
-    const uid = item.postedBy?._id?.toString?.() ?? '';
+    const uid = post.postedBy?._id?.toString?.() ?? '';
     const ring = uid ? storyByUserId[uid] : undefined;
-    const postId = item?._id?.toString?.() ?? String(item?._id ?? '');
+    const postId = post?._id?.toString?.() ?? String(post?._id ?? '');
     return (
       <Post
-        post={item}
+        post={post}
         feedWideCard
         storyRing={ring}
         storyRingReplayKey={storyRingReplayKey}
@@ -950,18 +967,25 @@ const FeedScreen = ({ navigation }: any) => {
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: any; isViewable?: boolean; index?: number | null }> }) => {
     const nextVisibleIds = viewableItems
       .filter((entry) => entry?.isViewable)
-      .map((entry) => entry?.item?._id?.toString?.() ?? String(entry?.item?._id ?? ''))
+      .map((entry) => {
+        const row = entry?.item;
+        const post = row?.kind === 'post' ? row.post : row?.kind === 'ad' ? null : row;
+        return post?._id?.toString?.() ?? String(post?._id ?? '');
+      })
       .filter(Boolean);
     emitFeedVisiblePostIds(nextVisibleIds);
 
     const visibleMedia = viewableItems.filter((entry) => {
       if (!entry?.isViewable) return false;
-      return isFeedAutoPlayMediaPost(entry?.item);
+      const row = entry?.item;
+      const post = row?.kind === 'post' ? row.post : row?.kind === 'ad' ? null : row;
+      return post && isFeedAutoPlayMediaPost(post);
     });
 
     // Prefer the lower/next visible video so scrolling down activates the post in focus.
     const preferred = visibleMedia.length > 0 ? visibleMedia[visibleMedia.length - 1] : null;
-    const nextId = preferred?.item?._id?.toString?.() ?? null;
+    const preferredPost = preferred?.item?.kind === 'post' ? preferred.item.post : preferred?.item;
+    const nextId = preferredPost?._id?.toString?.() ?? null;
     const currentId = activeVideoPostIdRef.current;
     if (currentId === nextId) return;
 
@@ -1148,14 +1172,15 @@ const FeedScreen = ({ navigation }: any) => {
       >
       <FlatList
         ref={feedListRef}
-        data={loading ? [] : visiblePosts}
+        data={loading ? [] : feedRows}
         renderItem={renderPost}
         extraData={{ activeVideoPostId, videoAutoplayReady, isScreenFocused, storyRingReplayKey }}
         removeClippedSubviews={false}
         ItemSeparatorComponent={() => <View style={styles.postSeparator} />}
         keyExtractor={(item, index) => {
-          // Ensure unique keys by using both _id and index as fallback
-          const id = item._id?.toString?.() ?? String(item._id);
+          if (item?.kind === 'ad') return item.key || `ad-${index}`;
+          const post = item?.kind === 'post' ? item.post : item;
+          const id = post?._id?.toString?.() ?? String(post?._id);
           return id || `post-${index}`;
         }}
         contentContainerStyle={[styles.listContainer, { paddingTop: feedHeaderHeight, paddingBottom: 20 + tabBarHeight }]}

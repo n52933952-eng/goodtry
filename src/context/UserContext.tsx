@@ -106,7 +106,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
   /** Emit online after socket is up — safe to call multiple times; backs up cold-open-from-push on one device. */
   const schedulePresenceOnlineRetries = () => {
     clearPresenceOnlineRetries();
-    const delays = [0, 400, 1000, 2500, 6000, 12000];
+    const delays = [0, 500, 2000];
     delays.forEach((ms) => {
       const t = setTimeout(() => {
         if (AppState.currentState !== 'active') return;

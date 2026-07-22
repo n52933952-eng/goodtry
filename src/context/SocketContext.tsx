@@ -24,8 +24,8 @@ interface SocketContextType {
   onlineUsers: any[];
   /** Single source for UI dots/labels: merges targeted `presenceMap` + legacy `onlineUsers`; false when socket is down. */
   isUserOnline: (userId: unknown) => boolean;
-  /** Re-send presenceSubscribe (e.g. when opening a chat) so partner offline/online is fresh. */
-  refreshPresenceSubscription: () => void;
+  /** Re-send presenceSubscribe (force refreshes snapshot even if id set unchanged). */
+  refreshPresenceSubscription: (opts?: { force?: boolean }) => void;
   chessChallenges: any[];
   cardChallenges: any[];
   clearChessChallenge: (challengeFrom?: string) => void;
@@ -72,7 +72,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const presenceWatchUserIdsRef = useRef<string[]>([]);
   /** User ids we send in `presenceSubscribe` — never use legacy `onlineUsers` fallback for these (avoids "offline on list, online in chat"). */
   const presenceSubscribedUserIdsRef = useRef<Set<string>>(new Set());
-  const presenceSubscribeRef = useRef<(() => void) | null>(null);
+  const presenceSubscribeRef = useRef<((opts?: { force?: boolean }) => void) | null>(null);
   /** Last emitted presenceSubscribe set — skip duplicate emits/logs. */
   const lastPresenceSubscribeKeyRef = useRef<string>('');
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
@@ -830,7 +830,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
     // Subscribe to targeted presence updates (followers + following + conversation partner USER ID)
     // Backend expects userIds (user _id), not conversation doc ids. Partner = other user in chat.
-    const subscribeToPresence = () => {
+    const subscribeToPresence = (opts?: { force?: boolean }) => {
       try {
         const followingIds = (user?.following || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
         const followerIds = (user?.followers || []).map((x: any) => (x?._id ?? x)?.toString?.() ?? String(x));
@@ -857,14 +857,14 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
         if (uniqueIds.length === 0) return;
 
-        // Skip re-emit + log spam when the subscribed set did not change.
         const nextKey = Array.from(nextSubscribed).sort().join('|');
-        if (nextKey === lastPresenceSubscribeKeyRef.current) return;
+        // Force re-emit so server sends a fresh presenceSnapshot (fixes A stuck grey after B returns).
+        if (!opts?.force && nextKey === lastPresenceSubscribeKeyRef.current) return;
         lastPresenceSubscribeKeyRef.current = nextKey;
 
         if (__DEV__) {
           console.log(
-            `📡 [SocketContext] Subscribing to presence for ${nextSubscribed.size} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'})`,
+            `📡 [SocketContext] Subscribing to presence for ${nextSubscribed.size} users (following: ${followingIds.length}, followers: ${followerIds.length}, watched: ${watchedIds.length}, partner: ${partnerUserId ? 'yes' : 'no'}${opts?.force ? ', force' : ''})`,
           );
         }
         socketService.emit('presenceSubscribe', { userIds: Array.from(nextSubscribed) });
@@ -1002,9 +1002,30 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const refreshPresenceSubscription = useCallback(() => {
-    presenceSubscribeRef.current?.();
+  const refreshPresenceSubscription = useCallback((opts?: { force?: boolean }) => {
+    // Default force:true — callers (Messages/Feed/Chat focus) need a fresh snapshot.
+    presenceSubscribeRef.current?.({ force: opts?.force !== false });
   }, []);
+
+  // When app returns to foreground, force a presence snapshot so friends who returned while we
+  // were backgrounded (or whose online delta we missed) show green again.
+  useEffect(() => {
+    if (!user?._id) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const onAppState = (state: AppStateStatus) => {
+      if (state !== 'active') return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        presenceSubscribeRef.current?.({ force: true });
+      }, 400);
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => {
+      sub.remove();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [user?._id]);
 
   // ── Live streams ──────────────────────────────────────────────────────────
   const [liveStreams, setLiveStreams] = useState<Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>>([]);

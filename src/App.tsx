@@ -13,11 +13,21 @@ import { ThemeProvider } from './context/ThemeContext';
 import AppNavigator from './navigation/AppNavigator';
 import fcmService from './services/fcmService';
 import './config/googleSignIn';
+import mobileAds from 'react-native-google-mobile-ads';
 //
 const App = () => {
   useEffect(() => {
     // LTR is enforced natively: AndroidManifest android:supportsRtl="false", iOS UIView appearance.
     // Root View uses direction: 'ltr' so flex layout (e.g. chess board) stays consistent.
+
+    mobileAds()
+      .initialize()
+      .then(() => {
+        if (__DEV__) console.log('✅ [AdMob] SDK initialized');
+      })
+      .catch((err) => {
+        console.warn('⚠️ [AdMob] SDK init failed', err?.message || err);
+      });
 
     // Initialize Firebase Cloud Messaging for call notifications (WhatsApp-like)
     console.log('🔥 [App] Initializing FCM...');

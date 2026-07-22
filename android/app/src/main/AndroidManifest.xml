@@ -58,6 +58,11 @@
         android:name="com.google.firebase.messaging.default_notification_color"
         android:resource="@color/notification_color"
         tools:replace="android:resource" />
+
+      <!-- AdMob App ID (FeedNative / PlaySocial) -->
+      <meta-data
+        android:name="com.google.android.gms.ads.APPLICATION_ID"
+        android:value="ca-app-pub-4967868662952223~4541149261"/>
       
       <activity
         android:name=".MainActivity"

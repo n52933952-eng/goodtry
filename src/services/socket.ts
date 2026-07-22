@@ -105,17 +105,12 @@ class SocketService {
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket?.id);
       this.isConnected = true;
-      // Only mark online when the app is in the foreground — background/killed must stay offline
-      // so friends see the correct status and incoming calls use FCM push.
+      // Foreground → online. Do NOT emit offline here when AppState is inactive/unknown:
+      // Android often reports inactive briefly on open; that cancelled server Auto-online.
+      // Real background offline is handled in UserContext on AppState === 'background'.
       if (AppState.currentState === 'active') {
         try {
           this.socket?.emit('clientPresence', { status: 'online' });
-        } catch (_) {
-          /* ignore */
-        }
-      } else {
-        try {
-          this.socket?.emit('clientPresence', { status: 'offline' });
         } catch (_) {
           /* ignore */
         }
