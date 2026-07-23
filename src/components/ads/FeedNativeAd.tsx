@@ -13,6 +13,7 @@ import { useTheme } from '../../context/ThemeContext';
 /** Production Native Advanced unit: FeedNative */
 const PROD_NATIVE_UNIT = 'ca-app-pub-4967868662952223/2789083891';
 
+/** Debug = Google test ads; release / Play build = real FeedNative unit. */
 const adUnitId = __DEV__ ? TestIds.NATIVE : PROD_NATIVE_UNIT;
 
 type Props = {
@@ -20,29 +21,54 @@ type Props = {
   slotKey?: string;
 };
 
+type LoadState = 'loading' | 'ready' | 'failed';
+
 /**
- * AdMob Native Advanced card styled like a feed post (Sponsored + media).
+ * AdMob Native Advanced card styled like a feed post.
+ * Renders nothing until an ad loads — avoids empty "Sponsored" placeholders when fill fails.
  */
 export default function FeedNativeAd({ slotKey = 'feed' }: Props) {
   const { colors } = useTheme();
   const [nativeAd, setNativeAd] = useState<NativeAd | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>('loading');
 
   useEffect(() => {
     let alive = true;
     let ad: NativeAd | null = null;
+    let attempt = 0;
 
-    NativeAd.createForAdRequest(adUnitId)
-      .then((loaded) => {
-        if (!alive) {
-          loaded.destroy();
-          return;
-        }
-        ad = loaded;
-        setNativeAd(loaded);
+    const load = () => {
+      attempt += 1;
+      NativeAd.createForAdRequest(adUnitId, {
+        requestNonPersonalizedAdsOnly: false,
       })
-      .catch((err) => {
-        if (__DEV__) console.warn('[AdMob] Native load failed', slotKey, err?.message || err);
-      });
+        .then((loaded) => {
+          if (!alive) {
+            loaded.destroy();
+            return;
+          }
+          ad = loaded;
+          setNativeAd(loaded);
+          setLoadState('ready');
+        })
+        .catch((err) => {
+          console.warn(
+            '[AdMob] Native load failed',
+            slotKey,
+            __DEV__ ? 'TEST' : 'PROD',
+            adUnitId,
+            err?.message || err,
+          );
+          // One light retry — new units / cold start often miss the first request.
+          if (alive && attempt < 2) {
+            setTimeout(load, 1500);
+            return;
+          }
+          if (alive) setLoadState('failed');
+        });
+    };
+
+    load();
 
     return () => {
       alive = false;
@@ -51,13 +77,9 @@ export default function FeedNativeAd({ slotKey = 'feed' }: Props) {
     };
   }, [slotKey]);
 
-  if (!nativeAd) {
-    return (
-      <View style={[styles.card, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
-        <Text style={[styles.sponsored, { color: colors.textGray }]}>Sponsored</Text>
-        <View style={[styles.placeholder, { backgroundColor: colors.border }]} />
-      </View>
-    );
+  // Don't leave blank Sponsored holes in the feed when ads don't fill.
+  if (loadState !== 'ready' || !nativeAd) {
+    return null;
   }
 
   return (
@@ -175,10 +197,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 13,
-  },
-  placeholder: {
-    height: 160,
-    borderRadius: 8,
-    marginTop: 8,
   },
 });

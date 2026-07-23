@@ -61,9 +61,12 @@ const FeedScreen = ({ navigation }: any) => {
     setPosts,
     appendPosts,
     filterPostsForFeed,
+    mergeApiFeedPage,
+    injectPostsIntoFeed,
     unhideFeedPostFromFeed,
     unhideFeedSourceFromFeed,
     setViewerSortBoost,
+    clearViewerSortBoosts,
     deletePost,
     addPost,
     setDeferIncomingFeedPosts,
@@ -506,7 +509,7 @@ const FeedScreen = ({ navigation }: any) => {
       const feedStale = now - lastFeedRefreshAtMs >= FEED_FOCUS_REFRESH_MIN_MS;
       if ((!hasPosts || feedStale) && !isFetchingRef.current) {
         lastFeedRefreshAtMs = now;
-        fetchFeed();
+        fetchFeed(false, { merge: true });
       }
 
       return () => {
@@ -677,7 +680,7 @@ const FeedScreen = ({ navigation }: any) => {
     };
   }, [hasLiveFeedCards, filterPostsForFeed, setPosts]);
 
-  const fetchFeed = async (loadMore = false) => {
+  const fetchFeed = async (loadMore = false, options: { merge?: boolean } = {}) => {
     // Prevent duplicate requests
     if (isFetchingRef.current) {
       console.log('⏭️ [FeedScreen] fetchFeed: Skipping (already fetching)');
@@ -745,8 +748,13 @@ const FeedScreen = ({ navigation }: any) => {
         // Append without re-sorting existing rows (pagination)
         appendPosts(prunedPosts);
         setLoadingMore(false);
+      } else if (options.merge && postsRef.current.length > 0) {
+        // Focus/background refresh — do not wipe socket inserts with a stale Redis page
+        mergeApiFeedPage(prunedPosts);
+        setLoading(false);
+        setRefreshing(false);
       } else {
-        // Replace all posts (initial load or refresh)
+        // Replace all posts (initial load or pull-to-refresh)
         setPosts(filterPostsForFeed(prunedPosts));
         setLoading(false);
         setRefreshing(false);
@@ -778,6 +786,7 @@ const FeedScreen = ({ navigation }: any) => {
     setStoryRingReplayKey((k) => k + 1);
     setHasNewPosts(false);
     clearPendingFeedPosts();
+    clearViewerSortBoosts();
     deferIncomingRef.current = false;
     setDeferIncomingFeedPosts(false);
     scrollOffsetRef.current = 0;
@@ -1205,6 +1214,21 @@ const FeedScreen = ({ navigation }: any) => {
         }
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.35}
+        onScrollToIndexFailed={(info) => {
+          const offset = Math.max(0, (info.averageItemLength || 320) * info.index);
+          feedListRef.current?.scrollToOffset?.({ offset, animated: true });
+          setTimeout(() => {
+            try {
+              feedListRef.current?.scrollToIndex?.({
+                index: info.index,
+                animated: true,
+                viewPosition: 0.15,
+              });
+            } catch {
+              /* ignore */
+            }
+          }, 250);
+        }}
         onScroll={mergeOnScroll(mergeTabBarScroll(handleFeedScroll))}
         scrollEventThrottle={16}
         maintainVisibleContentPosition={{
@@ -1334,12 +1358,44 @@ const FeedScreen = ({ navigation }: any) => {
       <ChannelsModal
         visible={showChannelsModal}
         onClose={() => setShowChannelsModal(false)}
-        onChannelFollowed={(postId?: string) => {
-          // Unhide ONLY the channel post the user just re-added.
+        onChannelFollowed={(postId?: string, post?: any) => {
           if (postId) unhideFeedPostFromFeed(postId);
-          // Bubble the newly added/re-added channel post to the top for this viewer (survives refresh).
+          // Brief boost so the card is easy to find now; expires / cleared on pull-refresh.
           if (postId) setViewerSortBoost(postId, Date.now());
-          fetchFeed(); // Refresh feed when channel is followed
+
+          if (post && post._id) {
+            injectPostsIntoFeed([post]);
+          } else {
+            fetchFeed(false, { merge: true });
+          }
+
+          // Scroll feed to the new channel card (after list lays out).
+          if (postId) {
+            const tryScroll = (attempt: number) => {
+              const list = postsRef.current || [];
+              const visible = list.filter((p) => !isOwnLivePost(p));
+              const postIndex = visible.findIndex((p) => String(p?._id) === String(postId));
+              if (postIndex < 0) {
+                if (attempt < 8) setTimeout(() => tryScroll(attempt + 1), 120);
+                return;
+              }
+              // Account for AdMob rows inserted every FEED_AD_EVERY posts.
+              const adBefore = Math.floor(postIndex / FEED_AD_EVERY);
+              const rowIndex = postIndex + adBefore;
+              requestAnimationFrame(() => {
+                try {
+                  feedListRef.current?.scrollToIndex?.({
+                    index: rowIndex,
+                    animated: true,
+                    viewPosition: 0.15,
+                  });
+                } catch {
+                  feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+                }
+              });
+            };
+            setTimeout(() => tryScroll(0), 80);
+          }
         }}
       />
 

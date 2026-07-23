@@ -44,5 +44,6 @@ export function applyPostEngagement<T extends Record<string, any>>(
   if (typeof data.likeCount === 'number') (next as any).likeCount = data.likeCount;
   if (data.likePreview !== undefined) (next as any).likePreview = data.likePreview;
   if (typeof data.replyCount === 'number') (next as any).replyCount = data.replyCount;
+  if (data.replyPreview !== undefined) (next as any).replyPreview = data.replyPreview;
   return next;
 }

@@ -31,6 +31,7 @@ import {
 } from '../utils/chessFeedEndedStore';
 import { useShowToast } from '../hooks/useShowToast';
 import { usePostEngagementSubscription } from '../hooks/usePostEngagementSubscription';
+import { getReplyPreviewUsers } from '../utils/replyPreview';
 import { useLanguage } from '../context/LanguageContext';
 import VideoFeedPreview from './VideoFeedPreview';
 import AddContributorModal from './AddContributorModal';
@@ -536,6 +537,20 @@ const Post: React.FC<PostProps> = ({
     if (Array.isArray(post?.replies)) return post.replies.length;
     return 0;
   }, [post?.replies, (post as any)?.replyCount]);
+
+  const replyPreviewUsers = useMemo(
+    () => getReplyPreviewUsers(post, 1),
+    [post?.replyPreview, post?.replies],
+  );
+  const latestReplyUser = replyPreviewUsers[0] || null;
+  const latestReplyPic = latestReplyUser?.profilePic || null;
+  const latestReplyInitial = (
+    latestReplyUser?.name ||
+    latestReplyUser?.username ||
+    '?'
+  )
+    .charAt(0)
+    .toUpperCase();
   
   // Weather post state
   const isWeatherPost = post.postedBy?.username === 'Weather' && post.weatherData;
@@ -2951,7 +2966,7 @@ const Post: React.FC<PostProps> = ({
 
           {!hideChannelPostCommentsFlag && (
           <TouchableOpacity
-            style={styles.actionButton}
+            style={styles.commentActionCluster}
             onPress={(e) => {
               e.stopPropagation();
               if (onCommentPress) {
@@ -2960,11 +2975,36 @@ const Post: React.FC<PostProps> = ({
                 navigateToPostDetail(post._id);
               }
             }}
+            accessibilityRole="button"
+            accessibilityLabel={
+              commentCount > 0
+                ? `${commentCount} comment${commentCount === 1 ? '' : 's'}`
+                : 'Comments'
+            }
           >
             <Text style={styles.actionIcon}>💬</Text>
-            <Text style={[styles.actionText, { color: colors.textGray }]}>
-              {commentCount}
-            </Text>
+            {commentCount > 0 && latestReplyUser ? (
+              <View style={styles.replyPreviewMeta}>
+                {latestReplyPic ? (
+                  <SafeImage source={{ uri: latestReplyPic }} style={styles.replyPreviewAvatar} />
+                ) : (
+                  <View
+                    style={[
+                      styles.replyPreviewAvatar,
+                      styles.replyPreviewAvatarPlaceholder,
+                      { backgroundColor: colors.avatarBg },
+                    ]}
+                  >
+                    <Text style={styles.replyPreviewInitial}>{latestReplyInitial}</Text>
+                  </View>
+                )}
+                {commentCount > 1 ? (
+                  <Text style={[styles.replyPreviewMore, { color: colors.textGray }]}>+</Text>
+                ) : null}
+              </View>
+            ) : (
+              <Text style={[styles.actionText, { color: colors.textGray }]}>0</Text>
+            )}
           </TouchableOpacity>
           )}
 
@@ -3702,7 +3742,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 24,
-    width: 88,
+    // Heart only when no likes; expands when like preview shows — pulls comment closer.
+    minWidth: 28,
   },
   likeHeartSlot: {
     width: 24,
@@ -3734,14 +3775,51 @@ const styles = StyleSheet.create({
     height: 20,
     marginLeft: 4,
     minWidth: 60,
-    flex: 1,
+    flexShrink: 0,
   },
   likeMetaSlotIdle: {
     opacity: 0,
+    minWidth: 0,
+    width: 0,
+    marginLeft: 0,
+    overflow: 'hidden',
   },
   likePreviewAvatarWrap: {
     width: 20,
     height: 20,
+  },
+  commentActionCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    // Nudge toward like (less empty gap) while Share/Remind stay on the right via space-between.
+    marginLeft: -4,
+    minWidth: 52,
+  },
+  replyPreviewMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+  },
+  replyPreviewAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+  },
+  replyPreviewAvatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  replyPreviewInitial: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  replyPreviewMore: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginLeft: 3,
+    lineHeight: 18,
   },
   actionIcon: {
     fontSize: 18,

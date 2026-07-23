@@ -13,6 +13,16 @@ const feedHiddenSourcesKey = (userId: string) => `feed_hidden_sources_${userId}`
 /** Max posts kept in memory while scrolling — prevents FlatList from growing forever (RAM / jank). */
 export const FEED_IN_MEMORY_MAX_POSTS = 300;
 
+/** Brief bump so a newly added channel is visible now; expires so refresh stays chronological. */
+const VIEWER_SORT_BOOST_TTL_MS = 45_000;
+
+/** Matches backend `FEED_FIRST_PAGE_NORMAL_COUNT` — channels only mix with this first block. */
+const FEED_FIRST_PAGE_NORMAL_COUNT = 12;
+
+/** Viewer-added live-TV channel cards (same as backend `channelAddedBy` query). */
+const isViewerChannelCard = (p: any): boolean =>
+  !!(p?.channelAddedBy != null && String(p.channelAddedBy).trim() !== '');
+
 const trimFeedPostsToMax = (list: Post[]): Post[] => {
   const safe = Array.isArray(list) ? list : [];
   if (safe.length <= FEED_IN_MEMORY_MAX_POSTS) return safe;
@@ -58,6 +68,13 @@ export interface Post {
   replies: any[];
   /** Denormalized comment count (feed/detail omit full replies[]). */
   replyCount?: number;
+  /** Latest unique commenters for feed avatar preview (from API). */
+  replyPreview?: Array<{
+    _id?: string;
+    username?: string;
+    name?: string;
+    profilePic?: string | null;
+  }>;
   createdAt: string;
   updatedAt: string;
   editedAt?: string | null;
@@ -121,9 +138,15 @@ interface PostContextType {
   /** Unhide a specific post id (e.g., re-add one channel without restoring all). */
   unhideFeedPostFromFeed: (postId: string) => void;
   unhideFeedSourceFromFeed: (username: string) => void;
-  /** Client-only: bubble a post to top (survives refresh). */
+  /** Client-only: bubble a post to top briefly (expires; pull-refresh clears). */
   setViewerSortBoost: (postId: string, boostMs?: number) => void;
+  clearViewerSortBoosts: () => void;
   filterPostsForFeed: (list: Post[]) => Post[];
+  /**
+   * Merge a feed API page into local state without wiping socket inserts / deletes.
+   * Used on focus refresh; pull-to-refresh should still use setPosts for a full replace.
+   */
+  mergeApiFeedPage: (apiPosts: Post[]) => void;
   /** When true, socket/live inserts queue until flush (feed scrolled down — avoids scroll jump). */
   setDeferIncomingFeedPosts: (defer: boolean) => void;
   flushPendingFeedPosts: () => void;
@@ -141,6 +164,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const [hiddenFeedSources, setHiddenFeedSources] = useState<Set<string>>(new Set());
   const hiddenFeedSourcesRef = useRef<Set<string>>(new Set());
   const viewerSortBoostRef = useRef<Record<string, number>>({});
+  /** Posts removed via socket/UI — API refresh must not revive them from Redis cache. */
+  const removedPostIdsRef = useRef<Set<string>>(new Set());
   /** Queue incoming posts while the user is scrolled down — prevents FlatList jump. */
   const deferIncomingFeedPostsRef = useRef(false);
   const pendingNewPostsRef = useRef<Post[]>([]);
@@ -148,7 +173,12 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
   const getSortTimeMs = (p: any): number => {
     const id = p?._id?.toString?.() ?? (p?._id != null ? String(p._id) : '');
-    const mapBoost = id && viewerSortBoostRef.current[id] ? viewerSortBoostRef.current[id] : 0;
+    const mapBoostRaw = id && viewerSortBoostRef.current[id] ? viewerSortBoostRef.current[id] : 0;
+    const mapBoost =
+      mapBoostRaw && Date.now() - mapBoostRaw < VIEWER_SORT_BOOST_TTL_MS ? mapBoostRaw : 0;
+    if (mapBoostRaw && !mapBoost && id) {
+      delete viewerSortBoostRef.current[id];
+    }
     const inlineBoost = typeof p?.__viewerSortBoostMs === 'number' ? p.__viewerSortBoostMs : 0;
     const boost = Math.max(mapBoost || 0, inlineBoost || 0);
     const base = new Date(p?.updatedAt || p?.createdAt || 0).getTime();
@@ -158,16 +188,23 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const sortPostsNewestFirst = useCallback(
     (list: Post[]) => {
       const safe = Array.isArray(list) ? list : [];
-      // Only live pseudo-posts stay pinned on top. Channel cards sort by time with normals
-      // (they still only arrive on the first page from the backend, so they stay in the first block).
+      // Live on top. Channel cards only mix with the first 12 normals (same as server page 1).
+      // Extra normals from load-more / realtime stay below that block.
       const live: Post[] = [];
-      const normal: Post[] = [];
+      const channels: Post[] = [];
+      const normals: Post[] = [];
       for (const p of safe) {
         if (p && (p as any).isLive) live.push(p);
-        else normal.push(p);
+        else if (isViewerChannelCard(p)) channels.push(p);
+        else normals.push(p);
       }
-      normal.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
-      return [...live, ...normal];
+      normals.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
+      const firstNormals = normals.slice(0, FEED_FIRST_PAGE_NORMAL_COUNT);
+      const restNormals = normals.slice(FEED_FIRST_PAGE_NORMAL_COUNT);
+      const mixedPage1 = [...channels, ...firstNormals].sort(
+        (a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a),
+      );
+      return [...live, ...mixedPage1, ...restNormals];
     },
     [],
   );
@@ -404,9 +441,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       null;
 
     if (!newAuthorId) {
-      const updated = [post, ...withoutDup];
-      updated.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
-      return trimFeedPostsToMax(updated);
+      return trimFeedPostsToMax(sortPostsNewestFirst([post, ...withoutDup]));
     }
 
     const fromSameAuthor: any[] = [];
@@ -421,9 +456,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
     const keptSameAuthor = fromSameAuthor.slice(0, 2);
     const updated = [post, ...keptSameAuthor, ...fromOtherAuthors];
-    updated.sort((a: any, b: any) => getSortTimeMs(b) - getSortTimeMs(a));
-
-    return trimFeedPostsToMax(updated);
+    // sortPostsNewestFirst keeps channels in the first-page block with top 12 normals.
+    return trimFeedPostsToMax(sortPostsNewestFirst(updated));
   }, [sortPostsNewestFirst]);
 
   const queuePendingFeedPost = useCallback((post: Post) => {
@@ -458,6 +492,10 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   }, [mergePostIntoFeed]);
 
   const addPost = useCallback((post: Post) => {
+    const id = post?._id != null ? String(post._id) : '';
+    if (id && removedPostIdsRef.current.has(id)) {
+      return;
+    }
     if (deferIncomingFeedPostsRef.current) {
       queuePendingFeedPost(post);
       return;
@@ -503,11 +541,19 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     [sortPostsNewestFirst],
   );
 
+  const clearViewerSortBoosts = useCallback(() => {
+    viewerSortBoostRef.current = {};
+    setPosts((prev) => sortPostsNewestFirst(prev));
+  }, [sortPostsNewestFirst]);
+
   const deletePost = useCallback((postId: string) => {
     if (!postId) {
       console.warn('⚠️ [PostContext] deletePost called with empty postId');
       return;
     }
+
+    const targetIdStr = postId?.toString?.() ?? String(postId);
+    if (targetIdStr) removedPostIdsRef.current.add(String(targetIdStr).trim());
     
     setPosts((prevPosts) => {
       // Safety check: ensure prevPosts is an array
@@ -649,13 +695,53 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     setPosts((prev) => {
       const safeArray = Array.isArray(prev) ? prev : [];
       const existingIds = new Set(safeArray.map((p) => String(p._id)));
+      const removed = removedPostIdsRef.current;
       const fresh = (Array.isArray(newPosts) ? newPosts : []).filter(
-        (p) => p?._id && !existingIds.has(String(p._id))
+        (p) => p?._id && !existingIds.has(String(p._id)) && !removed.has(String(p._id))
       );
       // Keep existing order intact, only append fresh posts at end; cap total in memory.
       return trimFeedPostsToMax(filterPostsForFeed([...safeArray, ...fresh]));
     });
   }, [filterPostsForFeed]);
+
+  /** Silent/focus refresh: keep socket-fresh posts and never revive tombstoned deletes. */
+  const mergeApiFeedPage = useCallback(
+    (apiPosts: Post[]) => {
+      setPosts((prev) => {
+        const removed = removedPostIdsRef.current;
+        const fromApi = (Array.isArray(apiPosts) ? apiPosts : []).filter((p) => {
+          const id = p?._id != null ? String(p._id) : '';
+          return id && !removed.has(id);
+        });
+        const apiIds = new Set(fromApi.map((p) => String(p._id)));
+        const now = Date.now();
+        const keepLocal = (Array.isArray(prev) ? prev : []).filter((p) => {
+          const id = p?._id != null ? String(p._id) : '';
+          if (!id || removed.has(id)) return false;
+          if ((p as any)?.isLive) return true;
+          if (apiIds.has(id)) return false;
+          const t = new Date((p as any).updatedAt || (p as any).createdAt).getTime();
+          if (!Number.isFinite(t)) return false;
+          return now - t < 3 * 60 * 1000;
+        });
+        const byId = new Map<string, Post>();
+        for (const p of [...fromApi, ...keepLocal]) {
+          const id = p?._id != null ? String(p._id) : '';
+          if (!id || removed.has(id)) continue;
+          const prevP = byId.get(id);
+          if (!prevP) {
+            byId.set(id, p);
+            continue;
+          }
+          const pt = new Date((prevP as any).updatedAt || (prevP as any).createdAt).getTime();
+          const nt = new Date((p as any).updatedAt || (p as any).createdAt).getTime();
+          if (nt >= pt) byId.set(id, p);
+        }
+        return Array.from(byId.values());
+      });
+    },
+    [],
+  );
 
   const addComment = useCallback((postId: string, comment: any) => {
     setPosts((prevPosts) => {
@@ -679,7 +765,12 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         setPosts: (next) =>
           setPosts((prev) => {
             const computed = typeof next === 'function' ? (next as (p: Post[]) => Post[])(prev) : next;
-            return trimFeedPostsToMax(sortPostsNewestFirst(filterPostsForFeed(computed)));
+            const removed = removedPostIdsRef.current;
+            const withoutRemoved = (Array.isArray(computed) ? computed : []).filter((p) => {
+              const id = p?._id != null ? String(p._id) : '';
+              return id && !removed.has(id);
+            });
+            return trimFeedPostsToMax(sortPostsNewestFirst(filterPostsForFeed(withoutRemoved)));
           }),
         appendPosts,
         addPost,
@@ -699,7 +790,9 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         unhideFeedPostFromFeed,
         unhideFeedSourceFromFeed,
         setViewerSortBoost,
+        clearViewerSortBoosts,
         filterPostsForFeed,
+        mergeApiFeedPage,
         setDeferIncomingFeedPosts,
         flushPendingFeedPosts,
         clearPendingFeedPosts,

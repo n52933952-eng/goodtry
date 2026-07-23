@@ -141,6 +141,7 @@ const CallScreen = () => {
     isUserOnline,
     refreshPresenceSubscription,
     setSelectedConversationPartnerId,
+    socket,
   } = useSocket();
 
   const { isLive, isMinimized, isSharing } = useLiveBroadcast();
@@ -415,6 +416,8 @@ const CallScreen = () => {
   const partnerIdForPresence = userId || call.from;
   const offlineCheckGenRef = useRef(0);
   const ringStartAtRef = useRef(0);
+  /** Once we cancel for "User offline", do not resume ringing if they briefly reconnect. */
+  const offlineCancelSentRef = useRef(false);
 
   // Fresh presence for call partner (stale cache caused false "offline" right after they reconnect).
   useEffect(() => {
@@ -433,6 +436,7 @@ const CallScreen = () => {
   useEffect(() => {
     if ((isCalling || isOutgoingCall) && !callAccepted && !call.isReceivingCall) {
       setPartnerOfflinePhase(false);
+      offlineCancelSentRef.current = false;
       offlineCheckGenRef.current += 1;
       ringStartAtRef.current = Date.now();
     }
@@ -450,6 +454,7 @@ const CallScreen = () => {
 
     const evaluatePresence = () => {
       if (offlineCheckGenRef.current !== gen) return;
+      if (offlineCancelSentRef.current) return;
       refreshPresenceSubscription();
       // callTargetReachable:
       //   true  → callee's device confirmed it got the call (live socket OR native FCM ack) → keep ringing.
@@ -489,7 +494,9 @@ const CallScreen = () => {
   ]);
 
   // Partner came online (or server confirmed reachable via FCM) while ringing — stay on normal ring UI.
+  // Skip if we already canceled for offline (late FCM/internet must not revive the ring).
   useEffect(() => {
+    if (offlineCancelSentRef.current) return;
     if (
       partnerOfflinePhase &&
       (callTargetReachable === true ||
@@ -499,15 +506,37 @@ const CallScreen = () => {
     }
   }, [partnerOfflinePhase, partnerIdForPresence, isUserOnline, callAccepted, callTargetReachable]);
 
-  // Auto-dismiss after showing offline (user can also tap Cancel).
+  // Cancel on server as soon as "User offline" shows — do not wait for auto-dismiss
+  // (late internet on callee would otherwise still deliver FCM ring).
+  // Keep offline UI briefly, then clean up local state + navigate.
   useEffect(() => {
     if (!partnerOfflinePhase) return;
+
+    if (!offlineCancelSentRef.current) {
+      offlineCancelSentRef.current = true;
+      const partnerId = partnerIdForPresence || call.from;
+      if (partnerId && socket) {
+        socket.emit('livekit:cancelCall', {
+          userToCall: partnerId,
+          roomName: call.roomName || '',
+        });
+      }
+    }
+
     const t = setTimeout(() => {
       leaveCall();
       if (navigation.canGoBack()) navigation.goBack();
     }, OFFLINE_AUTO_DISMISS_MS);
     return () => clearTimeout(t);
-  }, [partnerOfflinePhase, leaveCall, navigation]);
+  }, [
+    partnerOfflinePhase,
+    partnerIdForPresence,
+    call.from,
+    call.roomName,
+    socket,
+    leaveCall,
+    navigation,
+  ]);
 
   // ── auto-cancel: outgoing ring timeout (online users — long ring like WhatsApp) ──
   const ringingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);

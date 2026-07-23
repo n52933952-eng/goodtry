@@ -663,6 +663,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       if (typeof payload.likeCount === 'number') updates.likeCount = payload.likeCount;
       if (payload.likePreview !== undefined) updates.likePreview = payload.likePreview;
       if (typeof payload.replyCount === 'number') updates.replyCount = payload.replyCount;
+      if (payload.replyPreview !== undefined) updates.replyPreview = payload.replyPreview;
       if (Object.keys(updates).length) updatePost(postId, updates);
     });
 

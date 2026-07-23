@@ -29,7 +29,8 @@ interface Channel {
 interface ChannelsModalProps {
   visible: boolean;
   onClose: () => void;
-  onChannelFollowed?: (postId?: string) => void;
+  /** postId + optional full post for instant feed inject */
+  onChannelFollowed?: (postId?: string, post?: any) => void;
 }
 
 const ChannelsModal: React.FC<ChannelsModalProps> = ({
@@ -83,9 +84,11 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
         showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
       }
       onClose();
-      setTimeout(() => {
-        onChannelFollowed?.(data?.postId ? String(data.postId) : undefined);
-      }, 500);
+      // Instant callback (no 500ms delay) so feed inject + scroll feel immediate.
+      onChannelFollowed?.(
+        data?.postId ? String(data.postId) : undefined,
+        data?.post || undefined,
+      );
     } catch (error) {
       console.error('Error creating stream post:', error);
       showToast('Error', 'Failed to add live stream', 'error');
