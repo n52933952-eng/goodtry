@@ -12,7 +12,7 @@ import React, {
 
 } from 'react';
 
-import { Alert, AppState, DeviceEventEmitter } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import {
 
@@ -26,8 +26,9 @@ import InCallManager from 'react-native-incall-manager';
 import { useUser } from './UserContext';
 
 import { useSocket } from './SocketContext';
+import { usePost } from './PostContext';
 
-import { API_URL, LIVE_BAR_RESIGN_GAME } from '../utils/constants';
+import { API_URL } from '../utils/constants';
 
 import { startOngoingCallNative, stopOngoingCallNative, moveAppToBackgroundNative } from '../services/callData';
 
@@ -181,6 +182,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const socket = socketCtx?.socket;
 
+  const { removeLivePostsByStreamerId } = usePost();
+
 
 
   const [isLive, setIsLive] = useState(false);
@@ -217,6 +220,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const endLiveRef = useRef<() => Promise<void>>(async () => {});
   const teardownLiveRef = useRef<() => Promise<void>>(async () => {});
+  /** Clears stuck LiveKit "Reconnecting" so host doesn't stay live after server already ended. */
+  const reconnectWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMinimizedRef = useRef(false);
 
   const ongoingCallNativeStartedRef = useRef(false);
@@ -308,7 +313,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const screen = (screenPub?.track as LocalTrack) ?? null;
 
-    const sharing = !!screen;
+    // Don't revive sharing from a stale screen pub after we intentionally stopped.
+    const sharing = isSharingRef.current && !!screen;
 
     const publishedCam = (camPub?.track as LocalTrack) ?? null;
 
@@ -316,13 +322,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       ? (hostPreviewTrackRef.current ?? publishedCam)
 
-      : publishedCam;
+      : (publishedCam ?? (!sharing ? hostPreviewTrackRef.current : null));
 
     setLocalTrack(prev => (prev === cam ? prev : cam));
 
-    setLocalScreenTrack(prev => (prev === screen ? prev : screen));
-
-    isSharingRef.current = sharing;
+    setLocalScreenTrack(prev => (prev === (sharing ? screen : null) ? prev : (sharing ? screen : null)));
 
     setIsSharing(prev => (prev === sharing ? prev : sharing));
 
@@ -640,15 +644,26 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
         const preview = hostPreviewTrackRef.current;
 
-        await restoreCameraForViewers(room, preview);
+        // Clear sharing first so syncLocalTrack doesn't keep treating screen as active.
+        isSharingRef.current = false;
+
+        setIsSharing(false);
+
+        const cam = await restoreCameraForViewers(room, preview);
 
         hostPreviewTrackRef.current = null;
 
-        if (!room.localParticipant.getTrackPublication(Track.Source.Camera)?.track) {
+        if (cam) setLocalTrack(cam);
 
-          await room.localParticipant.setCameraEnabled(true, { resolution: CAM_LIVE });
+        setHostPipVisible(true);
 
-        }
+        syncLocalTrack();
+
+        setTimeout(() => syncLocalTrack(), 400);
+
+        setTimeout(() => syncLocalTrack(), 1000);
+
+        return;
 
       }
 
@@ -671,6 +686,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       setIsSharing(false);
 
       setHostPipVisible(true);
+
+      syncLocalTrack();
 
       if (next && !/cancel|denied|abort/i.test(msg)) {
 
@@ -696,23 +713,23 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const preview = hostPreviewTrackRef.current;
 
-      await restoreCameraForViewers(room, preview);
-
-      hostPreviewTrackRef.current = null;
-
-      if (!room.localParticipant.getTrackPublication(Track.Source.Camera)?.track) {
-
-        await room.localParticipant.setCameraEnabled(true, { resolution: CAM_LIVE });
-
-      }
-
       isSharingRef.current = false;
 
       setIsSharing(false);
 
+      const cam = await restoreCameraForViewers(room, preview);
+
+      hostPreviewTrackRef.current = null;
+
+      if (cam) setLocalTrack(cam);
+
       setHostPipVisible(true);
 
       syncLocalTrack();
+
+      setTimeout(() => syncLocalTrack(), 400);
+
+      setTimeout(() => syncLocalTrack(), 1000);
 
     } catch (err: any) {
 
@@ -723,6 +740,16 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       setIsSharing(false);
 
       setHostPipVisible(true);
+
+      try {
+
+        const cam = await restoreCameraForViewers(room, hostPreviewTrackRef.current);
+
+        hostPreviewTrackRef.current = null;
+
+        if (cam) setLocalTrack(cam);
+
+      } catch (_) {}
 
       syncLocalTrack();
 
@@ -743,21 +770,39 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const run = async () => {
       liveBroadcastNav.suppressGameCleanupNav = true;
+      if (reconnectWatchdogRef.current) {
+        clearTimeout(reconnectWatchdogRef.current);
+        reconnectWatchdogRef.current = null;
+      }
+      liveBroadcastNav.isLiveSessionActive = false;
       setIsLive(false);
       setIsMinimized(false);
       isMinimizedRef.current = false;
       setIsLiveControlsFocused(false);
-      DeviceEventEmitter.emit(LIVE_BAR_RESIGN_GAME, { leaveGameScreen: false });
+      // Do NOT emit LIVE_BAR_RESIGN_GAME here — that forfeits an in-progress chess/card
+      // game whenever live ends (accept challenge, call handoff, End). Mini-bar End
+      // can resign explicitly if needed.
 
       if (socket && user?._id) {
         socket.emit('livekit:leaveLiveWatch', { streamerId: String(user._id) });
+        // Always drop the feed card on intentional end (even if roomName already cleared).
+        removeLivePostsByStreamerId(String(user._id));
         if (roomNameRef.current && !liveEndedRef.current) {
           liveEndedRef.current = true;
           socket.emit('livekit:endLive', {
             streamerId: String(user._id),
             roomName: roomNameRef.current,
           });
+        } else if (!liveEndedRef.current && user?._id) {
+          // Still tell server to wipe Mongo even without a cached roomName.
+          liveEndedRef.current = true;
+          socket.emit('livekit:endLive', {
+            streamerId: String(user._id),
+            roomName: roomNameRef.current || '',
+          });
         }
+      } else if (user?._id) {
+        removeLivePostsByStreamerId(String(user._id));
       }
 
       roomNameRef.current = '';
@@ -785,7 +830,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     } finally {
       teardownInFlightRef.current = null;
     }
-  }, [socket, user, disconnect, isLive, clearLiveChatMessages, stopMediaForCallHandoff]);
+  }, [socket, user, disconnect, isLive, clearLiveChatMessages, stopMediaForCallHandoff, removeLivePostsByStreamerId]);
 
   const endLiveForCall = useCallback(async () => {
     await teardownLiveSession({ forCallHandoff: true });
@@ -926,17 +971,50 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       lkRoom.on(RoomEvent.Reconnecting, () => {
         console.warn('[LiveBroadcast] LiveKit reconnecting…');
+        // Cap stuck reconnect — server grace is ~15s; don't leave host UI "live" forever.
+        if (reconnectWatchdogRef.current) clearTimeout(reconnectWatchdogRef.current);
+        reconnectWatchdogRef.current = setTimeout(() => {
+          reconnectWatchdogRef.current = null;
+          if (liveEndedRef.current) return;
+          if (!roomRef.current || roomRef.current.state !== ConnectionState.Reconnecting) return;
+          console.warn('[LiveBroadcast] Reconnect watchdog — ending live session');
+          void teardownLiveRef.current?.().then(() => {
+            if (!callSessionNav.isInOneToOneCallSession) {
+              Alert.alert(
+                'Live ended',
+                'Your livestream stopped because the connection was lost.',
+              );
+              liveBroadcastNav.goToProfile?.();
+            }
+          });
+        }, 18_000);
       });
 
       lkRoom.on(RoomEvent.Reconnected, () => {
+        if (reconnectWatchdogRef.current) {
+          clearTimeout(reconnectWatchdogRef.current);
+          reconnectWatchdogRef.current = null;
+        }
         syncLocalTrack();
       });
 
       lkRoom.on(RoomEvent.Disconnected, () => {
+        if (reconnectWatchdogRef.current) {
+          clearTimeout(reconnectWatchdogRef.current);
+          reconnectWatchdogRef.current = null;
+        }
 
         if (!liveEndedRef.current) {
           console.warn('[LiveBroadcast] LiveKit disconnected — cleaning up live session');
-          void teardownLiveRef.current?.();
+          void teardownLiveRef.current?.().then(() => {
+            if (!callSessionNav.isInOneToOneCallSession) {
+              Alert.alert(
+                'Live ended',
+                'Your livestream stopped because the connection was lost.',
+              );
+              liveBroadcastNav.goToProfile?.();
+            }
+          });
           return;
         }
 
@@ -1021,6 +1099,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
       setIsLive(true);
+      liveBroadcastNav.isLiveSessionActive = true;
 
       socket.emit('livekit:joinLiveWatch', { streamerId: String(user._id) });
 
@@ -1087,6 +1166,32 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
 
   useEffect(() => {
+    liveBroadcastNav.isLiveSessionActive = isLive;
+  }, [isLive]);
+
+  // After socket flap: re-announce goLive so Mongo live row + feed card come back if grace wiped them.
+  useEffect(() => {
+    if (!socket || !isLive || !user?._id) return undefined;
+
+    const onConnect = () => {
+      if (liveEndedRef.current || !roomNameRef.current) return;
+      console.log('[LiveBroadcast] Socket reconnected while live — re-announce goLive');
+      socket.emit('livekit:joinLiveWatch', { streamerId: String(user._id) });
+      socket.emit('livekit:goLive', {
+        streamerId: String(user._id),
+        streamerName: user.name || user.username,
+        streamerProfilePic: user.profilePic,
+        roomName: roomNameRef.current,
+      });
+    };
+
+    socket.on('connect', onConnect);
+    return () => {
+      socket.off('connect', onConnect);
+    };
+  }, [socket, isLive, user?._id, user?.name, user?.username, user?.profilePic]);
+
+  useEffect(() => {
 
     if (!socket || !isLive || !user?._id) return;
 
@@ -1094,20 +1199,31 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (String(payload?.streamerId || '') !== String(user._id)) return;
 
-      const room = roomRef.current;
+      if (liveEndedRef.current) return;
 
-      if (
-        room
-        && (room.state === ConnectionState.Connected || room.state === ConnectionState.Reconnecting)
-      ) {
-        console.warn('[LiveBroadcast] Ignoring streamEnded — LiveKit session still active');
+      const reason = String(payload?.reason || '');
+      const room = roomRef.current;
+      const lkStillUp =
+        !!room
+        && (room.state === ConnectionState.Connected || room.state === ConnectionState.Reconnecting);
+
+      // Server is source of truth after disconnect grace — never ignore `disconnect` cleanup.
+      // (Old bug: host stayed "live" while LiveKit sat in Reconnecting and viewers already saw the end.)
+      if (lkStillUp && reason !== 'disconnect') {
+        console.warn('[LiveBroadcast] Ignoring streamEnded — LiveKit session still active', reason);
         return;
       }
 
-      if (liveEndedRef.current) return;
-
-      // Teardown only — never navigate to profile (would kill an active call).
+      console.warn('[LiveBroadcast] streamEnded for host — tearing down', { reason });
       await teardownLiveRef.current?.();
+
+      if (reason === 'disconnect' && !callSessionNav.isInOneToOneCallSession) {
+        Alert.alert(
+          'Live ended',
+          'Your livestream stopped because the connection was lost.',
+        );
+        liveBroadcastNav.goToProfile?.();
+      }
 
     };
 

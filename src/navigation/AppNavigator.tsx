@@ -740,10 +740,12 @@ const AppNavigator = () => {
     isLiveRef.current = isLive;
   }, [isLive]);
 
-  /** Normal camera live (not share+minimize) — end stream before joining a game. */
+  /** Normal camera live (not share+minimize) — end stream after chess has joined (avoid socket flap mid-accept). */
   const endNormalLiveBeforeGame = useCallback(() => {
     if (isLive && !isMinimized && !isSharing) {
-      void endLiveForCall();
+      setTimeout(() => {
+        void endLiveForCall();
+      }, 2000);
     }
   }, [isLive, isMinimized, isSharing, endLiveForCall]);
 

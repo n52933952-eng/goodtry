@@ -68,6 +68,7 @@ const FeedScreen = ({ navigation }: any) => {
     setViewerSortBoost,
     clearViewerSortBoosts,
     deletePost,
+    removeLivePostsByStreamerId,
     addPost,
     setDeferIncomingFeedPosts,
     flushPendingFeedPosts,
@@ -94,10 +95,11 @@ const FeedScreen = ({ navigation }: any) => {
     [myUserId],
   );
 
-  const visiblePosts = useMemo(() => {
-    if (!isLive) return posts;
-    return posts.filter((p) => !isOwnLivePost(p));
-  }, [posts, isLive, isOwnLivePost]);
+  // Never show your own LIVE card (while live or right after End — avoids stale flash until prune).
+  const visiblePosts = useMemo(
+    () => posts.filter((p) => !isOwnLivePost(p)),
+    [posts, isOwnLivePost],
+  );
 
   const hasLiveFeedCards = useMemo(
     () => visiblePosts.some((p: any) => p?.isLive),
@@ -603,15 +605,8 @@ const FeedScreen = ({ navigation }: any) => {
     };
 
     const removeLiveCard = (sid: string) => {
-      deletePost(`live_${sid}`);
-      setPosts((prev: any[]) =>
-        prev.filter((p: any) => {
-          const pid = p?._id != null ? String(p._id) : '';
-          if (pid === `live_${sid}`) return false;
-          const authorId = p?.postedBy?._id != null ? String(p.postedBy._id) : '';
-          return !(p?.isLive && authorId === sid);
-        }),
-      );
+      // Prefer streamer-based removal (covers legacy live_<LiveStreamDocId> cards).
+      removeLivePostsByStreamerId(sid);
     };
 
     // Live stream: inject card at top when a followed user goes live
@@ -657,7 +652,7 @@ const FeedScreen = ({ navigation }: any) => {
       socket.off('livekit:streamStarted', handleStreamStarted);
       socket.off('livekit:streamEnded', handleStreamEnded);
     };
-  }, [socket, user, navigation, deletePost, setPosts, addPost, showToast]);
+  }, [socket, user, navigation, removeLivePostsByStreamerId, addPost, showToast]);
 
   // Backup: same server status check as pull-to-refresh (~15s, matches backend disconnect grace).
   useEffect(() => {

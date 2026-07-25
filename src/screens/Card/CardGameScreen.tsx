@@ -81,6 +81,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [opponent, setOpponent] = useState<any>(null);
   const [gameLive, setGameLive] = useState(false);
+  const gameLiveRef = useRef(false);
+  useEffect(() => {
+    gameLiveRef.current = gameLive;
+  }, [gameLive]);
   const [gameOver, setGameOver] = useState(false);
   const [leavingLobby, setLeavingLobby] = useState(false);
   const [gameResult, setGameResult] = useState('');
@@ -251,6 +255,29 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       liveBroadcastNav.suppressGameCleanupNav = false;
     }, 600);
   }, [navigation]);
+
+  /** Stuck on "Waiting…" — cancel for both and go home. */
+  const abortUnstartedGame = useCallback((reason: 'never_started' | 'start_timeout' = 'never_started') => {
+    const rid = currentRoomIdRef.current || roomId;
+    if (!rid || isSpectator) {
+      handleBackToLobby();
+      return;
+    }
+    if (socket) {
+      socket.emit('cancelCardGameStart', { roomId: rid, reason });
+    }
+    showToast('Go Fish', 'Game could not start', 'info');
+    handleBackToLobby();
+  }, [socket, roomId, isSpectator, showToast, handleBackToLobby]);
+
+  useEffect(() => {
+    if (gameLive || gameOver || isSpectator || !roomId) return undefined;
+    const timer = setTimeout(() => {
+      if (gameLiveRef.current) return;
+      abortUnstartedGame('start_timeout');
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [gameLive, gameOver, isSpectator, roomId, abortUnstartedGame]);
 
   const handleBack = useCallback(() => {
     if (gameOver) {
@@ -568,6 +595,20 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         return;
       }
       if (activeRoomId === roomId) {
+        const reason = String(data?.reason || '');
+        if (
+          reason === 'never_started'
+          || reason === 'start_timeout'
+          || reason === 'player_disconnected'
+        ) {
+          showToast(
+            'Go Fish',
+            reason === 'player_disconnected' ? 'Opponent disconnected' : 'Game could not start',
+            'info',
+          );
+          handleBackToLobby();
+          return;
+        }
         setGameOver(true);
         setGameResult(data.message || 'Game Over');
         showToast('Game Over', data.message, 'info');
@@ -581,9 +622,8 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     const handleGameCleanup = () => {
       const activeRoomId = currentRoomIdRef.current;
       if (activeRoomId !== currentRoomId) return;
-      setGameOver(true);
-      setGameResult('Game ended.');
-      showToast('Game Ended', 'Game was canceled or ended', 'info');
+      showToast('Go Fish', 'Game ended', 'info');
+      handleBackToLobby();
     };
 
     socket.on('cardGameCleanup', handleGameCleanup);
@@ -593,7 +633,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     // Don't request state immediately - joinCardRoom will send it
     // Only request if we don't receive state within 1 second
     const stateRequestTimeout = setTimeout(() => {
-      if (!gameLive) {
+      if (!gameLiveRef.current) {
         console.log('🃏 [CardGameScreen] No state received from joinCardRoom, requesting...');
         socket.emit('requestCardGameState', { roomId: currentRoomId });
       }
@@ -611,6 +651,23 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       socket.off('cardMove');
     };
   }, [socket, roomId]);
+
+  // Back online after server already ended the game — catch up and leave.
+  useEffect(() => {
+    if (!socket || !roomId) return undefined;
+
+    const onReconnect = () => {
+      if (gameOver) return;
+      console.log('🃏 [CardGameScreen] Socket reconnected — checking if game still active', roomId);
+      socket.emit('joinCardRoom', { roomId, userId: user?._id });
+      socket.emit('requestCardGameState', { roomId });
+    };
+
+    socket.on('connect', onReconnect);
+    return () => {
+      socket.off('connect', onReconnect);
+    };
+  }, [socket, roomId, gameOver, user?._id]);
 
   useEffect(() => {
     setOpponent(null);
@@ -645,6 +702,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
 
   const handleAskForRank = useCallback((rank: number) => {
     if (!socket || !roomId || !opponentId || !isMyTurn || gameOver) {
+      return;
+    }
+    if (!socket.isSocketConnected?.()) {
+      showToast('Offline', 'Reconnect to make a move', 'info');
       return;
     }
 
@@ -730,6 +791,14 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.loadingText}>Waiting for game to start...</Text>
+          {!isSpectator ? (
+            <TouchableOpacity
+              style={styles.cancelStartBtn}
+              onPress={() => abortUnstartedGame('never_started')}
+            >
+              <Text style={styles.cancelStartBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
     );
@@ -1022,6 +1091,18 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 16,
     marginTop: 16,
+  },
+  cancelStartBtn: {
+    marginTop: 24,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.error || '#E53935',
+  },
+  cancelStartBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   header: {
     flexDirection: 'row',

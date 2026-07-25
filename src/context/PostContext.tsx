@@ -106,6 +106,8 @@ interface PostContextType {
   injectPostsIntoFeed: (incoming: Post[]) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
+  /** Remove live pseudo-card(s) for a streamer (handles both live_<streamerId> and legacy live_<docId>). */
+  removeLivePostsByStreamerId: (streamerId: string) => void;
   likePost: (
     postId: string,
     patch: {
@@ -643,6 +645,26 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  const removeLivePostsByStreamerId = useCallback((streamerId: string) => {
+    const sid = String(streamerId || '').trim();
+    if (!sid) return;
+    removedPostIdsRef.current.add(`live_${sid}`);
+    setPosts((prevPosts) => {
+      const safeArray = Array.isArray(prevPosts) ? prevPosts : [];
+      return safeArray.filter((post) => {
+        if (!(post as any)?.isLive) return true;
+        const pid = post?._id != null ? String(post._id) : '';
+        const authorId =
+          (post as any)?.postedBy?._id != null
+            ? String((post as any).postedBy._id)
+            : '';
+        const isMatch = pid === `live_${sid}` || authorId === sid;
+        if (isMatch && pid) removedPostIdsRef.current.add(pid);
+        return !isMatch;
+      });
+    });
+  }, []);
+
   const likePost = useCallback((postId: string, patch: {
     likedByMe?: boolean;
     likeCount?: number;
@@ -777,6 +799,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         injectPostsIntoFeed,
         updatePost,
         deletePost,
+        removeLivePostsByStreamerId,
         likePost,
         unlikePost,
         addComment,

@@ -32,6 +32,12 @@ export const liveBroadcastNav = {
   /** While true, game screens must not auto-navigate on cardGameCleanup / similar. */
   suppressGameCleanupNav: false,
 
+  /**
+   * Host is in an active LiveKit broadcast (camera/mic published).
+   * Keep the app socket up (like calls) so a brief flap does not erase the feed live card.
+   */
+  isLiveSessionActive: false,
+
   /** Game Over — LIVE mini bar + host camera pip must not steal taps. */
   blockFloatingTouches: false,
   /** @deprecated use blockFloatingTouches */

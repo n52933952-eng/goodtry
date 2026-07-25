@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
     top: 70, // Same position as chess - will show whichever is active
     right: 14,
     left: 14,
-    zIndex: 9999,
+    zIndex: 10050,
     maxHeight: 400,
   },
   card: {

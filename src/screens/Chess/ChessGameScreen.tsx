@@ -22,6 +22,7 @@ import { usePost } from '../../context/PostContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_URL, COLORS, CHESS_GAME_FEED_UI_ENDED, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
 import { markChessRoomFeedEnded } from '../../utils/chessFeedEndedStore';
+import { navigateToHomeFeed } from '../../utils/navigationHelpers';
 import { useShowToast } from '../../hooks/useShowToast';
 import ChessBoard, {
   ChessMoveAnimation,
@@ -120,8 +121,6 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const showToast = useShowToast();
   const { isRTL } = useLanguage();
 
-  console.log('♟️ [ChessGameScreen] Initializing with:', { roomId, opponentId, color, isSpectator });
-
   const chess = useMemo(() => new Chess(), []);
   const [fen, setFen] = useState(chess.fen());
   const [orientation, setOrientation] = useState<'white' | 'black'>(color || 'white');
@@ -130,6 +129,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [player1, setPlayer1] = useState<any>(null); // WHITE player (challenger)
   const [player2, setPlayer2] = useState<any>(null); // BLACK player (accepter)
   const [gameLive, setGameLive] = useState(true);
+  const gameLiveRef = useRef(true);
+  useEffect(() => {
+    gameLiveRef.current = gameLive;
+  }, [gameLive]);
+  const gameStartSoundPlayedRef = useRef(false);
   const [gameOver, setGameOver] = useState(false);
   /** Shown after {@link GAME_OVER_OVERLAY_DELAY_MS} when the game ends (not used for immediate resign). */
   const [gameOverOverlayVisible, setGameOverOverlayVisible] = useState(false);
@@ -365,6 +369,31 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     markChessRoomFeedEnded(s);
     DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
   }, []);
+
+  /** Game stuck on "Waiting…" — cancel for both players and go home. */
+  const abortUnstartedGame = useCallback((reason: 'never_started' | 'start_timeout' = 'never_started') => {
+    const rid = roomIdRef.current;
+    if (!rid || isSpectatorRef.current) {
+      navigateToHomeFeed(navigation);
+      return;
+    }
+    if (socket) {
+      socket.emit('cancelChessGameStart', { roomId: rid, reason });
+    }
+    notifyChessFeedUiEnded();
+    showToast('Chess', 'Game could not start', 'info');
+    navigateToHomeFeed(navigation);
+  }, [socket, navigation, notifyChessFeedUiEnded, showToast]);
+
+  // If the board never goes live, don't leave either player stuck on the spinner.
+  useEffect(() => {
+    if (gameLive || gameOver || isSpectator || !roomId) return undefined;
+    const timer = setTimeout(() => {
+      if (gameLiveRef.current) return;
+      abortUnstartedGame('start_timeout');
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [gameLive, gameOver, isSpectator, roomId, abortUnstartedGame]);
 
   // Header / hardware / gesture back after game over did not call `removeOwnChessPost` — always ping feed on leave.
   useEffect(() => {
@@ -681,6 +710,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setLegalMoves([]);
     setMoveAnimation(null);
     setGameLive(false); // Will be set to true when game state is received
+    gameStartSoundPlayedRef.current = false;
     // Clear player states when switching games
     setPlayer1(null);
     setPlayer2(null);
@@ -702,10 +732,6 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     currentRoomIdRef.current = currentRoomId; // Update ref immediately
     
     console.log('♟️ [ChessGameScreen] Joining chess room:', currentRoomId, { isSpectator, oldRoomId });
-    
-    // Join the new room (backend will automatically leave old chess rooms)
-    socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
-    socket.emit('requestChessGameState', { roomId: currentRoomId });
 
     // Create wrapped handlers that check roomId using closure to capture currentRoomId
     // This ensures we only process events for the current room, even if roomId changes
@@ -809,7 +835,23 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           : data.reason === 'player_disconnected' ? 'A player disconnected'
           : data.reason === 'checkmate' ? 'Checkmate!'
           : data.reason === 'draw' ? 'Draw!'
-          : 'Game ended';
+          : data.reason === 'never_started' || data.reason === 'start_timeout'
+            ? 'Game never started'
+            : 'Game ended';
+        if (
+          data.reason === 'never_started'
+          || data.reason === 'start_timeout'
+          || data.reason === 'player_disconnected'
+        ) {
+          showToast(
+            'Chess',
+            data.reason === 'player_disconnected' ? 'Opponent disconnected' : 'Game could not start',
+            'info',
+          );
+          notifyChessFeedUiEnded();
+          navigateToHomeFeed(navigation);
+          return;
+        }
         setGameOver(true);
         setGameResult(reasonText);
         scheduleGameOverOverlayDelay();
@@ -863,8 +905,20 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       handleOpponentMove(data);
     });
 
+    // Listeners first, then join — avoids missing a fast chessGameState reply.
+    socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
+    socket.emit('requestChessGameState', { roomId: currentRoomId });
+    const retryTimers = [800, 2000].map((ms) =>
+      setTimeout(() => {
+        if (gameLiveRef.current || currentRoomIdRef.current !== currentRoomId) return;
+        socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
+        socket.emit('requestChessGameState', { roomId: currentRoomId });
+      }, ms),
+    );
+
     return () => {
       console.log('♟️ [ChessGameScreen] Cleanup function called for room:', currentRoomId);
+      retryTimers.forEach(clearTimeout);
       if (gameOverOverlayTimeoutRef.current != null) {
         clearTimeout(gameOverOverlayTimeoutRef.current);
         gameOverOverlayTimeoutRef.current = null;
@@ -883,6 +937,23 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       socket.off('chessMove');
     };
   }, [socket, roomId]);
+
+  // Came back online after the server already ended the game — catch up and leave.
+  useEffect(() => {
+    if (!socket || !roomId) return undefined;
+
+    const onReconnect = () => {
+      if (gameOver) return;
+      console.log('♟️ [ChessGameScreen] Socket reconnected — checking if game still active', roomId);
+      socket.emit('joinChessRoom', { roomId, userId: user?._id });
+      socket.emit('requestChessGameState', { roomId });
+    };
+
+    socket.on('connect', onReconnect);
+    return () => {
+      socket.off('connect', onReconnect);
+    };
+  }, [socket, roomId, gameOver, user?._id]);
 
   useEffect(() => {
     // Clear opponent immediately when opponentId changes to prevent showing wrong name
@@ -970,9 +1041,13 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     
     setGameLive(true);
     
-    // Play game start sound when game state is first loaded (game is starting)
-    if (data.fen && chess.fen() === 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1') {
-      // Only play if it's the starting position (new game)
+    // Play game start sound once when game state is first loaded (starting position only).
+    if (
+      !gameStartSoundPlayedRef.current
+      && data.fen
+      && data.fen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq')
+    ) {
+      gameStartSoundPlayedRef.current = true;
       playSound('gameStart');
     }
   };
@@ -1324,6 +1399,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     if (reviewMode) {
       return;
     }
+    // Offline: don't move pieces locally — opponent never sees it and boards desync.
+    if (!socket?.isSocketConnected?.()) {
+      showToast('Offline', 'Reconnect to make a move', 'info');
+      return;
+    }
 
     const currentTurn = chess.turn();
     const playerColor = orientation[0];
@@ -1441,7 +1521,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
         }
       }
     }
-  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound, triggerMoveAnimation]);
+  }, [chess, orientation, gameOver, selectedSquare, socket, roomId, opponentId, capturedWhite, capturedBlack, playSound, triggerMoveAnimation, isSpectator, reviewMode, showToast]);
 
   const handleBack = () => {
     // Always update your feed when you leave as a player — when `gameOver` is true the branch
@@ -1548,6 +1628,14 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={COLORS.primary} />
         <Text style={styles.loadingText}>Waiting for game to start...</Text>
+        <TouchableOpacity
+          style={styles.cancelStartBtn}
+          onPress={() => {
+            abortUnstartedGame('never_started');
+          }}
+        >
+          <Text style={styles.cancelStartBtnText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -1816,6 +1904,18 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 16,
     marginTop: 16,
+  },
+  cancelStartBtn: {
+    marginTop: 24,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.error || '#E53935',
+  },
+  cancelStartBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   headerAnchor: {
     zIndex: 2,

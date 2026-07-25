@@ -88,7 +88,8 @@ const styles = StyleSheet.create({
     top: 70,
     right: 14,
     left: 14,
-    zIndex: 9999,
+    zIndex: 10050,
+    elevation: 20,
     maxHeight: 400,
   },
   card: {

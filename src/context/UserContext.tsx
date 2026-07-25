@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from '../utils/constants';
 import socketService from '../services/socket';
 import fcmService from '../services/fcmService';
 import { callSessionNav } from '../services/callSessionNav';
+import { liveBroadcastNav } from '../services/liveBroadcastNav';
 import { setLogoutCallback } from '../services/api';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -149,11 +150,13 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
 
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background') {
-        // Web keeps socket alive in background for calls — same for mobile during active call.
+        // Keep socket for active call OR livestream (feed card + viewers depend on it).
         if (
           callSessionNav.isInOneToOneCallSession
           || callSessionNav.isOnCallScreen
           || callSessionNav.isOnGroupCallScreen
+          || liveBroadcastNav.isLiveSessionActive
+          || liveBroadcastNav.isOnLiveBroadcast
         ) {
           return;
         }

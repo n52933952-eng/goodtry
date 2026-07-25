@@ -49,9 +49,11 @@ const SocketContext = createContext<SocketContextType | undefined>(undefined);
 
 export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
-  const { addPost, updatePost, deletePost } = usePost();
+  const { addPost, updatePost, deletePost, removeLivePostsByStreamerId } = usePost();
   const deletePostRef = useRef(deletePost);
   deletePostRef.current = deletePost;
+  const removeLivePostsByStreamerIdRef = useRef(removeLivePostsByStreamerId);
+  removeLivePostsByStreamerIdRef.current = removeLivePostsByStreamerId;
   const setLiveStreamsRef = useRef<
     React.Dispatch<
       React.SetStateAction<
@@ -80,6 +82,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const presenceSubscribeRef = useRef<((opts?: { force?: boolean }) => void) | null>(null);
   /** Last emitted presenceSubscribe set — skip duplicate emits/logs. */
   const lastPresenceSubscribeKeyRef = useRef<string>('');
+  /** Last forced presenceSubscribe — avoid 3× spam on rapid transport reconnects. */
+  const lastPresenceForceAtRef = useRef(0);
+  /** Last notification unread fetch — avoid rate-limit on reconnect storms. */
+  const lastNotifRefreshAtRef = useRef(0);
   /** Light reconnect retries — cleared on next schedule / unmount. */
   const presenceRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** Stable socket listener so we only remove our `newMessage` handler, not ChatScreen’s. */
@@ -835,7 +841,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       const sid = normalizeLiveStreamerId(payload?.streamerId);
       if (!sid) return;
       setLiveStreamsRef.current((prev) => prev.filter((s) => String(s.streamerId) !== sid));
-      deletePostRef.current(`live_${sid}`);
+      // Match by streamer (postedBy), not only live_<streamerId> — API used to emit live_<docId>.
+      removeLivePostsByStreamerIdRef.current(sid);
     });
     };
 
@@ -892,18 +899,26 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const removeConnectListener = socketService.addConnectListener(() => {
       setSocketReachable(true);
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
-      // Force re-subscribe after reconnect even if the id set is unchanged.
-      lastPresenceSubscribeKeyRef.current = '';
-      subscribeToPresence({ force: true });
-      // One delayed retry — first emit can race handshake / server reinforce.
+      const now = Date.now();
+      // Rapid transport errors reconnect multiple times — don't fire 3 force-subscribes each time.
+      if (now - lastPresenceForceAtRef.current >= 2500) {
+        lastPresenceForceAtRef.current = now;
+        lastPresenceSubscribeKeyRef.current = '';
+        subscribeToPresence({ force: true });
+      }
       for (const t of presenceRetryTimersRef.current) clearTimeout(t);
-      presenceRetryTimersRef.current = [800, 2000].map((ms) =>
+      presenceRetryTimersRef.current = [
         setTimeout(() => {
           lastPresenceSubscribeKeyRef.current = '';
+          lastPresenceForceAtRef.current = Date.now();
           presenceSubscribeRef.current?.({ force: true });
-        }, ms),
-      );
-      refreshNotificationCountRef.current?.();
+        }, 1500),
+      ];
+      // Don't fetch unread count on every transport reconnect — API rate-limits it.
+      if (now - lastNotifRefreshAtRef.current >= 8000) {
+        lastNotifRefreshAtRef.current = now;
+        refreshNotificationCountRef.current?.();
+      }
 
       // Ack undelivered incoming (internet back) + FCM queue so sender gets ✓✓.
       (async () => {
