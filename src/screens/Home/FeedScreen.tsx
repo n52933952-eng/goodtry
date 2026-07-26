@@ -654,7 +654,7 @@ const FeedScreen = ({ navigation }: any) => {
     };
   }, [socket, user, navigation, removeLivePostsByStreamerId, addPost, showToast]);
 
-  // Backup: same server status check as pull-to-refresh (~15s, matches backend disconnect grace).
+  // Backup: prune dead live cards even if streamEnded was missed (reconnect / background).
   useEffect(() => {
     if (!hasLiveFeedCards) return;
 
@@ -667,13 +667,31 @@ const FeedScreen = ({ navigation }: any) => {
       }
     };
 
-    const initial = setTimeout(syncEndedLiveCards, 3000);
-    const timer = setInterval(syncEndedLiveCards, 15000);
+    const initial = setTimeout(syncEndedLiveCards, 2000);
+    const timer = setInterval(syncEndedLiveCards, 8000);
     return () => {
       clearTimeout(initial);
       clearInterval(timer);
     };
   }, [hasLiveFeedCards, filterPostsForFeed, setPosts]);
+
+  // App came foreground / feed focused — clear zombies without waiting for interval.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        const prev = postsRef.current;
+        if (!prev.some((p: any) => p?.isLive)) return;
+        const pruned = await pruneStaleLiveFeedPosts(prev);
+        if (!cancelled && pruned.length !== prev.length) {
+          setPosts(filterPostsForFeed(pruned));
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [filterPostsForFeed, setPosts]),
+  );
 
   const fetchFeed = async (loadMore = false, options: { merge?: boolean } = {}) => {
     // Prevent duplicate requests

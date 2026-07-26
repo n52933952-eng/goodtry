@@ -539,18 +539,12 @@ const Post: React.FC<PostProps> = ({
   }, [post?.replies, (post as any)?.replyCount]);
 
   const replyPreviewUsers = useMemo(
-    () => getReplyPreviewUsers(post, 1),
+    () => getReplyPreviewUsers(post, 2),
     [post?.replyPreview, post?.replies],
   );
   const latestReplyUser = replyPreviewUsers[0] || null;
-  const latestReplyPic = latestReplyUser?.profilePic || null;
-  const latestReplyInitial = (
-    latestReplyUser?.name ||
-    latestReplyUser?.username ||
-    '?'
-  )
-    .charAt(0)
-    .toUpperCase();
+  /** More comments than unique avatars (e.g. same user twice) → show +. */
+  const showCommentPlus = commentCount > replyPreviewUsers.length;
   
   // Weather post state
   const isWeatherPost = post.postedBy?.username === 'Weather' && post.weatherData;
@@ -2891,150 +2885,205 @@ const Post: React.FC<PostProps> = ({
         !hideFootballFooterWhenNoMatchEmpty &&
         !hideGamePostFooter && (
         <View style={styles.footer} pointerEvents="box-none">
-          <View style={styles.likeActionCluster}>
-            <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation();
-                handleLike();
-              }}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}
-              style={styles.likeHeartSlot}
-              accessibilityRole="button"
-              accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
-            >
-              <Text
-                style={[
-                  styles.likeHeartIcon,
-                  !isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
-                ]}
-                includeFontPadding={false}
-              >
-                🤍
-              </Text>
-              <Text
-                style={[
-                  styles.likeHeartIcon,
-                  isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
-                ]}
-                includeFontPadding={false}
-              >
-                ❤️
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation();
-                if (localLikesCount > 0 && post?._id) setLikesModalVisible(true);
-              }}
-              disabled={localLikesCount <= 0}
-              hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+          {/* Feed: 💬 locked by likes. Profile/detail: 💬 on the right edge. */}
+          <View
+            style={[
+              styles.footerPrimaryActions,
+              !showFeedExtras && styles.footerPrimaryActionsWide,
+            ]}
+          >
+            <View
               style={[
-                styles.likeMetaSlot,
-                localLikesCount <= 0 && styles.likeMetaSlotIdle,
+                styles.likeActionCluster,
+                !showFeedExtras && styles.likeActionClusterFlow,
               ]}
             >
-              <View style={styles.likePreviewAvatarWrap}>
-                {localLikesCount > 0 && displayLikePreview ? (
-                  likePreviewPic ? (
-                    <SafeImage source={{ uri: likePreviewPic }} style={styles.likePreviewAvatar} />
-                  ) : (
-                    <View
-                      style={[
-                        styles.likePreviewAvatar,
-                        styles.likePreviewAvatarPlaceholder,
-                        { backgroundColor: colors.avatarBg },
-                      ]}
-                    >
-                      <Text style={styles.likePreviewInitial}>{likePreviewInitial}</Text>
-                    </View>
-                  )
-                ) : null}
-              </View>
-              <Text
-                style={[
-                  styles.likeCountText,
-                  { color: colors.textGray },
-                  localLikesCount <= 1 && styles.likeCountTextHidden,
-                ]}
-                numberOfLines={1}
-                includeFontPadding={false}
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleLike();
+                }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}
+                style={styles.likeHeartSlot}
+                accessibilityRole="button"
+                accessibilityLabel={isLiked ? 'Unlike' : 'Like'}
               >
-                {localLikesCount > 1 ? formatCompactCount(localLikesCount) : '0'}
-              </Text>
-            </TouchableOpacity>
+                <Text
+                  style={[
+                    styles.likeHeartIcon,
+                    !isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
+                  ]}
+                  includeFontPadding={false}
+                >
+                  🤍
+                </Text>
+                <Text
+                  style={[
+                    styles.likeHeartIcon,
+                    isLiked ? styles.likeHeartIconOn : styles.likeHeartIconOff,
+                  ]}
+                  includeFontPadding={false}
+                >
+                  ❤️
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  if (localLikesCount > 0 && post?._id) setLikesModalVisible(true);
+                }}
+                disabled={localLikesCount <= 0}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                style={[
+                  styles.likeMetaSlot,
+                  localLikesCount <= 0 && styles.likeMetaSlotIdle,
+                ]}
+              >
+                <View style={styles.likePreviewAvatarWrap}>
+                  {localLikesCount > 0 && displayLikePreview ? (
+                    likePreviewPic ? (
+                      <SafeImage source={{ uri: likePreviewPic }} style={styles.likePreviewAvatar} />
+                    ) : (
+                      <View
+                        style={[
+                          styles.likePreviewAvatar,
+                          styles.likePreviewAvatarPlaceholder,
+                          { backgroundColor: colors.avatarBg },
+                        ]}
+                      >
+                        <Text style={styles.likePreviewInitial}>{likePreviewInitial}</Text>
+                      </View>
+                    )
+                  ) : null}
+                </View>
+                <Text
+                  style={[
+                    styles.likeCountText,
+                    { color: colors.textGray },
+                    localLikesCount <= 1 && styles.likeCountTextHidden,
+                  ]}
+                  numberOfLines={1}
+                  includeFontPadding={false}
+                >
+                  {localLikesCount > 1 ? formatCompactCount(localLikesCount) : '0'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {!hideChannelPostCommentsFlag ? (
+              <TouchableOpacity
+                style={[
+                  styles.commentActionCluster,
+                  !showFeedExtras && styles.commentActionClusterEnd,
+                ]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  if (onCommentPress) {
+                    onCommentPress();
+                  } else if (!disableNavigation) {
+                    navigateToPostDetail(post._id);
+                  }
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  commentCount > 0
+                    ? `${commentCount} comment${commentCount === 1 ? '' : 's'}`
+                    : 'Comments'
+                }
+              >
+                <Text style={styles.actionIcon}>💬</Text>
+                <View style={styles.commentMetaSlot}>
+                  {commentCount > 0 && latestReplyUser ? (
+                    <View style={styles.replyPreviewMeta}>
+                      {replyPreviewUsers.map((u, index) => {
+                        const pic = u?.profilePic || null;
+                        const initial = (u?.name || u?.username || '?').charAt(0).toUpperCase();
+                        const key = String(u?._id || u?.username || index);
+                        return (
+                          <View
+                            key={key}
+                            collapsable={false}
+                            style={[
+                              styles.replyPreviewAvatarStackItem,
+                              index > 0 && styles.replyPreviewAvatarOverlap,
+                              {
+                                zIndex: replyPreviewUsers.length - index,
+                                borderColor: colors.backgroundLight || colors.background,
+                              },
+                            ]}
+                          >
+                            {pic ? (
+                              <SafeImage
+                                source={{ uri: pic }}
+                                style={styles.replyPreviewAvatarImg}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <View
+                                style={[
+                                  styles.replyPreviewAvatarPlaceholder,
+                                  { backgroundColor: colors.avatarBg },
+                                ]}
+                              >
+                                <Text
+                                  style={styles.replyPreviewInitial}
+                                  includeFontPadding={false}
+                                >
+                                  {initial}
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })}
+                      {showCommentPlus ? (
+                        <Text style={[styles.replyPreviewMore, { color: colors.textGray }]}>+</Text>
+                      ) : null}
+                    </View>
+                  ) : (
+                    <Text style={[styles.actionText, { color: colors.textGray }]}>0</Text>
+                  )}
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <View
+                style={[
+                  styles.commentActionCluster,
+                  !showFeedExtras && styles.commentActionClusterEnd,
+                ]}
+              />
+            )}
           </View>
 
-          {!hideChannelPostCommentsFlag && (
-          <TouchableOpacity
-            style={styles.commentActionCluster}
-            onPress={(e) => {
-              e.stopPropagation();
-              if (onCommentPress) {
-                onCommentPress();
-              } else if (!disableNavigation) {
-                navigateToPostDetail(post._id);
-              }
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={
-              commentCount > 0
-                ? `${commentCount} comment${commentCount === 1 ? '' : 's'}`
-                : 'Comments'
-            }
-          >
-            <Text style={styles.actionIcon}>💬</Text>
-            {commentCount > 0 && latestReplyUser ? (
-              <View style={styles.replyPreviewMeta}>
-                {latestReplyPic ? (
-                  <SafeImage source={{ uri: latestReplyPic }} style={styles.replyPreviewAvatar} />
-                ) : (
-                  <View
-                    style={[
-                      styles.replyPreviewAvatar,
-                      styles.replyPreviewAvatarPlaceholder,
-                      { backgroundColor: colors.avatarBg },
-                    ]}
-                  >
-                    <Text style={styles.replyPreviewInitial}>{latestReplyInitial}</Text>
-                  </View>
-                )}
-                {commentCount > 1 ? (
-                  <Text style={[styles.replyPreviewMore, { color: colors.textGray }]}>+</Text>
-                ) : null}
-              </View>
-            ) : (
-              <Text style={[styles.actionText, { color: colors.textGray }]}>0</Text>
-            )}
-          </TouchableOpacity>
-          )}
+          {showFeedExtras ? (
+            <View style={styles.footerSecondaryActions}>
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  openShareModal();
+                }}
+              >
+                <Text style={styles.actionIcon}>📤</Text>
+                <Text style={[styles.actionText, { color: colors.textGray }]}>Share</Text>
+              </TouchableOpacity>
 
-          {showFeedExtras && (
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={(e) => {
-                e.stopPropagation();
-                openShareModal();
-              }}
-            >
-              <Text style={styles.actionIcon}>📤</Text>
-              <Text style={[styles.actionText, { color: colors.textGray }]}>Share</Text>
-            </TouchableOpacity>
-          )}
-
-          {showFeedExtras && isCapsuleEligiblePost && (
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={(e) => {
-                e.stopPropagation();
-                openCapsuleModal();
-              }}
-            >
-              <Text style={styles.actionIcon}>{capsuleSealed ? '🔔' : '🕰️'}</Text>
-              <Text style={[styles.actionText, { color: colors.textGray }]}>
-                {capsuleSealed ? (capsuleSelectedLabel || 'Set') : 'Remind'}
-              </Text>
-            </TouchableOpacity>
-          )}
+              {isCapsuleEligiblePost ? (
+                <TouchableOpacity
+                  style={styles.actionButton}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    openCapsuleModal();
+                  }}
+                >
+                  <Text style={styles.actionIcon}>{capsuleSealed ? '🔔' : '🕰️'}</Text>
+                  <Text style={[styles.actionText, { color: colors.textGray }]}>
+                    {capsuleSealed ? (capsuleSelectedLabel || 'Set') : 'Remind'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       )}
 
@@ -3728,10 +3777,33 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
     paddingTop: 10,
+    minHeight: 34,
+  },
+  /** Feed: fixed left rail so likes don't shove 💬. */
+  footerPrimaryActions: {
+    width: 158,
+    height: 24,
+    position: 'relative',
+    flexShrink: 0,
+  },
+  /** Profile / post detail: full width so 💬 can sit on the right edge. */
+  footerPrimaryActionsWide: {
+    flex: 1,
+    width: undefined,
+    height: undefined,
+    minHeight: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  footerSecondaryActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
+    marginLeft: 'auto',
+    flexShrink: 0,
   },
   actionButton: {
     flexDirection: 'row',
@@ -3739,11 +3811,18 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   likeActionCluster: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 24,
-    // Heart only when no likes; expands when like preview shows — pulls comment closer.
-    minWidth: 28,
+    height: 24,
+    width: 88,
+  },
+  likeActionClusterFlow: {
+    position: 'relative',
+    left: undefined,
+    top: undefined,
   },
   likeHeartSlot: {
     width: 24,
@@ -3774,51 +3853,89 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     height: 20,
     marginLeft: 4,
-    minWidth: 60,
+    width: 60,
     flexShrink: 0,
   },
   likeMetaSlotIdle: {
     opacity: 0,
-    minWidth: 0,
-    width: 0,
-    marginLeft: 0,
-    overflow: 'hidden',
   },
   likePreviewAvatarWrap: {
     width: 20,
     height: 20,
   },
   commentActionCluster: {
+    position: 'absolute',
+    left: 90,
+    top: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    // Nudge toward like (less empty gap) while Share/Remind stay on the right via space-between.
-    marginLeft: -4,
-    minWidth: 52,
+    height: 24,
+    gap: 2,
+    width: 68,
+  },
+  /** Profile / post detail: pin 💬 to the right edge again. */
+  commentActionClusterEnd: {
+    position: 'relative',
+    left: undefined,
+    top: undefined,
+    marginLeft: 'auto',
+    width: undefined,
+  },
+  commentMetaSlot: {
+    minWidth: 40,
+    height: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    overflow: 'visible',
   },
   replyPreviewMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 20,
+    height: 22,
+  },
+  replyPreviewAvatarStackItem: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    overflow: 'hidden',
+    backgroundColor: '#2a2a2a',
+  },
+  replyPreviewAvatarOverlap: {
+    marginLeft: -9,
+  },
+  replyPreviewAvatarImg: {
+    width: 22,
+    height: 22,
   },
   replyPreviewAvatar: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
   },
   replyPreviewAvatarPlaceholder: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   replyPreviewInitial: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '700',
     color: '#fff',
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    width: 22,
+    height: 22,
+    lineHeight: 22,
   },
   replyPreviewMore: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
-    marginLeft: 3,
+    marginLeft: 4,
     lineHeight: 18,
   },
   actionIcon: {

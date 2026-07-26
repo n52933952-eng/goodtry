@@ -15,6 +15,7 @@ import {
 } from '../utils/constants';
 import { markChessRoomFeedEnded } from '../utils/chessFeedEndedStore';
 import { isChessFeedPost, isGoFishFeedPost } from '../utils/gameFeedPostUtils';
+import { collectInactiveLiveStreamerIds } from '../utils/pruneStaleLiveFeedPosts';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -49,11 +50,16 @@ const SocketContext = createContext<SocketContextType | undefined>(undefined);
 
 export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useUser();
-  const { addPost, updatePost, deletePost, removeLivePostsByStreamerId } = usePost();
+  const { addPost, updatePost, deletePost, removeLivePostsByStreamerId, posts } = usePost();
   const deletePostRef = useRef(deletePost);
   deletePostRef.current = deletePost;
   const removeLivePostsByStreamerIdRef = useRef(removeLivePostsByStreamerId);
   removeLivePostsByStreamerIdRef.current = removeLivePostsByStreamerId;
+  const postsRef = useRef(posts);
+  postsRef.current = posts;
+  const liveStreamsDataRef = useRef<
+    Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>
+  >([]);
   const setLiveStreamsRef = useRef<
     React.Dispatch<
       React.SetStateAction<
@@ -834,13 +840,19 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       if (!sid) return;
       setLiveStreamsRef.current((prev) => {
         if (prev.some((s) => String(s.streamerId) === sid)) return prev;
-        return [...prev, { ...data, streamerId: sid }];
+        const next = [...prev, { ...data, streamerId: sid }];
+        liveStreamsDataRef.current = next;
+        return next;
       });
     });
     socketService.on('livekit:streamEnded', (payload: any) => {
       const sid = normalizeLiveStreamerId(payload?.streamerId);
       if (!sid) return;
-      setLiveStreamsRef.current((prev) => prev.filter((s) => String(s.streamerId) !== sid));
+      setLiveStreamsRef.current((prev) => {
+        const next = prev.filter((s) => String(s.streamerId) !== sid);
+        liveStreamsDataRef.current = next;
+        return next;
+      });
       // Match by streamer (postedBy), not only live_<streamerId> — API used to emit live_<docId>.
       removeLivePostsByStreamerIdRef.current(sid);
     });
@@ -919,6 +931,37 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         lastNotifRefreshAtRef.current = now;
         refreshNotificationCountRef.current?.();
       }
+
+      // Missed streamEnded while offline — drop zombie live cards without app restart.
+      void (async () => {
+        try {
+          await new Promise((r) => setTimeout(r, 600));
+          const ids = new Set<string>();
+          for (const s of liveStreamsDataRef.current) {
+            const sid = String(s?.streamerId || '').trim();
+            if (sid) ids.add(sid);
+          }
+          for (const p of postsRef.current || []) {
+            if (!(p as any)?.isLive) continue;
+            const sid =
+              (p as any)?.postedBy?._id != null ? String((p as any).postedBy._id).trim() : '';
+            if (sid) ids.add(sid);
+          }
+          if (!ids.size) return;
+          const inactive = await collectInactiveLiveStreamerIds(Array.from(ids));
+          if (!inactive.length) return;
+          for (const sid of inactive) {
+            removeLivePostsByStreamerIdRef.current(sid);
+          }
+          setLiveStreamsRef.current((prev) => {
+            const next = prev.filter((s) => !inactive.includes(String(s.streamerId)));
+            liveStreamsDataRef.current = next;
+            return next;
+          });
+        } catch {
+          /* best-effort */
+        }
+      })();
 
       // Ack undelivered incoming (internet back) + FCM queue so sender gets ✓✓.
       (async () => {
@@ -1077,6 +1120,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   // ── Live streams ──────────────────────────────────────────────────────────
   const [liveStreams, setLiveStreams] = useState<Array<{ streamerId: string; streamerName: string; streamerProfilePic?: string; roomName: string }>>([]);
   setLiveStreamsRef.current = setLiveStreams;
+  liveStreamsDataRef.current = liveStreams;
 
   return (
     <SocketContext.Provider value={{ 

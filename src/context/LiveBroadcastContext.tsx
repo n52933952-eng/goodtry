@@ -1169,19 +1169,29 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     liveBroadcastNav.isLiveSessionActive = isLive;
   }, [isLive]);
 
-  // After socket flap: re-announce goLive so Mongo live row + feed card come back if grace wiped them.
+  // After socket flap: re-announce goLive only while LiveKit is still up.
+  // If LiveKit already died (or server grace cleared Mongo), resume must NOT recreate the card.
   useEffect(() => {
     if (!socket || !isLive || !user?._id) return undefined;
 
     const onConnect = () => {
       if (liveEndedRef.current || !roomNameRef.current) return;
-      console.log('[LiveBroadcast] Socket reconnected while live — re-announce goLive');
+      const room = roomRef.current;
+      const lkAlive =
+        !!room
+        && (room.state === ConnectionState.Connected || room.state === ConnectionState.Reconnecting);
+      if (!lkAlive) {
+        console.warn('[LiveBroadcast] Skip goLive re-announce — LiveKit not alive');
+        return;
+      }
+      console.log('[LiveBroadcast] Socket reconnected while live — re-announce goLive (resume)');
       socket.emit('livekit:joinLiveWatch', { streamerId: String(user._id) });
       socket.emit('livekit:goLive', {
         streamerId: String(user._id),
         streamerName: user.name || user.username,
         streamerProfilePic: user.profilePic,
         roomName: roomNameRef.current,
+        resume: true,
       });
     };
 
