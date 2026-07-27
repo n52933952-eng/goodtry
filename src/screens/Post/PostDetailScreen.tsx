@@ -878,7 +878,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.profilePic }} style={styles.suggestionAvatar} />
                         ) : (
                           <View style={[styles.suggestionAvatar, styles.suggestionAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                            <Text style={styles.suggestionAvatarText}>
+                            <Text style={styles.suggestionAvatarText} includeFontPadding={false}>
                               {(item.username || '?')[0]?.toUpperCase() || '?'}
                             </Text>
                           </View>
@@ -922,7 +922,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                   <Image source={{ uri: user.profilePic }} style={styles.inputAvatar} />
                 ) : (
                   <View style={[styles.inputAvatar, styles.inputAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                    <Text style={styles.inputAvatarText}>
+                    <Text style={styles.inputAvatarText} includeFontPadding={false}>
                       {(user?.username || '?')[0]?.toUpperCase() || '?'}
                     </Text>
                   </View>
@@ -1137,6 +1137,12 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 15,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android'
+      ? { textAlignVertical: 'center' as const, transform: [{ translateY: -0.5 }] }
+      : null),
   },
   inputPill: {
     flex: 1,
@@ -1213,6 +1219,12 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 16,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android'
+      ? { textAlignVertical: 'center' as const, transform: [{ translateY: -0.5 }] }
+      : null),
   },
   suggestionInfo: {
     flex: 1,

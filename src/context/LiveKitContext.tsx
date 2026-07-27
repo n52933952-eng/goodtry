@@ -14,7 +14,7 @@
 import React, {
   createContext, useContext, useEffect, useRef, useState, useCallback,
 } from 'react';
-import { DeviceEventEmitter, Alert } from 'react-native';
+import { DeviceEventEmitter, Alert, Platform } from 'react-native';
 import InCallManager from 'react-native-incall-manager';
 import {
   Room,
@@ -619,18 +619,26 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const type = (call.callType as 'audio' | 'video') || 'video';
       const fromId = idStr(call.from);
       const prefetchKey = `${fromId}:${type}`;
+      // Default true: ending live (or no-op) is cheap; skipping while live causes PC negotiation failures.
       const releaseLive = opts?.releaseLive !== false;
+
+      // Free live camera/mic/PC FIRST — overlapping LiveKit rooms fails Android WebRTC
+      // ("negotiation timed out" / "could not establish pc connection").
+      if (releaseLive && liveBroadcastNav.endForCall) {
+        try {
+          await liveBroadcastNav.endForCall();
+        } catch (e) {
+          console.warn('[LiveKit Mobile] endForCall during answer:', e);
+        }
+        // room.disconnect() can resolve before native PeerConnection/camera is fully free.
+        await new Promise<void>((r) => setTimeout(r, Platform.OS === 'android' ? 350 : 150));
+      }
 
       try {
         InCallManager.start({ media: type === 'video' ? 'video' : 'audio', auto: false, ringback: '' });
         InCallManager.setSpeakerphoneOn(true);
         InCallManager.setForceSpeakerphoneOn(true);
       } catch (_) {}
-
-      // Free live media in parallel with token fetch; must finish before connectRoom (no dual WebRTC).
-      const liveReleaseP = releaseLive && liveBroadcastNav.endForCall
-        ? liveBroadcastNav.endForCall().catch(() => {})
-        : Promise.resolve();
 
       const resolveToken = async (): Promise<{ token: string; livekitUrl: string }> => {
         const prefetch = incomingTokenPrefetchRef.current;
@@ -646,10 +654,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return fetchToken(fromId, type);
       };
 
-      const [{ token, livekitUrl }] = await Promise.all([
-        resolveToken(),
-        liveReleaseP,
-      ]);
+      const { token, livekitUrl } = await resolveToken();
 
       if (isCallSessionAborted(sessionId, endedCallSessionIdRef.current, callSessionIdRef.current)) return;
       await connectRoom(token, livekitUrl, type);

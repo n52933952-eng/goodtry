@@ -12,7 +12,7 @@ import React, {
 
 } from 'react';
 
-import { Alert, AppState } from 'react-native';
+import { Alert, AppState, DeviceEventEmitter } from 'react-native';
 
 import {
 
@@ -28,7 +28,7 @@ import { useUser } from './UserContext';
 import { useSocket } from './SocketContext';
 import { usePost } from './PostContext';
 
-import { API_URL } from '../utils/constants';
+import { API_URL, LIVE_LOCAL_HOST_ENDED } from '../utils/constants';
 
 import { startOngoingCallNative, stopOngoingCallNative, moveAppToBackgroundNative } from '../services/callData';
 
@@ -217,6 +217,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   const roomNameRef = useRef('');
 
   const liveEndedRef = useRef(false);
+  /** If End Live ran while socket was down, flush `livekit:endLive` on next connect. */
+  const pendingEndLiveRef = useRef<{ streamerId: string; roomName: string } | null>(null);
 
   const endLiveRef = useRef<() => Promise<void>>(async () => {});
   const teardownLiveRef = useRef<() => Promise<void>>(async () => {});
@@ -373,6 +375,8 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     ]);
     isSharingRef.current = false;
     setIsSharing(false);
+    // Brief yield so MediaStreamTrack stop settles before room.disconnect().
+    await new Promise<void>((r) => setTimeout(r, 120));
   }, []);
 
   const stopAllPublishedTracks = useCallback(async () => {
@@ -764,6 +768,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
   const teardownLiveSession = useCallback(async (opts?: { forCallHandoff?: boolean }) => {
     if (teardownInFlightRef.current) {
       await teardownInFlightRef.current;
+      // First teardown may have been a plain End Live race — finish camera/PC release for call.
+      if (opts?.forCallHandoff && roomRef.current) {
+        await stopMediaForCallHandoff();
+        await disconnect({ skipTrackStop: true });
+      }
       return;
     }
     if (!roomRef.current && !isLive) return;
@@ -774,7 +783,11 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
         clearTimeout(reconnectWatchdogRef.current);
         reconnectWatchdogRef.current = null;
       }
-      liveBroadcastNav.isLiveSessionActive = false;
+      // Mark ended FIRST so reconnect cannot resume goLive / recreate the card.
+      // Keep isLiveSessionActive until disconnect finishes so call handoff isn't raced.
+      const endedRoomName = roomNameRef.current || '';
+      const streamerId = user?._id != null ? String(user._id) : '';
+      liveEndedRef.current = true;
       setIsLive(false);
       setIsMinimized(false);
       isMinimizedRef.current = false;
@@ -783,26 +796,24 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       // game whenever live ends (accept challenge, call handoff, End). Mini-bar End
       // can resign explicitly if needed.
 
-      if (socket && user?._id) {
-        socket.emit('livekit:leaveLiveWatch', { streamerId: String(user._id) });
-        // Always drop the feed card on intentional end (even if roomName already cleared).
-        removeLivePostsByStreamerId(String(user._id));
-        if (roomNameRef.current && !liveEndedRef.current) {
-          liveEndedRef.current = true;
-          socket.emit('livekit:endLive', {
-            streamerId: String(user._id),
-            roomName: roomNameRef.current,
-          });
-        } else if (!liveEndedRef.current && user?._id) {
-          // Still tell server to wipe Mongo even without a cached roomName.
-          liveEndedRef.current = true;
-          socket.emit('livekit:endLive', {
-            streamerId: String(user._id),
-            roomName: roomNameRef.current || '',
-          });
+      if (streamerId) {
+        removeLivePostsByStreamerId(streamerId);
+        // Clear profile/liveStreams immediately even if endLive emit is dropped offline.
+        DeviceEventEmitter.emit(LIVE_LOCAL_HOST_ENDED, { streamerId });
+        const endPayload = { streamerId, roomName: endedRoomName };
+        const socketReady =
+          typeof (socket as any)?.isSocketConnected === 'function'
+            ? (socket as any).isSocketConnected()
+            : !!(socket as any)?.connected;
+        if (socket && socketReady) {
+          pendingEndLiveRef.current = null;
+          socket.emit('livekit:leaveLiveWatch', { streamerId });
+          socket.emit('livekit:endLive', endPayload);
+        } else if (socket) {
+          // Reconnect race: End Live pressed before socket is ready — flush on connect.
+          pendingEndLiveRef.current = endPayload;
+          console.warn('[LiveBroadcast] endLive queued — socket not connected yet');
         }
-      } else if (user?._id) {
-        removeLivePostsByStreamerId(String(user._id));
       }
 
       roomNameRef.current = '';
@@ -810,13 +821,17 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       setIsMicMuted(false);
       clearLiveChatMessages();
 
-      if (opts?.forCallHandoff) {
-        // Stop camera first, then fully disconnect the live room BEFORE the 1:1 call
-        // connects — overlapping WebRTC sessions causes "unable to set offer" on Android.
-        await stopMediaForCallHandoff();
-        await disconnect({ skipTrackStop: true });
-      } else {
-        await disconnect();
+      try {
+        if (opts?.forCallHandoff) {
+          // Stop camera first, then fully disconnect the live room BEFORE the 1:1 call
+          // connects — overlapping WebRTC sessions causes "unable to set offer" on Android.
+          await stopMediaForCallHandoff();
+          await disconnect({ skipTrackStop: true });
+        } else {
+          await disconnect();
+        }
+      } finally {
+        liveBroadcastNav.isLiveSessionActive = false;
       }
 
       setTimeout(() => {
@@ -956,8 +971,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
       setIsMicMuted(false);
 
       liveEndedRef.current = false;
-
-
+      pendingEndLiveRef.current = null;
 
       const lkRoom = new Room(LIVE_ROOM_OPTIONS);
 
@@ -1169,13 +1183,24 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     liveBroadcastNav.isLiveSessionActive = isLive;
   }, [isLive]);
 
-  // After socket flap: re-announce goLive only while LiveKit is still up.
-  // If LiveKit already died (or server grace cleared Mongo), resume must NOT recreate the card.
+  // Flush queued endLive + never resume after user already ended (reconnect race).
   useEffect(() => {
-    if (!socket || !isLive || !user?._id) return undefined;
+    if (!socket || !user?._id) return undefined;
 
     const onConnect = () => {
-      if (liveEndedRef.current || !roomNameRef.current) return;
+      const pending = pendingEndLiveRef.current;
+      if (pending) {
+        console.log('[LiveBroadcast] Flushing queued endLive after reconnect');
+        pendingEndLiveRef.current = null;
+        liveEndedRef.current = true;
+        socket.emit('livekit:leaveLiveWatch', { streamerId: pending.streamerId });
+        socket.emit('livekit:endLive', pending);
+        removeLivePostsByStreamerId(pending.streamerId);
+        DeviceEventEmitter.emit(LIVE_LOCAL_HOST_ENDED, { streamerId: pending.streamerId });
+        return;
+      }
+      if (liveEndedRef.current) return;
+      if (!isLive || !roomNameRef.current) return;
       const room = roomRef.current;
       const lkAlive =
         !!room
@@ -1199,7 +1224,7 @@ export const LiveBroadcastProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => {
       socket.off('connect', onConnect);
     };
-  }, [socket, isLive, user?._id, user?.name, user?.username, user?.profilePic]);
+  }, [socket, isLive, user?._id, user?.name, user?.username, user?.profilePic, removeLivePostsByStreamerId]);
 
   useEffect(() => {
 

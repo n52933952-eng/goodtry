@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, Image, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 
 type AnyReply = any;
@@ -144,7 +144,7 @@ export const ThreadedComment: React.FC<Props> = ({
               { width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2, backgroundColor: colors.avatarBg },
             ]}
           >
-            <Text style={styles.avatarText}>
+            <Text style={styles.avatarText} includeFontPadding={false}>
               {(reply?.username || '?')[0]?.toUpperCase?.() || '?'}
             </Text>
           </View>
@@ -253,6 +253,12 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 14,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android'
+      ? { textAlignVertical: 'center' as const, transform: [{ translateY: -0.5 }] }
+      : null),
   },
   content: {
     flex: 1,

@@ -60,7 +60,7 @@ const LiveStreamMiniBar = () => {
     () => false,
   );
 
-  const visible = isLive && isMinimized && !onLiveBroadcastScreen;
+  const visible = isLive && isMinimized && !onLiveBroadcastScreen && !blockFloatingTouches;
 
   const barTotalW = winW - H_MARGIN * 2;
   const tabBarOffset = 60 + Math.max(0, insets.bottom);

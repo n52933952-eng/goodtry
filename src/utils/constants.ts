@@ -152,6 +152,9 @@ export const STORY_STRIP_SHOULD_REFRESH = 'StoryStripShouldRefresh';
 export const CHESS_GAME_FEED_UI_ENDED = 'chessGameFeedUiEnded';
 
 /** Live mini bar — resign the active chess/card game (same as Resign button). */
+/** DeviceEventEmitter — host ended live locally; drop zombie liveStreams/feed cards immediately. */
+export const LIVE_LOCAL_HOST_ENDED = 'liveLocalHostEnded';
+
 export const LIVE_BAR_RESIGN_GAME = 'liveBarResignGame';
 
 /** Tear down live stream before joining a 1:1 call (no profile navigation). */

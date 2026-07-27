@@ -35,7 +35,6 @@ import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
 import { isUserFollowedByMe, toUserIdStr } from '../../utils/followState';
 import { useSocket } from '../../context/SocketContext';
-import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import LivePostCard from '../../components/LivePostCard';
 import {
   buildLivePseudoPost,
@@ -57,7 +56,6 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
   const { injectPostsIntoFeed } = usePost();
   const { socket, liveStreams } = useSocket();
-  const { isLive: isSelfBroadcasting } = useLiveBroadcast();
   const { colors } = useTheme();
   const username =
     usernameParam === 'self'
@@ -744,8 +742,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const displayPosts = useMemo(() => {
     const base = posts.filter((p) => !isLivePseudoPostId(p?._id));
     if (!profileUser || !activeLiveForProfile) return base;
-    // Same as feed: don't show your own LIVE card while you are broadcasting.
-    if (isOwnProfile && isSelfBroadcasting) return base;
+    // Never inject your own LIVE card on your profile — feed already hides it while live,
+    // and after End Live a stale liveStreams entry must not resurrect the card.
+    if (isOwnProfile) return base;
 
     const pseudo = buildLivePseudoPost({
       streamerId: profileUserId,
@@ -756,7 +755,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     });
     if (!pseudo) return base;
     return [pseudo, ...base];
-  }, [posts, profileUser, profileUserId, activeLiveForProfile, isOwnProfile, isSelfBroadcasting]);
+  }, [posts, profileUser, profileUserId, activeLiveForProfile, isOwnProfile]);
 
   useFocusEffect(
     useCallback(() => {

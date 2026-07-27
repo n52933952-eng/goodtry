@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   Alert,
   Dimensions,
@@ -19,6 +20,7 @@ import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
 import { liveBroadcastNav } from '../../services/liveBroadcastNav';
 import { navigateToHomeFeed } from '../../utils/navigationHelpers';
+import { queuePendingGameEmit } from '../../utils/pendingGameEmit';
 import { useShowToast } from '../../hooks/useShowToast';
 import Card from '../../components/Card';
 
@@ -236,11 +238,12 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   };
 
   useEffect(() => {
-    liveBroadcastNav.setFloatingTouchesBlocked(gameOver && !leavingLobby);
+    // Block live pip/mini-bar while waiting or on game-over so Cancel / Done stay tappable.
+    liveBroadcastNav.setFloatingTouchesBlocked((!gameLive && !isSpectator) || (gameOver && !leavingLobby));
     return () => {
       liveBroadcastNav.setFloatingTouchesBlocked(false);
     };
-  }, [gameOver, leavingLobby]);
+  }, [gameLive, gameOver, leavingLobby, isSpectator]);
 
   const leavingLobbyRef = useRef(false);
 
@@ -263,8 +266,11 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       handleBackToLobby();
       return;
     }
-    if (socket) {
-      socket.emit('cancelCardGameStart', { roomId: rid, reason });
+    const payload = { roomId: rid, reason };
+    if (socket?.isSocketConnected?.()) {
+      socket.emit('cancelCardGameStart', payload);
+    } else {
+      queuePendingGameEmit('cancelCardGameStart', payload);
     }
     showToast('Go Fish', 'Game could not start', 'info');
     handleBackToLobby();
@@ -792,12 +798,18 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.loadingText}>Waiting for game to start...</Text>
           {!isSpectator ? (
-            <TouchableOpacity
-              style={styles.cancelStartBtn}
+            <Pressable
+              style={({ pressed }) => [
+                styles.cancelStartBtn,
+                pressed && styles.cancelStartBtnPressed,
+              ]}
               onPress={() => abortUnstartedGame('never_started')}
+              hitSlop={20}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel game start"
             >
               <Text style={styles.cancelStartBtnText}>Cancel</Text>
-            </TouchableOpacity>
+            </Pressable>
           ) : null}
         </View>
       </View>
@@ -1086,6 +1098,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: COLORS.background,
+    zIndex: 20,
+    elevation: 20,
   },
   loadingText: {
     color: COLORS.text,
@@ -1098,6 +1112,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
     backgroundColor: COLORS.error || '#E53935',
+    zIndex: 30,
+    elevation: 30,
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  cancelStartBtnPressed: {
+    opacity: 0.75,
   },
   cancelStartBtnText: {
     color: '#fff',

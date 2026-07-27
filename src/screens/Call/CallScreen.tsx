@@ -18,7 +18,6 @@ import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import InCallManager from 'react-native-incall-manager';
 import { useWebRTC } from '../../context/LiveKitContext';
-import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import { useSocket } from '../../context/SocketContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useUser } from '../../context/UserContext';
@@ -144,8 +143,6 @@ const CallScreen = () => {
     socket,
   } = useSocket();
 
-  const { isLive, isMinimized, isSharing } = useLiveBroadcast();
-
   const {
     call,
     callAccepted,
@@ -192,15 +189,14 @@ const CallScreen = () => {
     autoAnswerStartedRef.current = true;
     void (async () => {
       try {
-        const releaseLive = !!(isLive && !isMinimized && !isSharing);
-        await answerCall({ releaseLive });
+        // Always allow endForCall (no-ops if not live). Gating on isLive raced with early teardown.
+        await answerCall({ releaseLive: true });
       } catch {
         autoAnswerStartedRef.current = false;
       }
     })();
   }, [
     shouldAutoAnswer, call.isReceivingCall, call.from, userId, answerCall, incomingCallKey,
-    isLive, isMinimized, isSharing,
   ]);
 
   // ── call control state ────────────────────────────────────────────────────

@@ -685,7 +685,7 @@ const MessagesScreen = ({ navigation }: any) => {
         // and clearing it here leaves them stuck at the first page ("Scroll for
         // more" shows but onEndReached is ignored).
         if (!opts.silent) {
-          userHasScrolledListRef.current = false;
+        userHasScrolledListRef.current = false;
         }
       }
     } catch (error: any) {
@@ -855,7 +855,7 @@ const MessagesScreen = ({ navigation }: any) => {
     }
 
     setSearching(true);
-    const requestId = ++searchRequestIdRef.current;
+      const requestId = ++searchRequestIdRef.current;
 
     let convos: any[] = [];
     let followingPage: any[] = [];
@@ -883,22 +883,22 @@ const MessagesScreen = ({ navigation }: any) => {
             followingPage = [];
           }),
       ]);
-      if (requestId !== searchRequestIdRef.current) return;
+        if (requestId !== searchRequestIdRef.current) return;
 
-      setSearchConversationResults(convos);
+        setSearchConversationResults(convos);
 
       const myId = user?._id?.toString?.() ?? String(user?._id ?? '');
-      const existingPartnerIds = new Set<string>();
-      for (const conv of convos) {
-        if (conv?.isGroup) continue;
+        const existingPartnerIds = new Set<string>();
+        for (const conv of convos) {
+          if (conv?.isGroup) continue;
         const participants = Array.isArray(conv?.participants) ? conv.participants : [];
         const other = participants.find((p: any) => {
           const pid = p?._id?.toString?.() ?? (typeof p === 'string' ? p : p != null ? String(p) : '');
           return pid && pid !== myId;
         });
-        const pid = other?._id?.toString?.() ?? (other != null ? String(other) : '');
-        if (pid) existingPartnerIds.add(pid);
-      }
+          const pid = other?._id?.toString?.() ?? (other != null ? String(other) : '');
+          if (pid) existingPartnerIds.add(pid);
+        }
 
       const followingFromApi = followingPage.filter((u) => userMatchesMessagesSearchQuery(u, q));
       const recentMatches = searchRecentFollowProfiles(q);
@@ -932,21 +932,21 @@ const MessagesScreen = ({ navigation }: any) => {
       if (requestId !== searchRequestIdRef.current) return;
 
       const filtered = mergedFollowing.filter((u: any) => {
-        const uid = u._id?.toString?.() ?? String(u._id);
+          const uid = u._id?.toString?.() ?? String(u._id);
         return uid && !existingPartnerIds.has(uid);
-      });
+        });
 
-      setSearchResults(filtered);
-    } catch (error: any) {
-      if (requestId !== searchRequestIdRef.current) return;
+        setSearchResults(filtered);
+      } catch (error: any) {
+        if (requestId !== searchRequestIdRef.current) return;
       console.error('❌ [MessagesScreen] executeMessagesSearch: Error:', error);
-      setSearchConversationResults([]);
-      setSearchResults([]);
-    } finally {
-      if (requestId === searchRequestIdRef.current) {
-        setSearching(false);
+        setSearchConversationResults([]);
+        setSearchResults([]);
+      } finally {
+        if (requestId === searchRequestIdRef.current) {
+          setSearching(false);
+        }
       }
-    }
   }, [user?._id, user?.following]);
 
   // Re-search when follow ids or recent-follow cache change (just followed on Search / Profile).
@@ -1343,7 +1343,7 @@ const MessagesScreen = ({ navigation }: any) => {
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('messages')}</Text>
         <View style={styles.headerActions}>
-          <TouchableOpacity
+        <TouchableOpacity
             style={[styles.refreshBtn, refreshingMessages && styles.refreshBtnDisabled]}
             onPress={() => void handleMessagesRefresh()}
             disabled={refreshingMessages}
@@ -1362,9 +1362,9 @@ const MessagesScreen = ({ navigation }: any) => {
             style={styles.headerIconBtn}
             accessibilityRole="button"
             accessibilityLabel={t('createGroup') || 'Create group'}
-          >
-            <Text style={{ fontSize: 22, color: colors.primary }}>👥+</Text>
-          </TouchableOpacity>
+        >
+          <Text style={{ fontSize: 22, color: colors.primary }}>👥+</Text>
+        </TouchableOpacity>
         </View>
       </View>
 
@@ -1376,7 +1376,7 @@ const MessagesScreen = ({ navigation }: any) => {
             { backgroundColor: colors.backgroundLight, borderColor: colors.border },
           ]}
         >
-          <TextInput
+        <TextInput
             style={[
               styles.searchInput,
               LTR_TEXT,
@@ -1385,10 +1385,10 @@ const MessagesScreen = ({ navigation }: any) => {
                 paddingRight: searchQuery.length > 0 ? 48 : 15,
               },
             ]}
-            placeholder={t('searchUsers')}
-            placeholderTextColor={colors.textGray}
-            value={searchQuery}
-            onChangeText={handleSearch}
+          placeholder={t('searchUsers')}
+          placeholderTextColor={colors.textGray}
+          value={searchQuery}
+          onChangeText={handleSearch}
             autoCapitalize="none"
             returnKeyType="search"
           />
@@ -1482,10 +1482,10 @@ const MessagesScreen = ({ navigation }: any) => {
                 <ActivityIndicator size="large" color={colors.primary} />
               </View>
             ) : (
-              <View style={styles.emptyContainer}>
-                <Text style={[styles.emptyText, { color: colors.text }]}>{t('noConversations')}</Text>
-                <Text style={[styles.emptySubtext, { color: colors.textGray }]}>{t('startConversation')}</Text>
-              </View>
+            <View style={styles.emptyContainer}>
+              <Text style={[styles.emptyText, { color: colors.text }]}>{t('noConversations')}</Text>
+              <Text style={[styles.emptySubtext, { color: colors.textGray }]}>{t('startConversation')}</Text>
+            </View>
             )
           }
         />

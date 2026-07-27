@@ -12,10 +12,12 @@ import {
   ENDPOINTS,
   STORY_STRIP_SHOULD_REFRESH,
   CHESS_GAME_FEED_UI_ENDED,
+  LIVE_LOCAL_HOST_ENDED,
 } from '../utils/constants';
 import { markChessRoomFeedEnded } from '../utils/chessFeedEndedStore';
 import { isChessFeedPost, isGoFishFeedPost } from '../utils/gameFeedPostUtils';
 import { collectInactiveLiveStreamerIds } from '../utils/pruneStaleLiveFeedPosts';
+import { flushPendingGameEmit } from '../utils/pendingGameEmit';
 import Sound from 'react-native-sound';
 
 const NOTIFICATION_COUNT_KEY = '@notification_count';
@@ -327,6 +329,24 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
           if (from) next.delete(String(from));
           return next;
         });
+      },
+    );
+    return () => sub.remove();
+  }, []);
+
+  /** Host ended live locally (End Live) — clear card even if endLive emit was dropped offline. */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      LIVE_LOCAL_HOST_ENDED,
+      ({ streamerId }: { streamerId?: string }) => {
+        const sid = streamerId != null ? String(streamerId).trim() : '';
+        if (!sid) return;
+        setLiveStreamsRef.current((prev) => {
+          const next = prev.filter((s) => String(s.streamerId) !== sid);
+          liveStreamsDataRef.current = next;
+          return next;
+        });
+        removeLivePostsByStreamerIdRef.current(sid);
       },
     );
     return () => sub.remove();
@@ -911,6 +931,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const removeConnectListener = socketService.addConnectListener(() => {
       setSocketReachable(true);
       console.log('🔌 [SocketContext] Socket connected - subscribing presence');
+      flushPendingGameEmit(
+        (event, data) => socketService.emit(event, data),
+        () => socketService.isSocketConnected(),
+      );
       const now = Date.now();
       // Rapid transport errors reconnect multiple times — don't fire 3 force-subscribes each time.
       if (now - lastPresenceForceAtRef.current >= 2500) {

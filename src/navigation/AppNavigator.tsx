@@ -54,6 +54,7 @@ import LiveCameraPip from '../components/LiveCameraPip';
 import { useLiveBroadcast } from '../context/LiveBroadcastContext';
 import { callSessionNav } from '../services/callSessionNav';
 import { liveBroadcastNav } from '../services/liveBroadcastNav';
+import { queuePendingGameEmit } from '../utils/pendingGameEmit';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -763,11 +764,16 @@ const AppNavigator = () => {
         opponentId: challenge.from,
       });
       setTimeout(() => {
-        socket.emit('acceptChessChallenge', {
+        const payload = {
           from: user._id,
           to: challenge.from,
           roomId,
-        });
+        };
+        if (socket.isSocketConnected?.()) {
+          socket.emit('acceptChessChallenge', payload);
+        } else {
+          queuePendingGameEmit('acceptChessChallenge', payload);
+        }
       }, 100);
     } finally {
       clearChessChallenge(challenge?.from);
@@ -787,11 +793,16 @@ const AppNavigator = () => {
         opponentId: challenge.from,
       });
       setTimeout(() => {
-        socket.emit('acceptCardChallenge', {
+        const payload = {
           from: user._id,
           to: challenge.from,
           roomId,
-        });
+        };
+        if (socket.isSocketConnected?.()) {
+          socket.emit('acceptCardChallenge', payload);
+        } else {
+          queuePendingGameEmit('acceptCardChallenge', payload);
+        }
       }, 100);
     } finally {
       clearCardChallenge(challenge?.from);

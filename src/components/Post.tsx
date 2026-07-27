@@ -14,6 +14,7 @@ import {
   FlatList,
   DeviceEventEmitter,
   Pressable,
+  Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
@@ -1937,7 +1938,7 @@ const Post: React.FC<PostProps> = ({
               />
             ) : (
               <View style={[styles.avatar, feedAvatarStyle, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                <Text style={styles.avatarText}>
+                <Text style={styles.avatarText} includeFontPadding={false}>
                   {(() => {
                     // For channels, use first two letters of username or name
                     const name = post.postedBy?.name || post.postedBy?.username || '';
@@ -2951,7 +2952,9 @@ const Post: React.FC<PostProps> = ({
                           { backgroundColor: colors.avatarBg },
                         ]}
                       >
-                        <Text style={styles.likePreviewInitial}>{likePreviewInitial}</Text>
+                        <Text style={styles.likePreviewInitial} includeFontPadding={false}>
+                          {likePreviewInitial}
+                        </Text>
                       </View>
                     )
                   ) : null}
@@ -3426,6 +3429,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: 'bold',
+    textAlign: 'center',
+    lineHeight: 20,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android' ? { textAlignVertical: 'center' as const } : null),
   },
   headerInfo: {
     flex: 1,
@@ -3901,13 +3908,15 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     overflow: 'hidden',
     backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   replyPreviewAvatarOverlap: {
     marginLeft: -9,
   },
   replyPreviewAvatarImg: {
-    width: 22,
-    height: 22,
+    width: '100%',
+    height: '100%',
   },
   replyPreviewAvatar: {
     width: 22,
@@ -3915,22 +3924,20 @@ const styles = StyleSheet.create({
     borderRadius: 11,
   },
   replyPreviewAvatarPlaceholder: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
   },
   replyPreviewInitial: {
     fontSize: 10,
     fontWeight: '700',
     color: '#fff',
     textAlign: 'center',
-    textAlignVertical: 'center',
-    width: 22,
-    height: 22,
-    lineHeight: 22,
+    lineHeight: 12,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android'
+      ? { textAlignVertical: 'center' as const, transform: [{ translateY: -0.5 }] }
+      : null),
   },
   replyPreviewMore: {
     fontSize: 13,
@@ -3974,6 +3981,12 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#fff',
+    textAlign: 'center',
+    lineHeight: 12,
+    includeFontPadding: false,
+    ...(Platform.OS === 'android'
+      ? { textAlignVertical: 'center' as const, transform: [{ translateY: -0.5 }] }
+      : null),
   },
   overlay: {
     flex: 1,

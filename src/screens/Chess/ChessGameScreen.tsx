@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   Alert,
   Dimensions,
@@ -23,6 +24,8 @@ import { useLanguage } from '../../context/LanguageContext';
 import { API_URL, COLORS, CHESS_GAME_FEED_UI_ENDED, LIVE_BAR_RESIGN_GAME } from '../../utils/constants';
 import { markChessRoomFeedEnded } from '../../utils/chessFeedEndedStore';
 import { navigateToHomeFeed } from '../../utils/navigationHelpers';
+import { liveBroadcastNav } from '../../services/liveBroadcastNav';
+import { queuePendingGameEmit } from '../../utils/pendingGameEmit';
 import { useShowToast } from '../../hooks/useShowToast';
 import ChessBoard, {
   ChessMoveAnimation,
@@ -130,6 +133,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const [player2, setPlayer2] = useState<any>(null); // BLACK player (accepter)
   const [gameLive, setGameLive] = useState(true);
   const gameLiveRef = useRef(true);
+  /** User pressed Cancel — ignore late gameState that would remount the board. */
+  const cancelledUnstartedRef = useRef(false);
+  const cancellingUnstartedRef = useRef(false);
+  const [cancellingUnstarted, setCancellingUnstarted] = useState(false);
   useEffect(() => {
     gameLiveRef.current = gameLive;
   }, [gameLive]);
@@ -370,20 +377,61 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     DeviceEventEmitter.emit(CHESS_GAME_FEED_UI_ENDED, { roomId: s });
   }, []);
 
-  /** Game stuck on "Waiting…" — cancel for both players and go home. */
+  /** Game stuck on "Waiting…" — cancel for both and leave. */
   const abortUnstartedGame = useCallback((reason: 'never_started' | 'start_timeout' = 'never_started') => {
-    const rid = roomIdRef.current;
-    if (!rid || isSpectatorRef.current) {
-      navigateToHomeFeed(navigation);
+    if (cancellingUnstartedRef.current || cancelledUnstartedRef.current) {
+      console.log('🔘 [ChessGameScreen] Cancel ignored (already cancelling)', {
+        reason,
+        cancelling: cancellingUnstartedRef.current,
+        cancelled: cancelledUnstartedRef.current,
+      });
       return;
     }
-    if (socket) {
-      socket.emit('cancelChessGameStart', { roomId: rid, reason });
+    console.log('🔘 [ChessGameScreen] abortUnstartedGame running', { reason, roomId: roomIdRef.current });
+    cancellingUnstartedRef.current = true;
+    cancelledUnstartedRef.current = true;
+    setCancellingUnstarted(true);
+
+    const rid = roomIdRef.current;
+    liveBroadcastNav.suppressGameCleanupNav = true;
+    liveBroadcastNav.setFloatingTouchesBlocked(true);
+
+    // Leave immediately — no delay (delay made multi-tap feel needed).
+    try {
+      if (rid && !isSpectatorRef.current) {
+        const payload = { roomId: rid, reason };
+        if (socket?.isSocketConnected?.()) {
+          socket.emit('cancelChessGameStart', payload);
+        } else {
+          queuePendingGameEmit('cancelChessGameStart', payload);
+        }
+      }
+      notifyChessFeedUiEnded();
+      showToast('Chess', 'Game cancelled', 'info');
+      // Always reset to feed — goBack() often no-ops from challenge/live stack
+      // (canGoBack true but screen stays → user mashes Cancel, rest ignored).
+      console.log('🔘 [ChessGameScreen] Leaving waiting via navigateToHomeFeed');
+      navigateToHomeFeed(navigation);
+    } finally {
+      setTimeout(() => {
+        liveBroadcastNav.suppressGameCleanupNav = false;
+        liveBroadcastNav.setFloatingTouchesBlocked(false);
+        cancellingUnstartedRef.current = false;
+      }, 800);
     }
-    notifyChessFeedUiEnded();
-    showToast('Chess', 'Game could not start', 'info');
-    navigateToHomeFeed(navigation);
   }, [socket, navigation, notifyChessFeedUiEnded, showToast]);
+
+  // Hide live pip/bar BEFORE paint so the first Cancel tap always hits.
+  useLayoutEffect(() => {
+    if (cancellingUnstarted || (!gameLive && !isSpectator)) {
+      liveBroadcastNav.setFloatingTouchesBlocked(true);
+      return () => {
+        liveBroadcastNav.setFloatingTouchesBlocked(false);
+      };
+    }
+    liveBroadcastNav.setFloatingTouchesBlocked(false);
+    return undefined;
+  }, [cancellingUnstarted, gameLive, isSpectator]);
 
   // If the board never goes live, don't leave either player stuck on the spinner.
   useEffect(() => {
@@ -711,6 +759,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     setMoveAnimation(null);
     setGameLive(false); // Will be set to true when game state is received
     gameStartSoundPlayedRef.current = false;
+    cancelledUnstartedRef.current = false;
     // Clear player states when switching games
     setPlayer1(null);
     setPlayer2(null);
@@ -906,11 +955,15 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     });
 
     // Listeners first, then join — avoids missing a fast chessGameState reply.
-    socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
-    socket.emit('requestChessGameState', { roomId: currentRoomId });
+    // If socket is down (live handoff flap), reconnect effect will join.
+    if (socket.isSocketConnected?.()) {
+      socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
+      socket.emit('requestChessGameState', { roomId: currentRoomId });
+    }
     const retryTimers = [800, 2000].map((ms) =>
       setTimeout(() => {
         if (gameLiveRef.current || currentRoomIdRef.current !== currentRoomId) return;
+        if (!socket.isSocketConnected?.()) return;
         socket.emit('joinChessRoom', { roomId: currentRoomId, userId: user?._id });
         socket.emit('requestChessGameState', { roomId: currentRoomId });
       }, ms),
@@ -998,6 +1051,11 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
 
   const handleGameState = (data: any) => {
     console.log('📥 [ChessGameScreen] Game state received:', data);
+
+    if (cancelledUnstartedRef.current) {
+      console.log('⚠️ [ChessGameScreen] Ignoring game state — user already cancelled');
+      return;
+    }
     
     // CRITICAL: Only apply game state if roomId matches (prevent switching to other games)
     if (data.roomId && data.roomId !== roomId) {
@@ -1625,16 +1683,32 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
 
   if (!gameLive) {
     return (
-      <View style={styles.loadingContainer}>
+      <View style={styles.loadingContainer} pointerEvents="auto">
         <ActivityIndicator size="large" color={COLORS.primary} />
         <Text style={styles.loadingText}>Waiting for game to start...</Text>
         <TouchableOpacity
-          style={styles.cancelStartBtn}
+          style={[
+            styles.cancelStartBtn,
+            cancellingUnstarted && styles.cancelStartBtnPressed,
+          ]}
           onPress={() => {
+            console.log('🔘 [ChessGameScreen] Waiting Cancel pressed');
             abortUnstartedGame('never_started');
           }}
+          activeOpacity={0.7}
+          delayPressIn={0}
+          hitSlop={{ top: 24, bottom: 24, left: 24, right: 24 }}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel game start"
         >
-          <Text style={styles.cancelStartBtnText}>Cancel</Text>
+          {cancellingUnstarted ? (
+            <View style={styles.cancelBusyRow}>
+              <ActivityIndicator color="#fff" />
+              <Text style={styles.cancelStartBtnText}>Cancelling…</Text>
+            </View>
+          ) : (
+            <Text style={styles.cancelStartBtnText}>Cancel</Text>
+          )}
         </TouchableOpacity>
       </View>
     );
@@ -1899,6 +1973,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: COLORS.background,
+    paddingHorizontal: 20,
+    zIndex: 100000,
+    elevation: 100000,
   },
   loadingText: {
     color: COLORS.text,
@@ -1907,15 +1984,32 @@ const styles = StyleSheet.create({
   },
   cancelStartBtn: {
     marginTop: 24,
-    paddingHorizontal: 28,
-    paddingVertical: 12,
-    borderRadius: 10,
+    minHeight: 56,
+    minWidth: 220,
+    width: '85%',
+    maxWidth: 340,
+    paddingHorizontal: 36,
+    paddingVertical: 16,
+    borderRadius: 12,
     backgroundColor: COLORS.error || '#E53935',
+    zIndex: 100001,
+    elevation: 100001,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelStartBtnPressed: {
+    opacity: 0.7,
+    transform: [{ scale: 0.98 }],
   },
   cancelStartBtnText: {
     color: '#fff',
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '700',
+  },
+  cancelBusyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   headerAnchor: {
     zIndex: 2,
