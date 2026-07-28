@@ -246,6 +246,8 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   }, [gameLive, gameOver, leavingLobby, isSpectator]);
 
   const leavingLobbyRef = useRef(false);
+  /** True when I resigned / pressed back — don't show Back to Lobby; only opponent end shows it. */
+  const selfEndedRef = useRef(false);
 
   const handleBackToLobby = useCallback(() => {
     if (leavingLobbyRef.current) return;
@@ -290,13 +292,16 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       handleBackToLobby();
       return;
     }
+    // I left — no Game Over modal for me.
+    selfEndedRef.current = true;
+    liveBroadcastNav.suppressGameCleanupNav = true;
     if (!isSpectator && socket && roomId && opponentId) {
       socket.emit('resignCard', { roomId, to: opponentId });
     } else if (isSpectator) {
       console.log('👁️ [CardGameScreen] Spectator leaving - not emitting any game end events');
     }
-    navigation.goBack();
-  }, [isSpectator, gameOver, socket, roomId, opponentId, navigation, handleBackToLobby]);
+    handleBackToLobby();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, handleBackToLobby]);
 
   useEffect(() => {
     if (!socket || !roomId) {
@@ -335,6 +340,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     setDeckCount(0);
     setGameOver(false);
     setGameResult('');
+    selfEndedRef.current = false;
     setGameLive(false);
     setOpponent(null);
     setIsMyTurn(false);
@@ -600,25 +606,30 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       if (!activeRoomId || (data?.roomId && data.roomId !== activeRoomId)) {
         return;
       }
-      if (activeRoomId === roomId) {
-        const reason = String(data?.reason || '');
-        if (
-          reason === 'never_started'
-          || reason === 'start_timeout'
-          || reason === 'player_disconnected'
-        ) {
-          showToast(
-            'Go Fish',
-            reason === 'player_disconnected' ? 'Opponent disconnected' : 'Game could not start',
-            'info',
-          );
-          handleBackToLobby();
-          return;
-        }
-        setGameOver(true);
-        setGameResult(data.message || 'Game Over');
-        showToast('Game Over', data.message, 'info');
+      if (activeRoomId !== roomId) return;
+
+      const reason = String(data?.reason || '');
+      // Waiting cancel only — leave immediately (no Game Over modal).
+      if (reason === 'never_started' || reason === 'start_timeout') {
+        showToast('Go Fish', 'Game could not start', 'info');
+        handleBackToLobby();
+        return;
       }
+
+      // I resigned/left — ignore server end (no Back to Lobby for me).
+      if (selfEndedRef.current || leavingLobbyRef.current) return;
+
+      // Opponent ended — show Back to Lobby.
+      setGameOver(true);
+      const message =
+        data?.message
+        || (reason === 'player_disconnected'
+          ? 'Opponent disconnected'
+          : reason === 'resigned'
+            ? 'Opponent resigned'
+            : 'Game Over');
+      setGameResult(message);
+      showToast('Game Over', message, 'info');
     };
 
     // Register event listeners
@@ -628,8 +639,19 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     const handleGameCleanup = () => {
       const activeRoomId = currentRoomIdRef.current;
       if (activeRoomId !== currentRoomId) return;
+      if (liveBroadcastNav.suppressGameCleanupNav) return;
+      if (selfEndedRef.current || leavingLobbyRef.current) return;
+
+      // Still waiting — just leave (no board to show).
+      if (!gameLiveRef.current) {
+        handleBackToLobby();
+        return;
+      }
+
+      // Opponent ended while I was still in game — show Back to Lobby.
+      setGameOver(true);
+      setGameResult((prev) => prev || 'Game ended');
       showToast('Go Fish', 'Game ended', 'info');
-      handleBackToLobby();
     };
 
     socket.on('cardGameCleanup', handleGameCleanup);
@@ -738,13 +760,15 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
   }, [socket, roomId, opponentId, isMyTurn, gameOver, myHand, showToast]);
 
   const resignGameNow = useCallback(() => {
-    if (isSpectator || gameOver) return;
+    if (isSpectator || gameOver || selfEndedRef.current) return;
+    // I resigned — leave immediately; opponent still gets Back to Lobby.
+    selfEndedRef.current = true;
+    liveBroadcastNav.suppressGameCleanupNav = true;
     if (socket && roomId && opponentId) {
       socket.emit('resignCard', { roomId, to: opponentId });
     }
-    setGameOver(true);
-    setGameResult('You resigned.');
-  }, [isSpectator, gameOver, socket, roomId, opponentId]);
+    handleBackToLobby();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, handleBackToLobby]);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(

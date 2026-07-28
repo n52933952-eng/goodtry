@@ -122,6 +122,8 @@ const FeedScreen = ({ navigation }: any) => {
   postsRef.current = posts;
 
   const [loading, setLoading] = useState(true);
+  const loadingRef = useRef(true);
+  loadingRef.current = loading;
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -512,6 +514,10 @@ const FeedScreen = ({ navigation }: any) => {
       if ((!hasPosts || feedStale) && !isFetchingRef.current) {
         lastFeedRefreshAtMs = now;
         fetchFeed(false, { merge: true });
+      } else if (loadingRef.current && hasPosts) {
+        // Remount (e.g. after game → home) resets loading=true but skips fetch when
+        // posts still exist and refresh is <30s — clear spinner so existing posts show.
+        setLoading(false);
       }
 
       return () => {
