@@ -88,7 +88,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     gameLiveRef.current = gameLive;
   }, [gameLive]);
   const [gameOver, setGameOver] = useState(false);
-  const [leavingLobby, setLeavingLobby] = useState(false);
+  const gameOverRef = useRef(false);
+  useEffect(() => {
+    gameOverRef.current = gameOver;
+  }, [gameOver]);
   const [gameResult, setGameResult] = useState('');
   const [myHand, setMyHand] = useState<Card[]>([]);
   const handInitializedRef = useRef(false); // Track if we've received a valid hand
@@ -239,33 +242,41 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
 
   useEffect(() => {
     // Block live pip/mini-bar while waiting or on game-over so Cancel / Done stay tappable.
-    liveBroadcastNav.setFloatingTouchesBlocked((!gameLive && !isSpectator) || (gameOver && !leavingLobby));
+    liveBroadcastNav.setFloatingTouchesBlocked((!gameLive && !isSpectator) || gameOver);
     return () => {
       liveBroadcastNav.setFloatingTouchesBlocked(false);
     };
-  }, [gameLive, gameOver, leavingLobby, isSpectator]);
+  }, [gameLive, gameOver, isSpectator]);
 
   const leavingLobbyRef = useRef(false);
   /** True when I resigned / pressed back — don't show Back to Lobby; only opponent end shows it. */
   const selfEndedRef = useRef(false);
 
-  const handleBackToLobby = useCallback(() => {
+  /** Original leave: pop this screen (same as old Back to Lobby). */
+  const leaveCardScreen = useCallback(() => {
     if (leavingLobbyRef.current) return;
     leavingLobbyRef.current = true;
-    setLeavingLobby(true);
     liveBroadcastNav.suppressGameCleanupNav = true;
-    navigateToHomeFeed(navigation);
+    liveBroadcastNav.setFloatingTouchesBlocked(false);
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+    } else {
+      // Only if nothing to pop (rare) — original path was goBack.
+      navigateToHomeFeed(navigation);
+    }
     setTimeout(() => {
       leavingLobbyRef.current = false;
       liveBroadcastNav.suppressGameCleanupNav = false;
     }, 600);
   }, [navigation]);
 
-  /** Stuck on "Waiting…" — cancel for both and go home. */
+  /** Stuck on "Waiting…" — cancel for both and leave. */
   const abortUnstartedGame = useCallback((reason: 'never_started' | 'start_timeout' = 'never_started') => {
+    if (selfEndedRef.current || leavingLobbyRef.current) return;
+    selfEndedRef.current = true;
     const rid = currentRoomIdRef.current || roomId;
     if (!rid || isSpectator) {
-      handleBackToLobby();
+      leaveCardScreen();
       return;
     }
     const payload = { roomId: rid, reason };
@@ -275,8 +286,16 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       queuePendingGameEmit('cancelCardGameStart', payload);
     }
     showToast('Go Fish', 'Game could not start', 'info');
-    handleBackToLobby();
-  }, [socket, roomId, isSpectator, showToast, handleBackToLobby]);
+    leaveCardScreen();
+  }, [socket, roomId, isSpectator, showToast, leaveCardScreen]);
+
+  /** Opponent ended mid-game — original board overlay (Game Over + Back to Lobby). */
+  const showGameOverOverlay = useCallback((message: string) => {
+    if (selfEndedRef.current || leavingLobbyRef.current || gameOverRef.current) return;
+    gameOverRef.current = true;
+    setGameOver(true);
+    setGameResult(message || 'Game Over');
+  }, []);
 
   useEffect(() => {
     if (gameLive || gameOver || isSpectator || !roomId) return undefined;
@@ -289,10 +308,10 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
 
   const handleBack = useCallback(() => {
     if (gameOver) {
-      handleBackToLobby();
+      leaveCardScreen();
       return;
     }
-    // I left — no Game Over modal for me.
+    // I left — no Game Over overlay for me.
     selfEndedRef.current = true;
     liveBroadcastNav.suppressGameCleanupNav = true;
     if (!isSpectator && socket && roomId && opponentId) {
@@ -300,8 +319,8 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     } else if (isSpectator) {
       console.log('👁️ [CardGameScreen] Spectator leaving - not emitting any game end events');
     }
-    handleBackToLobby();
-  }, [isSpectator, gameOver, socket, roomId, opponentId, handleBackToLobby]);
+    leaveCardScreen();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, leaveCardScreen]);
 
   useEffect(() => {
     if (!socket || !roomId) {
@@ -315,6 +334,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     socket.off('opponentMove');
     socket.off('cardGameEnded');
     socket.off('cardGameCleanup');
+    socket.off('opponentResigned');
     socket.off('cardMove');
     
     currentRoomIdRef.current = null;
@@ -339,6 +359,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     setOpponentBooks([]);
     setDeckCount(0);
     setGameOver(false);
+    gameOverRef.current = false;
     setGameResult('');
     selfEndedRef.current = false;
     setGameLive(false);
@@ -368,6 +389,11 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
           activeRoomId,
           routeRoomId: roomId
         });
+        return;
+      }
+
+      // Freeze board once Game Over is up — late packets were redrawing under the overlay (shake).
+      if (gameOverRef.current) {
         return;
       }
       
@@ -577,7 +603,9 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         setGameLive(true);
       } else if (data.gameStatus === 'finished') {
         console.log('🏁 [CardGameScreen] Game finished');
+        gameOverRef.current = true;
         setGameOver(true);
+        setGameResult((prev) => prev || 'Game Over');
       }
     };
 
@@ -607,51 +635,55 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         return;
       }
       if (activeRoomId !== roomId) return;
+      if (selfEndedRef.current || leavingLobbyRef.current) return;
 
       const reason = String(data?.reason || '');
-      // Waiting cancel only — leave immediately (no Game Over modal).
+      // Waiting cancel / never started — leave (original). Board overlay is for real games.
       if (reason === 'never_started' || reason === 'start_timeout') {
-        showToast('Go Fish', 'Game could not start', 'info');
-        handleBackToLobby();
+        showToast(
+          'Go Fish',
+          'Game could not start',
+          'info',
+        );
+        leaveCardScreen();
         return;
       }
 
-      // I resigned/left — ignore server end (no Back to Lobby for me).
-      if (selfEndedRef.current || leavingLobbyRef.current) return;
-
-      // Opponent ended — show Back to Lobby.
-      setGameOver(true);
-      const message =
+      showGameOverOverlay(
         data?.message
         || (reason === 'player_disconnected'
           ? 'Opponent disconnected'
           : reason === 'resigned'
             ? 'Opponent resigned'
-            : 'Game Over');
-      setGameResult(message);
-      showToast('Game Over', message, 'info');
+            : 'Game Over'),
+      );
+      // No toast here — overlay already shows the result (toast/Alert was janking the screen).
     };
 
     // Register event listeners
     socket.on('cardGameState', handleGameState);
     socket.on('opponentMove', handleOpponentMove);
     socket.on('cardGameEnded', handleGameOver);
+
+    // Same as chess: direct event to the player who did NOT resign.
+    const handleOpponentResigned = () => {
+      if (selfEndedRef.current || leavingLobbyRef.current) return;
+      showGameOverOverlay('Your opponent resigned. You win!');
+    };
+    socket.on('opponentResigned', handleOpponentResigned);
+
     const handleGameCleanup = () => {
       const activeRoomId = currentRoomIdRef.current;
       if (activeRoomId !== currentRoomId) return;
       if (liveBroadcastNav.suppressGameCleanupNav) return;
       if (selfEndedRef.current || leavingLobbyRef.current) return;
 
-      // Still waiting — just leave (no board to show).
-      if (!gameLiveRef.current) {
-        handleBackToLobby();
+      // Mid-game cleanup — original board overlay (not auto-jump).
+      if (gameLiveRef.current) {
+        showGameOverOverlay('Game ended');
         return;
       }
-
-      // Opponent ended while I was still in game — show Back to Lobby.
-      setGameOver(true);
-      setGameResult((prev) => prev || 'Game ended');
-      showToast('Go Fish', 'Game ended', 'info');
+      leaveCardScreen();
     };
 
     socket.on('cardGameCleanup', handleGameCleanup);
@@ -676,6 +708,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
       socket.off('opponentMove');
       socket.off('cardGameEnded');
       socket.off('cardGameCleanup', handleGameCleanup);
+      socket.off('opponentResigned', handleOpponentResigned);
       socket.off('cardMove');
     };
   }, [socket, roomId]);
@@ -767,8 +800,8 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
     if (socket && roomId && opponentId) {
       socket.emit('resignCard', { roomId, to: opponentId });
     }
-    handleBackToLobby();
-  }, [isSpectator, gameOver, socket, roomId, opponentId, handleBackToLobby]);
+    leaveCardScreen();
+  }, [isSpectator, gameOver, socket, roomId, opponentId, leaveCardScreen]);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(
@@ -1084,29 +1117,21 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
         </View>
       </Modal>
 
-      <Modal
-        visible={gameOver && !leavingLobby}
-        transparent
-        animationType="fade"
-        onRequestClose={handleBackToLobby}
-        statusBarTranslucent
-      >
-        <View style={styles.gameOverOverlay}>
+      {/* Game Over Overlay — original board overlay (not RN Modal) */}
+      {gameOver && (
+        <View style={styles.gameOverOverlay} pointerEvents="auto">
           <View style={styles.gameOverBox}>
             <Text style={styles.gameOverTitle}>Game Over</Text>
-            {gameResult ? (
-              <Text style={styles.gameOverMessage}>{gameResult}</Text>
-            ) : null}
+            <Text style={styles.gameOverMessage}>{gameResult}</Text>
             <TouchableOpacity
               style={styles.gameOverButton}
-              onPress={handleBackToLobby}
-              activeOpacity={0.85}
+              onPress={leaveCardScreen}
             >
               <Text style={styles.gameOverButtonText}>Back to Lobby</Text>
             </TouchableOpacity>
           </View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 };
@@ -1606,18 +1631,19 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   gameOverOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.8)',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 200,
+    elevation: 200,
   },
   gameOverBox: {
     backgroundColor: COLORS.backgroundLight,
     borderRadius: 16,
     padding: 24,
     alignItems: 'center',
-    width: '88%',
-    maxWidth: 360,
+    minWidth: 280,
   },
   gameOverTitle: {
     fontSize: 24,
@@ -1632,16 +1658,10 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   gameOverButton: {
-    alignSelf: 'stretch',
-    width: '100%',
     backgroundColor: COLORS.primary,
-    paddingVertical: 18,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    minHeight: 56,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
   },
   gameOverButtonText: {
     color: '#FFFFFF',

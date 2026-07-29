@@ -28,6 +28,8 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS, COLORS, STORY_STRIP_SHOULD_REFRESH, STORAGE_KEYS } from '../../utils/constants';
 import { requestCameraAndMicrophone } from '../../utils/mediaPermissions';
 import { pruneStaleLiveFeedPosts } from '../../utils/pruneStaleLiveFeedPosts';
+import { pruneStaleGameFeedPosts } from '../../utils/pruneStaleGameFeedPosts';
+import { isChessFeedPost, isGoFishFeedPost } from '../../utils/gameFeedPostUtils';
 import { pauseAllFeedVideos, emitFeedVisiblePostIds, isFeedAutoPlayMediaPost, FEED_REQUEST_MEDIA_AUTOPLAY } from '../../utils/feedVideoPlayback';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
@@ -103,6 +105,11 @@ const FeedScreen = ({ navigation }: any) => {
 
   const hasLiveFeedCards = useMemo(
     () => visiblePosts.some((p: any) => p?.isLive),
+    [visiblePosts],
+  );
+
+  const hasGameFeedCards = useMemo(
+    () => visiblePosts.some((p: any) => isChessFeedPost(p) || isGoFishFeedPost(p)),
     [visiblePosts],
   );
 
@@ -661,25 +668,31 @@ const FeedScreen = ({ navigation }: any) => {
   }, [socket, user, navigation, removeLivePostsByStreamerId, addPost, showToast]);
 
   // Backup: prune dead live cards even if streamEnded was missed (reconnect / background).
+  // Same for chess / Go Fish cards if end/cancel was missed during a connection drop.
   useEffect(() => {
-    if (!hasLiveFeedCards) return;
+    if (!hasLiveFeedCards && !hasGameFeedCards) return;
 
-    const syncEndedLiveCards = async () => {
+    const syncStaleFeedCards = async () => {
       const prev = postsRef.current;
-      if (!prev.some((p: any) => p?.isLive)) return;
-      const pruned = await pruneStaleLiveFeedPosts(prev);
-      if (pruned.length !== prev.length) {
-        setPosts(filterPostsForFeed(pruned));
+      let next = prev;
+      if (prev.some((p: any) => p?.isLive)) {
+        next = await pruneStaleLiveFeedPosts(next);
+      }
+      if (next.some((p: any) => isChessFeedPost(p) || isGoFishFeedPost(p))) {
+        next = await pruneStaleGameFeedPosts(next);
+      }
+      if (next !== prev) {
+        setPosts(filterPostsForFeed(next));
       }
     };
 
-    const initial = setTimeout(syncEndedLiveCards, 2000);
-    const timer = setInterval(syncEndedLiveCards, 8000);
+    const initial = setTimeout(syncStaleFeedCards, 2000);
+    const timer = setInterval(syncStaleFeedCards, 8000);
     return () => {
       clearTimeout(initial);
       clearInterval(timer);
     };
-  }, [hasLiveFeedCards, filterPostsForFeed, setPosts]);
+  }, [hasLiveFeedCards, hasGameFeedCards, filterPostsForFeed, setPosts]);
 
   // App came foreground / feed focused — clear zombies without waiting for interval.
   useFocusEffect(
@@ -687,10 +700,15 @@ const FeedScreen = ({ navigation }: any) => {
       let cancelled = false;
       (async () => {
         const prev = postsRef.current;
-        if (!prev.some((p: any) => p?.isLive)) return;
-        const pruned = await pruneStaleLiveFeedPosts(prev);
-        if (!cancelled && pruned.length !== prev.length) {
-          setPosts(filterPostsForFeed(pruned));
+        let next = prev;
+        if (prev.some((p: any) => p?.isLive)) {
+          next = await pruneStaleLiveFeedPosts(next);
+        }
+        if (next.some((p: any) => isChessFeedPost(p) || isGoFishFeedPost(p))) {
+          next = await pruneStaleGameFeedPosts(next);
+        }
+        if (!cancelled && next !== prev) {
+          setPosts(filterPostsForFeed(next));
         }
       })();
       return () => {
@@ -761,7 +779,8 @@ const FeedScreen = ({ navigation }: any) => {
         }) === index;
       });
 
-      const prunedPosts = loadMore ? uniquePosts : await pruneStaleLiveFeedPosts(uniquePosts);
+      const prunedLive = loadMore ? uniquePosts : await pruneStaleLiveFeedPosts(uniquePosts);
+      const prunedPosts = loadMore ? prunedLive : await pruneStaleGameFeedPosts(prunedLive);
 
       if (loadMore) {
         // Append without re-sorting existing rows (pagination)
