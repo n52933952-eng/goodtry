@@ -1685,31 +1685,54 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     return (
       <View style={styles.loadingContainer} pointerEvents="auto">
         <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Waiting for game to start...</Text>
-        <TouchableOpacity
-          style={[
-            styles.cancelStartBtn,
-            cancellingUnstarted && styles.cancelStartBtnPressed,
-          ]}
-          onPress={() => {
-            console.log('🔘 [ChessGameScreen] Waiting Cancel pressed');
-            abortUnstartedGame('never_started');
-          }}
-          activeOpacity={0.7}
-          delayPressIn={0}
-          hitSlop={{ top: 24, bottom: 24, left: 24, right: 24 }}
-          accessibilityRole="button"
-          accessibilityLabel="Cancel game start"
-        >
-          {cancellingUnstarted ? (
-            <View style={styles.cancelBusyRow}>
-              <ActivityIndicator color="#fff" />
-              <Text style={styles.cancelStartBtnText}>Cancelling…</Text>
-            </View>
-          ) : (
-            <Text style={styles.cancelStartBtnText}>Cancel</Text>
-          )}
-        </TouchableOpacity>
+        <Text style={styles.loadingText}>
+          {isSpectator ? 'Waiting for game to start…' : 'Waiting for game to start...'}
+        </Text>
+        {isSpectator ? (
+          <TouchableOpacity
+            style={styles.cancelStartBtn}
+            onPress={() => {
+              // Spectators only leave — never cancelChessGameStart (that ends the match for players).
+              liveBroadcastNav.suppressGameCleanupNav = true;
+              navigateToHomeFeed(navigation);
+              setTimeout(() => {
+                liveBroadcastNav.suppressGameCleanupNav = false;
+              }, 600);
+            }}
+            activeOpacity={0.7}
+            delayPressIn={0}
+            hitSlop={{ top: 24, bottom: 24, left: 24, right: 24 }}
+            accessibilityRole="button"
+            accessibilityLabel="Leave spectator waiting"
+          >
+            <Text style={styles.cancelStartBtnText}>Leave</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.cancelStartBtn,
+              cancellingUnstarted && styles.cancelStartBtnPressed,
+            ]}
+            onPress={() => {
+              console.log('🔘 [ChessGameScreen] Waiting Cancel pressed');
+              abortUnstartedGame('never_started');
+            }}
+            activeOpacity={0.7}
+            delayPressIn={0}
+            hitSlop={{ top: 24, bottom: 24, left: 24, right: 24 }}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel game start"
+          >
+            {cancellingUnstarted ? (
+              <View style={styles.cancelBusyRow}>
+                <ActivityIndicator color="#fff" />
+                <Text style={styles.cancelStartBtnText}>Cancelling…</Text>
+              </View>
+            ) : (
+              <Text style={styles.cancelStartBtnText}>Cancel</Text>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
