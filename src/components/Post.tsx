@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { useNavigation, CommonActions } from '@react-navigation/native';
+import { useNavigation, CommonActions, useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { usePost } from '../context/PostContext';
 import { useTheme } from '../context/ThemeContext';
@@ -497,6 +497,16 @@ const Post: React.FC<PostProps> = ({
     post.likePreview ?? null,
   );
   const [likesModalVisible, setLikesModalVisible] = useState(false);
+
+  // Feed stays mounted under PostDetail — if likes sheet was open, close it on blur
+  // so it doesn't re-animate briefly when popping back.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setLikesModalVisible(false);
+      };
+    }, []),
+  );
   const localLikedRef = useRef(localLiked);
   const localLikesCountRef = useRef(localLikesCount);
   const localLikePreviewRef = useRef(localLikePreview);
