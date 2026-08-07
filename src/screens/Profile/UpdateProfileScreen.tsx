@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,11 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
-  Alert,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -18,15 +20,20 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { uploadMediaToR2 } from '../../utils/directR2Upload';
 import { useLanguage } from '../../context/LanguageContext';
+import { COUNTRIES, getCountryFlagByName } from '../../utils/countries';
+
+const TAB_BAR_HEIGHT = 60;
 
 const UpdateProfileScreen = ({ navigation }: any) => {
   const { user, setUser } = useUser();
   const { colors } = useTheme();
   const showToast = useShowToast();
   const { t } = useLanguage();
+  const insets = useSafeAreaInsets();
   const [updating, setUpdating] = useState(false);
   const [imageFile, setImageFile] = useState<any>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [countryModalVisible, setCountryModalVisible] = useState(false);
 
   const [inputs, setInputs] = useState({
     name: user?.name || '',
@@ -117,10 +124,17 @@ const UpdateProfileScreen = ({ navigation }: any) => {
     },
   ];
 
+  const bottomPad = TAB_BAR_HEIGHT + Math.max(0, insets.bottom) + 24;
+
   return (
+    <>
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={[styles.content, { backgroundColor: colors.background }]}
+      contentContainerStyle={[
+        styles.content,
+        { backgroundColor: colors.background, paddingBottom: bottomPad },
+      ]}
+      keyboardShouldPersistTaps="handled"
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
@@ -209,13 +223,22 @@ const UpdateProfileScreen = ({ navigation }: any) => {
         {/* Country */}
         <View style={styles.inputGroup}>
           <Text style={[styles.label, { color: colors.text }]}>{t('country')}</Text>
-          <TextInput
-            style={inputStyle}
-            value={inputs.country}
-            onChangeText={(text) => setInputs({ ...inputs, country: text })}
-            placeholder={t('selectCountryPlaceholder')}
-            placeholderTextColor={colors.textGray}
-          />
+          <TouchableOpacity
+            style={[...inputStyle, styles.selectField]}
+            onPress={() => setCountryModalVisible(true)}
+            activeOpacity={0.85}
+          >
+            {inputs.country ? (
+              <View style={styles.countryValueRow}>
+                <Text style={styles.countryFlag}>{getCountryFlagByName(inputs.country)}</Text>
+                <Text style={[styles.selectText, { color: colors.text }]}>{inputs.country}</Text>
+              </View>
+            ) : (
+              <Text style={[styles.selectText, { color: colors.textGray }]}>
+                {t('selectCountryPlaceholder')}
+              </Text>
+            )}
+          </TouchableOpacity>
         </View>
 
         {/* Password (optional) */}
@@ -249,6 +272,45 @@ const UpdateProfileScreen = ({ navigation }: any) => {
         </TouchableOpacity>
       </View>
     </ScrollView>
+
+    <Modal
+      visible={countryModalVisible}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setCountryModalVisible(false)}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+          <Text style={[styles.modalTitle, { color: colors.text, borderBottomColor: colors.border }]}>
+            {t('selectCountry')}
+          </Text>
+          <FlatList
+            data={COUNTRIES}
+            keyExtractor={(item) => item.name}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.modalItem, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  setInputs((prev) => ({ ...prev, country: item.name }));
+                  setCountryModalVisible(false);
+                }}
+              >
+                <Text style={styles.modalFlag}>{getCountryFlagByName(item.name)}</Text>
+                <Text style={[styles.modalItemText, { color: colors.text }]}>{item.name}</Text>
+              </TouchableOpacity>
+            )}
+          />
+          <TouchableOpacity
+            style={[styles.modalClose, { borderTopColor: colors.border }]}
+            onPress={() => setCountryModalVisible(false)}
+          >
+            <Text style={[styles.modalCloseText, { color: colors.primary }]}>{t('close')}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 };
 
@@ -321,6 +383,64 @@ const styles = StyleSheet.create({
   textArea: {
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  selectField: {
+    justifyContent: 'center',
+  },
+  selectText: {
+    fontSize: 16,
+  },
+  countryValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  countryFlag: {
+    fontSize: 20,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: 1,
+    maxHeight: '75%',
+    overflow: 'hidden',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    padding: 16,
+    borderBottomWidth: 1,
+  },
+  modalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+  },
+  modalFlag: {
+    fontSize: 22,
+    width: 28,
+    textAlign: 'center',
+  },
+  modalItemText: {
+    flex: 1,
+    fontSize: 16,
+  },
+  modalClose: {
+    padding: 16,
+    alignItems: 'center',
+    borderTopWidth: 1,
+  },
+  modalCloseText: {
+    fontWeight: 'bold',
+    fontSize: 16,
   },
   submitButton: {
     borderRadius: 10,
