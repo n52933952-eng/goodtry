@@ -315,11 +315,11 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   heart: {
-    fontSize: 13,
-    color: '#262626',
+    fontSize: 18,
+    color: '#8A8A8E',
   },
   heartLiked: {
-    fontSize: 12,
+    fontSize: 14,
   },
   likeCount: {
     fontSize: 11,
