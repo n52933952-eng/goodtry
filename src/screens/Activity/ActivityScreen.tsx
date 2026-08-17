@@ -16,10 +16,10 @@ import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
 
 // How long an activity stays visible. Must match backend ACTIVITY_RETENTION_HOURS.
-const ACTIVITY_RETENTION_HOURS = 12;
+const ACTIVITY_RETENTION_HOURS = 24 * 7;
 const ACTIVITY_RETENTION_MS = ACTIVITY_RETENTION_HOURS * 60 * 60 * 1000;
 // Must match backend ACTIVITY_MAX_PER_USER.
-const ACTIVITY_MAX = 40;
+const ACTIVITY_MAX = 200;
 
 function parseActivityCreatedAt(value: unknown): Date | null {
   if (value == null) return null;

@@ -208,7 +208,9 @@ const FootballScreen = () => {
           fontWeight: 'bold',
         },
         listContainer: {
-          padding: 15,
+          paddingHorizontal: 15,
+  paddingTop: 15,
+  paddingBottom: 130,
         },
         emptyContainer: {
           padding: 60,
@@ -482,6 +484,7 @@ const FootballScreen = () => {
 
       {/* Matches list */}
       <FlatList
+      key={activeTab}
         data={getCurrentMatches()}
         renderItem={({ item }) => (
           <FootballMatchCard match={item} showStatus={activeTab !== 'upcoming'} />
