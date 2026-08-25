@@ -1,5 +1,5 @@
 import React, { memo, useMemo, useRef, useLayoutEffect, useState, useCallback } from 'react';
-import { View, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing } from 'react-native';
+import { View, TouchableOpacity, StyleSheet, useWindowDimensions, Animated, Easing } from 'react-native';
 import { COLORS } from '../utils/constants';
 import LichessPieceSvg from './LichessPieceSvg';
 import {
@@ -9,9 +9,7 @@ import {
   lichessPieceSvgUrl,
 } from '../utils/chessPieceSets';
 
-const { width } = Dimensions.get('window');
-const SQUARE_SIZE = (width - 32) / 8;
-const BOARD_SIZE = SQUARE_SIZE * 8;
+const MIN_BOARD_SIZE = 176;
 /** Exported so review “step back” can delay FEN until the slide finishes. */
 export const CHESS_MOVE_ANIMATION_DURATION_MS = 320;
 const MOVE_DURATION_MS = CHESS_MOVE_ANIMATION_DURATION_MS;
@@ -38,6 +36,11 @@ interface ChessBoardProps {
   lightColor?: string;
   /** Dark square color (defaults to the original wood palette). */
   darkColor?: string;
+  /**
+   * Board edge length in dp. When omitted the board fits the shorter window side,
+   * so it stays square on any screen and after rotation.
+   */
+  size?: number;
 }
 
 const ChessBoard: React.FC<ChessBoardProps> = memo(({
@@ -50,10 +53,38 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   lightColor = '#F0D9B5',
   darkColor = '#B58863',
   pieceSetId = DEFAULT_CHESS_PIECE_SET_ID,
+  size,
 }) => {
   const setForPieces = CHESS_PIECE_SETS.some((s) => s.id === pieceSetId)
     ? pieceSetId!
     : DEFAULT_CHESS_PIECE_SET_ID;
+
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+
+  // Square size must be whole dp, otherwise rows drift and hairline gaps appear.
+  const squareSize = useMemo(() => {
+    const requested = size && size > 0 ? size : Math.min(winWidth, winHeight) - 32;
+    return Math.max(MIN_BOARD_SIZE, Math.floor(requested)) / 8;
+  }, [size, winWidth, winHeight]);
+
+  const boardSize = squareSize * 8;
+  const pieceSize = squareSize * 0.88;
+
+  const dynamicStyles = useMemo(
+    () => ({
+      container: { width: boardSize, height: boardSize },
+      row: { width: boardSize, height: squareSize },
+      square: { width: squareSize, height: squareSize },
+      overlayPiece: { width: squareSize, height: squareSize },
+      pieceSvgWrap: { width: pieceSize, height: pieceSize },
+      legalMoveDot: {
+        width: squareSize * 0.25,
+        height: squareSize * 0.25,
+        borderRadius: squareSize * 0.125,
+      },
+    }),
+    [boardSize, squareSize, pieceSize],
+  );
 
   const overlayPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const overlayOpacity = useRef(new Animated.Value(1)).current;
@@ -98,15 +129,15 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
 
     if (orientation === 'white') {
       return {
-        x: file * SQUARE_SIZE,
-        y: rank * SQUARE_SIZE,
+        x: file * squareSize,
+        y: rank * squareSize,
       };
     }
     return {
-      x: (7 - file) * SQUARE_SIZE,
-      y: (7 - rank) * SQUARE_SIZE,
+      x: (7 - file) * squareSize,
+      y: (7 - rank) * squareSize,
     };
-  }, [orientation]);
+  }, [orientation, squareSize]);
 
   useLayoutEffect(() => {
     if (!moveAnimation) {
@@ -201,6 +232,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         key={`${row}-${col}`}
         style={[
           styles.square,
+          dynamicStyles.square,
           { backgroundColor: getSquareColor(row, col) },
           isSelected && styles.selectedSquare,
           isLegalMove && styles.legalMoveSquare,
@@ -208,15 +240,17 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         onPress={() => onSquarePress(squareName)}
       >
         {piece && !hideForSlide && (
-          <View style={styles.pieceSvgWrap} pointerEvents="none">
+          <View style={[styles.pieceSvgWrap, dynamicStyles.pieceSvgWrap]} pointerEvents="none">
             <LichessPieceSvg
-              width={SQUARE_SIZE * 0.88}
-              height={SQUARE_SIZE * 0.88}
+              width={pieceSize}
+              height={pieceSize}
               uri={lichessPieceSvgUrl(setForPieces, fenCharToPieceCode(piece))}
             />
           </View>
         )}
-        {isLegalMove && !piece && <View style={styles.legalMoveDot} />}
+        {isLegalMove && !piece && (
+          <View style={[styles.legalMoveDot, dynamicStyles.legalMoveDot]} />
+        )}
       </TouchableOpacity>
     );
   };
@@ -224,9 +258,9 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
   const slidingPiece = moveAnimation?.piece;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, dynamicStyles.container]}>
       {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
-        <View key={row} style={styles.row}>
+        <View key={row} style={[styles.row, dynamicStyles.row]}>
           {[0, 1, 2, 3, 4, 5, 6, 7].map((col) => renderSquare(row, col))}
         </View>
       ))}
@@ -235,6 +269,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
         <Animated.View
           style={[
             styles.overlayPiece,
+            dynamicStyles.overlayPiece,
             {
               transform: [
                 { translateX: overlayPosition.x },
@@ -245,10 +280,10 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
           ]}
           pointerEvents="none"
         >
-          <View style={styles.pieceSvgWrap} pointerEvents="none">
+          <View style={[styles.pieceSvgWrap, dynamicStyles.pieceSvgWrap]} pointerEvents="none">
             <LichessPieceSvg
-              width={SQUARE_SIZE * 0.88}
-              height={SQUARE_SIZE * 0.88}
+              width={pieceSize}
+              height={pieceSize}
               uri={lichessPieceSvgUrl(
                 setForPieces,
                 fenCharToPieceCode(slidingPiece),
@@ -268,6 +303,7 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
     prevProps.pieceSetId === nextProps.pieceSetId &&
     prevProps.lightColor === nextProps.lightColor &&
     prevProps.darkColor === nextProps.darkColor &&
+    prevProps.size === nextProps.size &&
     JSON.stringify(prevProps.legalMoves) === JSON.stringify(nextProps.legalMoves)
   );
 });
@@ -275,8 +311,6 @@ const ChessBoard: React.FC<ChessBoardProps> = memo(({
 const styles = StyleSheet.create({
   /** Chess files must always run a→h left-to-right, even when the app is RTL (Arabic). */
   container: {
-    width: BOARD_SIZE,
-    height: BOARD_SIZE,
     borderWidth: 2,
     borderColor: COLORS.border,
     alignSelf: 'center',
@@ -285,13 +319,9 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    width: BOARD_SIZE,
-    height: SQUARE_SIZE,
     direction: 'ltr',
   },
   square: {
-    width: SQUARE_SIZE,
-    height: SQUARE_SIZE,
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'visible',
@@ -305,8 +335,6 @@ const styles = StyleSheet.create({
   },
   overlayPiece: {
     position: 'absolute',
-    width: SQUARE_SIZE,
-    height: SQUARE_SIZE,
     justifyContent: 'center',
     alignItems: 'center',
     top: 0,
@@ -314,15 +342,10 @@ const styles = StyleSheet.create({
     zIndex: 1000,
   },
   pieceSvgWrap: {
-    width: SQUARE_SIZE * 0.88,
-    height: SQUARE_SIZE * 0.88,
     alignItems: 'center',
     justifyContent: 'center',
   },
   legalMoveDot: {
-    width: SQUARE_SIZE * 0.25,
-    height: SQUARE_SIZE * 0.25,
-    borderRadius: SQUARE_SIZE * 0.125,
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
   },
 });

@@ -16,7 +16,7 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
+  useWindowDimensions,
   Animated,
   NativeSyntheticEvent,
   NativeScrollEvent,
@@ -108,6 +108,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     minimumViewTime: 180,
   }).current;
 
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+
   /** Floating "scroll to top" button (Twitter style: show scrolling down, hide scrolling up). */
   const profileListRef = useRef<FlatList>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -128,14 +130,13 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     const list = profileListRef.current;
     if (list) {
       const y = lastScrollYRef.current;
-      const winH = Dimensions.get('window').height;
       // Very far down: jump instantly so a long list doesn't render every row and freeze.
-      list.scrollToOffset({ offset: 0, animated: y <= winH * 2.5 });
+      list.scrollToOffset({ offset: 0, animated: y <= winHeight * 2.5 });
     }
     setShowScrollTop(false);
     resetHeader();
     resetTabBar();
-  }, [resetHeader, resetTabBar]);
+  }, [resetHeader, resetTabBar, winHeight]);
 
   useEffect(() => {
     const unsub = navigation.addListener('scrollToTop', () => {
@@ -1266,8 +1267,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                 style={[
                   styles.profilePicPreviewImage,
                   {
-                    width: Dimensions.get('window').width,
-                    height: Dimensions.get('window').height * 0.82,
+                    width: winWidth,
+                    height: winHeight * 0.82,
                   },
                 ]}
                 resizeMode="contain"

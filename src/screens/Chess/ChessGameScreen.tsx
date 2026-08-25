@@ -7,12 +7,13 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
-  Dimensions,
+  useWindowDimensions,
   FlatList,
   Image,
   ListRenderItem,
   DeviceEventEmitter,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LichessPieceSvg from '../../components/LichessPieceSvg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Chess } from 'chess.js';
@@ -46,13 +47,14 @@ import {
   type ChessPieceSet,
 } from '../../utils/chessPieceSets';
 
-const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const BOARD_CONTAINER_PADDING = 16;
+const MIN_BOARD_SIZE = 176;
+/** Keeps the board a sane size on tablets instead of stretching edge to edge. */
+const MAX_BOARD_SIZE = 560;
 
 /** Floating appearance panel — explicit scroll height so Android can scroll the grid. */
-const APPEARANCE_PANEL_MAX_H = Math.min(SCREEN_HEIGHT * 0.4, 300);
-const APPEARANCE_PANEL_SCROLL_H = APPEARANCE_PANEL_MAX_H - 48;
-const APPEARANCE_THEME_CARD_W = (width - 12 * 2 - 12 * 2 - 10) / 2;
-
+const APPEARANCE_PANEL_HEADER_H = 48;
+const APPEARANCE_PANEL_MIN_H = 180;
 /** Delay before showing the Game Over overlay (review / lobby) so the final position is visible. */
 const GAME_OVER_OVERLAY_DELAY_MS = 4000;
 
@@ -123,6 +125,20 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
   const { deletePost, posts } = usePost();
   const showToast = useShowToast();
   const { isRTL } = useLanguage();
+
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const appearancePanelMaxH = Math.max(
+    APPEARANCE_PANEL_MIN_H,
+    Math.min(windowHeight * 0.4, 300),
+  );
+  /** Measured leftover space for the board — keeps it square and on-screen on any device. */
+  const [boardBox, setBoardBox] = useState({ width: 0, height: 0 });
+  const boardSize = useMemo(() => {
+    if (boardBox.width <= 0 || boardBox.height <= 0) return undefined;
+    const fit = Math.min(boardBox.width, boardBox.height) - BOARD_CONTAINER_PADDING * 2;
+    return Math.max(MIN_BOARD_SIZE, Math.min(MAX_BOARD_SIZE, Math.floor(fit)));
+  }, [boardBox.width, boardBox.height]);
 
   const chess = useMemo(() => new Chess(), []);
   const [fen, setFen] = useState(chess.fen());
@@ -1749,7 +1765,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
     Boolean(isSpectator && !gameOver && chess.turn() === (orientation === 'white' ? 'w' : 'b'));
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
       <View
         style={styles.headerAnchor}
         onLayout={(e) => {
@@ -1757,7 +1773,7 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           if (height > 0) setAppearancePanelTop(height);
         }}
       >
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: 15 + insets.top }]}>
           <TouchableOpacity onPress={handleBack} style={styles.backButton}>
             <Text style={styles.backArrow}>←</Text>
           </TouchableOpacity>
@@ -1826,9 +1842,20 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           : (opponent?.name ? `${opponent.name} captured` : 'Opponent captured')
       )}
 
-      <View style={styles.boardWrapper}>
+      <View
+        style={styles.boardWrapper}
+        onLayout={(e) => {
+          const { width: w, height: h } = e.nativeEvent.layout;
+          setBoardBox((prev) =>
+            Math.abs(prev.width - w) < 1 && Math.abs(prev.height - h) < 1
+              ? prev
+              : { width: w, height: h },
+          );
+        }}
+      >
         <View style={styles.boardContainer}>
           <ChessBoard
+            size={boardSize}
             key={`board-${orientation}-${reviewMode ? 'review' : 'live'}`}
             fen={reviewMode ? reviewFen : fen}
             orientation={orientation}
@@ -1921,7 +1948,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
           style={[styles.appearanceDropPanel, { top: appearancePanelTop }]}
           pointerEvents="box-none"
         >
-          <View style={styles.appearanceDropPanelInner} pointerEvents="auto">
+          <View
+            style={[styles.appearanceDropPanelInner, { maxHeight: appearancePanelMaxH }]}
+            pointerEvents="auto"
+          >
             <View style={styles.appearanceDropHeader}>
               <Text style={styles.appearanceDropTitle}>
                 {appearancePanel === 'board'
@@ -1942,7 +1972,10 @@ const ChessGameScreen: React.FC<ChessGameScreenProps> = ({ navigation, route }) 
               renderItem={renderAppearanceItem}
               keyExtractor={(item) => item.id}
               numColumns={2}
-              style={styles.appearanceDropScroll}
+              style={[
+                styles.appearanceDropScroll,
+                { height: appearancePanelMaxH - APPEARANCE_PANEL_HEADER_H },
+              ]}
               contentContainerStyle={styles.themeGridFlatList}
               columnWrapperStyle={styles.themeGridRow}
               showsVerticalScrollIndicator
@@ -2109,7 +2142,6 @@ const styles = StyleSheet.create({
     elevation: 24,
   },
   appearanceDropPanelInner: {
-    maxHeight: APPEARANCE_PANEL_MAX_H,
     overflow: 'hidden',
     backgroundColor: COLORS.backgroundLight,
     borderRadius: 12,
@@ -2142,7 +2174,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   appearanceDropScroll: {
-    height: APPEARANCE_PANEL_SCROLL_H,
+    flexGrow: 0,
   },
   piecePreviewBox: {
     width: 56,
@@ -2162,6 +2194,7 @@ const styles = StyleSheet.create({
   themeGridRow: {
     justifyContent: 'space-between',
     marginBottom: 10,
+    gap: 10,
   },
   themeCard: {
     backgroundColor: COLORS.background,
@@ -2175,7 +2208,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   themeCardSized: {
-    width: APPEARANCE_THEME_CARD_W,
+    flex: 1,
   },
   themeCardSelected: {
     borderColor: COLORS.primary,
@@ -2271,16 +2304,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#E8E8E8',
   },
   boardWrapper: {
+    flex: 1,
+    minHeight: MIN_BOARD_SIZE,
     width: '100%',
-    aspectRatio: 1,
-    maxWidth: width,
     alignSelf: 'center',
+    // First frame renders before onLayout reports the real box; clip instead of pushing siblings.
+    overflow: 'hidden',
   },
   boardContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: BOARD_CONTAINER_PADDING,
   },
   gameOverOverlay: {
     ...StyleSheet.absoluteFillObject,

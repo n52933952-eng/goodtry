@@ -17,11 +17,11 @@ import {
   AppState,
   ScrollView,
   Modal,
-  Dimensions,
   DeviceEventEmitter,
   InteractionManager,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useWebRTC } from '../../context/LiveKitContext';
@@ -136,6 +136,18 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC(); // useWebRTC → useLiveKit alias
   const { startGroupCall, groupCallActive } = useGroupCall();
   const { colors, theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardUp(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardUp(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  /** Keyboard replaces the nav bar, so only reserve the bottom inset while it is hidden. */
+  const composerPadBottom = keyboardUp ? 10 : 10 + insets.bottom;
 
   /** Incoming bubbles are fixed white in WA; in dark theme that forced white-on-white with `colors.text`. */
   const incomingBubbleStyle = useMemo(
@@ -1859,7 +1871,16 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   return (
     <Wrapper style={[styles.container, { backgroundColor: colors.background }]} {...wrapperProps}>
-      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: 15 + insets.top,
+            backgroundColor: colors.backgroundLight,
+            borderBottomColor: colors.border,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={[styles.backButton, { color: colors.text }]}>←</Text>
         </TouchableOpacity>
@@ -2106,7 +2127,16 @@ const ChatScreen = ({ route, navigation }: any) => {
         </View>
       )}
 
-      <View style={[styles.inputContainer, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
+      <View
+        style={[
+          styles.inputContainer,
+          {
+            paddingBottom: composerPadBottom,
+            backgroundColor: colors.backgroundLight,
+            borderTopColor: colors.border,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={toggleAttachMenu} style={[styles.attachBtn, { backgroundColor: colors.border }]}>
           <Text style={[styles.attachIcon, { color: colors.text }]}>＋</Text>
         </TouchableOpacity>
@@ -2206,13 +2236,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             {chatImagePreviewUri ? (
               <Image
                 source={{ uri: chatImagePreviewUri }}
-                style={[
-                  styles.chatImagePreviewImage,
-                  {
-                    width: Dimensions.get('window').width,
-                    height: Dimensions.get('window').height * 0.82,
-                  },
-                ]}
+                style={[styles.chatImagePreviewImage, styles.chatImagePreviewImageSize]}
                 resizeMode="contain"
               />
             ) : null}
@@ -2444,6 +2468,10 @@ const styles = StyleSheet.create({
   },
   chatImagePreviewImage: {
     maxWidth: '100%',
+  },
+  chatImagePreviewImageSize: {
+    width: '100%',
+    height: '82%',
   },
   chatImagePreviewClose: {
     position: 'absolute',

@@ -12,6 +12,7 @@ import {
 import { COLORS } from '../utils/constants';
 import { apiService } from '../services/api';
 import { useShowToast } from '../hooks/useShowToast';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 
 interface Channel {
@@ -39,6 +40,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
   onChannelFollowed,
 }) => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const showToast = useShowToast();
   
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -140,7 +142,7 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
           ) : (
             <ScrollView 
               style={styles.scrollView} 
-              contentContainerStyle={styles.scrollContent}
+              contentContainerStyle={[styles.scrollContent, { paddingBottom: 20 + insets.bottom }]}
               showsVerticalScrollIndicator={false}
             >
               {/* Live Stream Channels */}

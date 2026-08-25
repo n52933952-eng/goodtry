@@ -34,6 +34,8 @@ import { pauseAllFeedVideos, emitFeedVisiblePostIds, isFeedAutoPlayMediaPost, FE
 import { useShowToast } from '../../hooks/useShowToast';
 import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
 import { useTabBarCollapseOnFocus } from '../../context/TabBarCollapseContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useWideScreenLayout } from '../../utils/responsiveLayout';
 import Svg, { Path } from 'react-native-svg';
 import Post from '../../components/Post';
 import LivePostCard from '../../components/LivePostCard';
@@ -82,6 +84,8 @@ const FeedScreen = ({ navigation }: any) => {
   const { isLive } = useLiveBroadcast();
   const { t } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const wideScreen = useWideScreenLayout();
   const showToast = useShowToast();
 
   const myUserId = user?._id != null ? String(user._id) : '';
@@ -1176,7 +1180,11 @@ const FeedScreen = ({ navigation }: any) => {
           styles.header,
           styles.headerFloating,
           headerTranslateStyle,
-          { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
+          {
+            paddingTop: 15 + insets.top,
+            backgroundColor: colors.backgroundLight,
+            borderBottomColor: colors.border,
+          },
         ]}
       >
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('feed')}</Text>
@@ -1241,7 +1249,11 @@ const FeedScreen = ({ navigation }: any) => {
           const id = post?._id?.toString?.() ?? String(post?._id);
           return id || `post-${index}`;
         }}
-        contentContainerStyle={[styles.listContainer, { paddingTop: feedHeaderHeight, paddingBottom: 20 + tabBarHeight }]}
+        contentContainerStyle={[
+          styles.listContainer,
+          { paddingTop: feedHeaderHeight, paddingBottom: 20 + tabBarHeight },
+          wideScreen.contentCap,
+        ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

@@ -9,6 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { useLanguage } from '../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import CollaboratorPicker from './CollaboratorPicker';
 import { CollaboratorUser } from '../utils/collaborators';
@@ -34,6 +35,7 @@ const CollaboratorPickerModal: React.FC<Props> = ({
 }) => {
   const { t } = useLanguage();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const selectedIds = selectedCollaborators.map((u) => String(u._id));
 
@@ -90,7 +92,16 @@ const CollaboratorPickerModal: React.FC<Props> = ({
           </View>
 
           {footer ? (
-            <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: colors.backgroundLight }]}>
+            <View
+              style={[
+                styles.footer,
+                {
+                  paddingBottom: 16 + insets.bottom,
+                  borderTopColor: colors.border,
+                  backgroundColor: colors.backgroundLight,
+                },
+              ]}
+            >
               {footer}
             </View>
           ) : null}

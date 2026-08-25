@@ -4,11 +4,10 @@ import {
   Text,
   StyleSheet,
   PanResponder,
-  Dimensions,
+  useWindowDimensions,
   type LayoutChangeEvent,
 } from 'react-native';
 
-const { width: SW } = Dimensions.get('window');
 const PIP_W = 100;
 const PIP_H = 136;
 
@@ -26,14 +25,17 @@ type Props = {
 const DraggableCallPip = ({
   children,
   label,
-  initialX = SW - PIP_W - 16,
+  initialX: initialXProp,
   initialY = 56,
   bounds,
 }: Props) => {
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const initialX = initialXProp ?? winWidth - PIP_W - 16;
+
   const [pos, setPos] = useState({ x: initialX, y: initialY });
   const posRef = useRef(pos);
   posRef.current = pos;
-  const parentSize = useRef({ w: SW, h: 800 });
+  const parentSize = useRef({ w: winWidth, h: winHeight });
   const dragOrigin = useRef({ x: initialX, y: initialY });
   const isDragging = useRef(false);
   const hasUserMoved = useRef(false);

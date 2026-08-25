@@ -14,6 +14,8 @@ import {
   Keyboard,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useWideScreenLayout } from '../../utils/responsiveLayout';
 import { useTheme } from '../../context/ThemeContext';
 import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 import { COLORS } from '../../utils/constants';
@@ -35,6 +37,8 @@ const SearchScreen = ({ navigation }: any) => {
   const { user: currentUser, updateUser, refetchSessionUser } = useUser();
   const { injectPostsIntoFeed } = usePost();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const wideScreen = useWideScreenLayout();
   const { tabBarHeight } = useTabBarCollapse();
   const listBottomPad = 28 + tabBarHeight;
   const showToast = useShowToast();
@@ -369,7 +373,16 @@ const SearchScreen = ({ navigation }: any) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: 15 + insets.top,
+            backgroundColor: colors.backgroundLight,
+            borderBottomColor: colors.border,
+          },
+        ]}
+      >
         <Text style={[styles.headerTitle, { color: colors.text }]}>Search</Text>
         <TouchableOpacity
           style={[styles.refreshBtn, refreshing && styles.refreshBtnDisabled]}
@@ -435,7 +448,11 @@ const SearchScreen = ({ navigation }: any) => {
           contentContainerStyle={
             searchResults.length === 0
               ? styles.listEmptyGrow
-              : [styles.listContent, { paddingTop: 14, paddingBottom: listBottomPad, backgroundColor: colors.background }]
+              : [
+                  styles.listContent,
+                  { paddingTop: 14, paddingBottom: listBottomPad, backgroundColor: colors.background },
+                  wideScreen.contentCap,
+                ]
           }
           refreshControl={
             <RefreshControl
@@ -464,7 +481,11 @@ const SearchScreen = ({ navigation }: any) => {
             contentContainerStyle={
               suggestedUsers.length === 0
                 ? styles.listEmptyGrow
-                : [styles.listContent, { paddingTop: 8, paddingBottom: listBottomPad, backgroundColor: colors.background }]
+                : [
+                    styles.listContent,
+                    { paddingTop: 8, paddingBottom: listBottomPad, backgroundColor: colors.background },
+                    wideScreen.contentCap,
+                  ]
             }
             refreshControl={
               <RefreshControl

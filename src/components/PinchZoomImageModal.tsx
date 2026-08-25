@@ -5,7 +5,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
-  Dimensions,
+  useWindowDimensions,
   Image,
   Modal,
   StyleSheet,
@@ -22,6 +22,7 @@ import {
   PinchGestureHandler,
   State,
 } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Props = {
   visible: boolean;
@@ -192,7 +193,8 @@ const PinchZoomImageModal: React.FC<Props> = ({
   onClose,
   closeAccessibilityLabel = 'Close',
 }) => {
-  const { width: winW, height: winH } = Dimensions.get('window');
+  const { width: winW, height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   const list = useMemo(() => {
     const fromList = Array.isArray(uris) ? uris.filter(Boolean) : [];
@@ -273,7 +275,7 @@ const PinchZoomImageModal: React.FC<Props> = ({
           />
 
           {showPager ? (
-            <View style={styles.counter} pointerEvents="none">
+            <View style={[styles.counter, { top: Math.max(insets.top, 24) + 28 }]} pointerEvents="none">
               <Text style={styles.counterText}>
                 {activeIndex + 1}/{list.length}
               </Text>
@@ -281,7 +283,7 @@ const PinchZoomImageModal: React.FC<Props> = ({
           ) : null}
 
           <TouchableOpacity
-            style={styles.closeBtn}
+            style={[styles.closeBtn, { top: Math.max(insets.top, 24) + 24 }]}
             onPress={onClose}
             hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
             accessibilityRole="button"

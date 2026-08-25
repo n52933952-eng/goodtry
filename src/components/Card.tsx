@@ -1,11 +1,11 @@
 import React from 'react';
-import { TouchableOpacity, Image, StyleSheet, ViewStyle } from 'react-native';
+import { TouchableOpacity, Image, StyleSheet, StyleProp, ViewStyle } from 'react-native';
 import { COLORS } from '../utils/constants';
 
 interface CardProps {
   suit: 'hearts' | 'diamonds' | 'clubs' | 'spades';
   value: number; // 1-13 (1=Ace, 11=Jack, 12=Queen, 13=King)
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
   rotation?: number;
   onPress?: () => void;
   faceDown?: boolean;
@@ -122,15 +122,14 @@ const Card: React.FC<CardProps> = ({
     return cardImages[imageKey] || cardImages['back'];
   };
 
-  // Extract width/height from style prop if provided
-  const styleWidth = (style as any)?.width;
-  const styleHeight = (style as any)?.height;
-  const finalWidth = styleWidth || width;
-  const finalHeight = styleHeight || height;
-  
+  // Flatten first so callers can pass a style array; width/height are read off the result.
+  const flatStyle = (StyleSheet.flatten(style) || {}) as ViewStyle;
+  const finalWidth = flatStyle.width ?? width;
+  const finalHeight = flatStyle.height ?? height;
+
   // Remove width/height from style to avoid conflicts
-  const { width: _, height: __, ...restStyle } = (style as any) || {};
-  
+  const { width: _, height: __, ...restStyle } = flatStyle;
+
   return (
     <TouchableOpacity
       onPress={onPress}

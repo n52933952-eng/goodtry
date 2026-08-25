@@ -21,6 +21,8 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useWideScreenLayout } from '../../utils/responsiveLayout';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
@@ -90,6 +92,8 @@ const MessagesScreen = ({ navigation }: any) => {
     refreshPresenceSubscription,
   } = useSocket();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const wideScreen = useWideScreenLayout();
   const { t } = useLanguage();
   const { tabBarHeight } = useTabBarCollapse();
   const listBottomPad = 20 + tabBarHeight;
@@ -1340,7 +1344,7 @@ const MessagesScreen = ({ navigation }: any) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
+      <View style={[styles.header, { paddingTop: 15 + insets.top, borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('messages')}</Text>
         <View style={styles.headerActions}>
         <TouchableOpacity
@@ -1422,7 +1426,7 @@ const MessagesScreen = ({ navigation }: any) => {
             <SectionList
               sections={searchSections}
               keyExtractor={(item, index) => item._id?.toString?.() ?? String(item._id ?? index)}
-              contentContainerStyle={{ paddingBottom: listBottomPad }}
+              contentContainerStyle={[{ paddingBottom: listBottomPad }, wideScreen.contentCap]}
               renderSectionHeader={({ section }) => (
                 <Text style={[styles.searchSectionTitle, { color: colors.textGray, backgroundColor: colors.background }]}>
                   {section.title}
@@ -1452,7 +1456,7 @@ const MessagesScreen = ({ navigation }: any) => {
           data={conversations}
           renderItem={renderConversation}
           keyExtractor={conversationKeyExtractor}
-          contentContainerStyle={{ paddingBottom: listBottomPad }}
+          contentContainerStyle={[{ paddingBottom: listBottomPad }, wideScreen.contentCap]}
           windowSize={5}
           maxToRenderPerBatch={6}
           initialNumToRender={6}

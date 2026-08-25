@@ -11,11 +11,12 @@ const FINISHED_STATUS_SHORT = [
   'FT', 'FINISHED', 'AET', 'PEN', 'CANC', 'POSTP', 'SUSP', 'AWD', 'WO',
 ];
 
-const EXTRA_TIME_LIVE_SHORT = ['ET', 'P'];
+const EXTRA_TIME_LIVE_SHORT = ['ET', 'P', 'BT'];
+const OVERTIME_BREAK_AFTER_KICKOFF_MIN = 95;
 
-const DISPLAY_FINISHED_KICKOFF_MIN = 108;
-const DISPLAY_ET_FINISHED_KICKOFF_MIN = 138;
-const DISPLAY_PEN_FINISHED_KICKOFF_MIN = 168;
+const DISPLAY_FINISHED_KICKOFF_MIN = 125;
+const DISPLAY_ET_FINISHED_KICKOFF_MIN = 185;
+const DISPLAY_PEN_FINISHED_KICKOFF_MIN = 210;
 
 export type MatchDisplayKind =
   | 'live'
@@ -47,9 +48,20 @@ function kickoffAgeMinutes(match: MatchLike): number {
   return (Date.now() - kickoff) / (60 * 1000);
 }
 
-function displayFinishedKickoffMin(short: string): number {
+function isOvertimePhase(short: string, ageMin: number): boolean {
+  if (EXTRA_TIME_LIVE_SHORT.includes(short)) return true;
+  if ((short === 'HT' || short === 'PAUSED') && ageMin >= OVERTIME_BREAK_AFTER_KICKOFF_MIN) {
+    return true;
+  }
+  if ((short === '2H' || short === 'IN_PLAY' || short === 'LIVE') && ageMin >= 115) {
+    return true;
+  }
+  return false;
+}
+
+function displayFinishedKickoffMin(short: string, ageMin: number): number {
   if (short === 'P') return DISPLAY_PEN_FINISHED_KICKOFF_MIN;
-  if (short === 'ET') return DISPLAY_ET_FINISHED_KICKOFF_MIN;
+  if (isOvertimePhase(short, ageMin)) return DISPLAY_ET_FINISHED_KICKOFF_MIN;
   return DISPLAY_FINISHED_KICKOFF_MIN;
 }
 
@@ -59,14 +71,7 @@ function isEffectivelyFinishedForDisplay(match: MatchLike): boolean {
   if (!LIVE_STATUS_SHORT.includes(short)) return false;
 
   const ageMin = kickoffAgeMinutes(match);
-  if (ageMin >= displayFinishedKickoffMin(short)) return true;
-
-  if (!EXTRA_TIME_LIVE_SHORT.includes(short)) {
-    const elapsed = match.fixture?.status?.elapsed;
-    if (typeof elapsed === 'number' && elapsed >= 90 && ageMin >= 105) return true;
-  }
-
-  return false;
+  return ageMin >= displayFinishedKickoffMin(short, ageMin);
 }
 
 export function getMatchDisplayStatus(match: MatchLike): MatchDisplayStatus {
@@ -89,10 +94,24 @@ export function getMatchDisplayStatus(match: MatchLike): MatchDisplayStatus {
   if (isEffectivelyFinishedForDisplay(match)) {
     return { kind: 'finished', label: 'FINISHED', elapsed: elapsed ?? 90 };
   }
+  const ageMin = kickoffAgeMinutes(match);
+  if (short === 'HT' && ageMin >= OVERTIME_BREAK_AFTER_KICKOFF_MIN) {
+    return { kind: 'extratime', label: 'EXTRA TIME', elapsed };
+  }
   if (short === 'HT') {
     return { kind: 'halftime', label: 'HALF TIME', elapsed: elapsed ?? 45 };
   }
   if (short === 'ET') {
+    return {
+      kind: 'extratime',
+      label: elapsed != null && elapsed > 90 ? `ET ${elapsed}'` : 'ET',
+      elapsed,
+    };
+  }
+  if (short === 'BT') {
+    return { kind: 'extratime', label: 'EXTRA TIME', elapsed };
+  }
+  if ((short === '2H' || short === 'IN_PLAY' || short === 'LIVE') && ageMin >= 115) {
     return {
       kind: 'extratime',
       label: elapsed != null && elapsed > 90 ? `ET ${elapsed}'` : 'ET',

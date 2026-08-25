@@ -10,6 +10,7 @@ import {
   Modal,
   TextInput,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { COLORS } from '../../utils/constants';
@@ -36,6 +37,7 @@ const CardScreen = ({ navigation }: any) => {
   const { user, refetchSessionUser } = useUser();
   const { socket, isUserOnline, refreshPresenceSubscription } = useSocket();
   const showToast = useShowToast();
+  const insets = useSafeAreaInsets();
 
   const [challenges, setChallenges] = useState<CardChallenge[]>([]);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
@@ -248,7 +250,7 @@ const CardScreen = ({ navigation }: any) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: 15 + insets.top }]}>
         <Text style={styles.headerTitle}>🃏 Cards</Text>
         <TouchableOpacity style={styles.challengeButton} onPress={handleCreateChallenge}>
           <Text style={styles.challengeButtonText}>+ Challenge</Text>

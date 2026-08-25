@@ -9,7 +9,7 @@ import {
   NativeModules,
   Platform,
   AppState,
-  Dimensions,
+  useWindowDimensions,
   I18nManager,
 } from 'react-native';
 import { VideoView } from '@livekit/react-native';
@@ -112,8 +112,6 @@ const CALL_TEXT = {
   },
 } as const;
 
-const { width: SW } = Dimensions.get('window');
-
 /** WhatsApp-style: brief ringing, then offline message, then auto-dismiss. */
 const OFFLINE_RING_GRACE_MS = 2500;
 const OFFLINE_POLL_MS = 1200;
@@ -124,12 +122,15 @@ const OFFLINE_AUTO_DISMISS_MS = 5000;
  * + the native ack HTTP can take several seconds, so keep ringing this long before giving up and
  * showing "offline". A definite reachable:false (no push token / phone off) hangs up sooner.
  */
-const REACHABLE_PROBE_MS = 12000;
+/** FCM wake + native ack on weak WiFi can exceed 12s — keep ringing until then. */
+const REACHABLE_PROBE_MS = 22000;
 
 const CallScreen = () => {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const pipInitialX = winWidth - PIP_W - 16;
   const { colors } = useTheme();
   const { user } = useUser();
   const CT = React.useMemo(
@@ -218,6 +219,13 @@ const CallScreen = () => {
     () => getLiveKitRoom() ?? room,
     [getLiveKitRoom, room],
   );
+
+  const liveKitHasRemotePeer = useCallback(() => {
+    const live = resolveCallRoom();
+    return !!live && live.remoteParticipants.size > 0;
+  }, [resolveCallRoom]);
+
+  const liveKitCallerInRoom = connectionState === ConnectionState.Connected;
 
   // ── Direct track read (mirrors the working GROUP CALL approach) ───────────
   // Instead of trusting context state (which can go stale after backgrounding /
@@ -365,7 +373,7 @@ const CallScreen = () => {
   const showCameraPips = false; // camera row replaces pips while sharing
   const showLocalPip =
     isVideoCall && callAccepted && !!localTrackForPiP && !isCamOff && !showCameraPips && !showShareCamRow;
-  const [pipBounds, setPipBounds] = useState({ w: SW, h: 600 });
+  const [pipBounds, setPipBounds] = useState({ w: winWidth, h: winHeight });
 
   // Audio routing: voice → earpiece unless user toggles speaker; video → loudspeaker by default.
   useEffect(() => {
@@ -451,6 +459,11 @@ const CallScreen = () => {
     const evaluatePresence = () => {
       if (offlineCheckGenRef.current !== gen) return;
       if (offlineCancelSentRef.current) return;
+      // Caller may already be in LiveKit while callee answers on slow FCM — never treat as offline.
+      if (liveKitHasRemotePeer() || liveKitCallerInRoom) {
+        setPartnerOfflinePhase(false);
+        return;
+      }
       refreshPresenceSubscription();
       // callTargetReachable:
       //   true  → callee's device confirmed it got the call (live socket OR native FCM ack) → keep ringing.
@@ -487,6 +500,8 @@ const CallScreen = () => {
     isUserOnline,
     refreshPresenceSubscription,
     callTargetReachable,
+    liveKitHasRemotePeer,
+    liveKitCallerInRoom,
   ]);
 
   // Partner came online (or server confirmed reachable via FCM) while ringing — stay on normal ring UI.
@@ -507,6 +522,10 @@ const CallScreen = () => {
   // Keep offline UI briefly, then clean up local state + navigate.
   useEffect(() => {
     if (!partnerOfflinePhase) return;
+    if (liveKitHasRemotePeer() || liveKitCallerInRoom) {
+      setPartnerOfflinePhase(false);
+      return;
+    }
 
     if (!offlineCancelSentRef.current) {
       offlineCancelSentRef.current = true;
@@ -532,6 +551,8 @@ const CallScreen = () => {
     socket,
     leaveCall,
     navigation,
+    liveKitHasRemotePeer,
+    liveKitCallerInRoom,
   ]);
 
   // ── auto-cancel: outgoing ring timeout (online users — long ring like WhatsApp) ──
@@ -859,7 +880,7 @@ const CallScreen = () => {
             <DraggableCallPip
               bounds={pipBounds}
               label={callerName}
-              initialX={SW - PIP_W - 16}
+              initialX={pipInitialX}
               initialY={56}
             >
               <VideoView
@@ -889,7 +910,7 @@ const CallScreen = () => {
             </DraggableCallPip>
           )}
           {showLocalPip && (
-            <DraggableCallPip bounds={pipBounds} label={myName} initialX={SW - PIP_W - 16} initialY={56}>
+            <DraggableCallPip bounds={pipBounds} label={myName} initialX={pipInitialX} initialY={56}>
               <VideoView
                 key={`local-pip-${localTrackForPiP.sid ?? 'cam'}-${videoRenderKey}`}
                 videoTrack={localTrackForPiP}
@@ -905,7 +926,7 @@ const CallScreen = () => {
 
       {/* Duration bar (video) */}
       {isVideo && callAccepted && (
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, { paddingTop: Math.max(insets.top, 12) + 12 }]}>
           <Text style={styles.durationText}>
             {isConnected ? formatDuration(durationSeconds) : CT.connecting}
           </Text>

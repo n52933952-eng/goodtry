@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { NativeModules, Platform, StatusBar } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../utils/constants';
 
@@ -27,6 +28,19 @@ interface ThemeContextType {
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+const applySystemBars = (themeName: Theme, themeColors: ThemeColors) => {
+  const lightContent = themeName === 'dark';
+  StatusBar.setBarStyle(lightContent ? 'light-content' : 'dark-content', true);
+  if (Platform.OS === 'android') {
+    StatusBar.setBackgroundColor(themeColors.background, true);
+    try {
+      NativeModules.CallDataModule?.setSystemBars?.(themeColors.background, lightContent);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+};
 
 // Dark Theme (Original - Black)
 const darkTheme: ThemeColors = {
@@ -71,13 +85,22 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     loadTheme();
   }, []);
 
+  // Keep status + bottom system bar in sync with theme (default was stuck black in light mode).
+  useEffect(() => {
+    applySystemBars(theme, colors);
+  }, [theme, colors]);
+
   const loadTheme = async () => {
     try {
       const savedTheme = await AsyncStorage.getItem(STORAGE_KEYS.THEME);
       if (savedTheme === 'blue' || savedTheme === 'dark') {
+        const nextColors = savedTheme === 'blue' ? blueTheme : darkTheme;
         setTheme(savedTheme);
-        setColors(savedTheme === 'blue' ? blueTheme : darkTheme);
+        setColors(nextColors);
+        applySystemBars(savedTheme, nextColors);
         console.log('🎨 [Theme] Loaded theme:', savedTheme);
+      } else {
+        applySystemBars('dark', darkTheme);
       }
     } catch (error) {
       console.error('❌ [Theme] Error loading theme:', error);
@@ -91,6 +114,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       
       setTheme(newTheme);
       setColors(newColors);
+      applySystemBars(newTheme, newColors);
       
       await AsyncStorage.setItem(STORAGE_KEYS.THEME, newTheme);
       console.log('🎨 [Theme] Theme changed to:', newTheme);
@@ -101,6 +125,10 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme, colors }}>
+      <StatusBar
+        barStyle={theme === 'dark' ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.background}
+      />
       {children}
     </ThemeContext.Provider>
   );

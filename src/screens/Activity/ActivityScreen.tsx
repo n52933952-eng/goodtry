@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { API_URL, COLORS } from '../../utils/constants';
@@ -98,6 +99,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
   const { user } = useUser();
   const { socket } = useSocket();
   const showToast = useShowToast();
+  const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -305,7 +307,7 @@ const ActivityScreen: React.FC<ActivityScreenProps> = ({ navigation }) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: 15 + insets.top }]}>
         <Text style={styles.headerTitle}>{t('liveActivity')}</Text>
       </View>
 

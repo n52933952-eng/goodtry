@@ -6,7 +6,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   Pressable,
-  Dimensions,
   useWindowDimensions,
   Modal,
   FlatList,
@@ -25,7 +24,6 @@ import { useTheme } from '../../context/ThemeContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { mediaDisplayUrl } from '../../utils/mediaUrl';
 
-const { width: W, height: H } = Dimensions.get('window');
 
 function storyImageDisplayUrl(rawUrl: string, _screenW: number, _screenH: number) {
   return mediaDisplayUrl(rawUrl);
@@ -271,18 +269,18 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       const heldMs = Date.now() - pressStartedAtRef.current;
       const x = e.nativeEvent.locationX;
       if (heldMs < STORY_TAP_NAV_MS) {
-        if (x < W * STORY_TAP_LEFT_FRAC) {
+        if (x < winW * STORY_TAP_LEFT_FRAC) {
           goPrev();
           return;
         }
-        if (x > W * STORY_TAP_RIGHT_FRAC) {
+        if (x > winW * STORY_TAP_RIGHT_FRAC) {
           goNext();
           return;
         }
       }
       resumeImageStory();
     },
-    [slide?.type, goPrev, goNext, resumeImageStory],
+    [slide?.type, goPrev, goNext, resumeImageStory, winW],
   );
 
   if (loading) {
@@ -407,7 +405,12 @@ const StoryViewerScreen: React.FC<Props> = ({ route, navigation }) => {
 
       <Modal visible={viewersOpen} transparent animationType="slide" onRequestClose={() => setViewersOpen(false)}>
         <View style={[styles.modalBg, { paddingTop: insets.top }]}>
-          <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight }]}>
+          <View
+            style={[
+              styles.modalCard,
+              { paddingBottom: 16 + insets.bottom, backgroundColor: colors.backgroundLight },
+            ]}
+          >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>{t('viewers')}</Text>
               <TouchableOpacity onPress={() => setViewersOpen(false)}>
@@ -504,7 +507,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginTop: 10,
   },
-  headerName: { color: '#fff', fontWeight: '700', fontSize: 15, maxWidth: W * 0.38 },
+  headerName: { color: '#fff', fontWeight: '700', fontSize: 15, maxWidth: '38%' },
   headerTextShadow: {
     textShadowColor: 'rgba(0,0,0,0.85)',
     textShadowOffset: { width: 0, height: 1 },
@@ -549,7 +552,7 @@ const styles = StyleSheet.create({
     zIndex: 6,
   },
   captionScrim: {
-    maxWidth: W - 40,
+    maxWidth: '100%',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 14,
@@ -576,7 +579,7 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
-    width: W * 0.35,
+    width: '35%',
     zIndex: 5,
   },
   tapRight: {
@@ -584,7 +587,7 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     bottom: 0,
-    width: W * 0.35,
+    width: '35%',
     zIndex: 5,
   },
   closeBtn: {
@@ -599,7 +602,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalCard: {
-    maxHeight: H * 0.55,
+    maxHeight: '55%',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingBottom: Platform.OS === 'ios' ? 34 : 16,

@@ -13,6 +13,7 @@ import {
   Keyboard,
   ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '../../context/UserContext';
 import { API_URL } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -104,6 +105,7 @@ const WeatherScreen = () => {
   const showToast = useShowToast();
   const { t } = useLanguage();
   const { colors, theme } = useTheme();
+  const insets = useSafeAreaInsets();
   const { tabBarHeight } = useTabBarCollapseOnFocus('weather');
 
   const [activeTab, setActiveTab] = useState<'my' | 'cities'>('my');
@@ -136,7 +138,7 @@ const WeatherScreen = () => {
         },
         header: {
           paddingHorizontal: 16,
-          paddingTop: 12,
+          paddingTop: 12 + insets.top,
           paddingBottom: 8,
         },
         headerTop: {
@@ -403,7 +405,7 @@ const WeatherScreen = () => {
           color: colors.textGray,
         },
       }),
-    [colors],
+    [colors, insets.top],
   );
 
   const clearSearch = useCallback(() => {

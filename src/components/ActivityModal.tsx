@@ -15,15 +15,16 @@ import { API_URL, COLORS } from '../utils/constants';
 import { useShowToast } from '../hooks/useShowToast';
 import { useUser } from '../context/UserContext';
 import { useSocket } from '../context/SocketContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
 
 // How long an activity stays visible. Must match backend ACTIVITY_RETENTION_HOURS.
-const ACTIVITY_RETENTION_HOURS = 12;
+const ACTIVITY_RETENTION_HOURS = 24 * 7;
 const ACTIVITY_RETENTION_MS = ACTIVITY_RETENTION_HOURS * 60 * 60 * 1000;
 // Must match backend ACTIVITY_MAX_PER_USER.
-const ACTIVITY_MAX = 40;
+const ACTIVITY_MAX = 200;
 
 interface Activity {
   _id: string;
@@ -80,6 +81,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
   const { user } = useUser();
   const { socket } = useSocket();
   const { colors, theme } = useTheme();
+  const insets = useSafeAreaInsets();
   const showToast = useShowToast();
   
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -390,7 +392,7 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
               data={activities}
               renderItem={renderActivity}
               keyExtractor={(item) => item._id}
-              contentContainerStyle={styles.listContainer}
+              contentContainerStyle={[styles.listContainer, { paddingBottom: 20 + insets.bottom }]}
             />
           )}
         </View>

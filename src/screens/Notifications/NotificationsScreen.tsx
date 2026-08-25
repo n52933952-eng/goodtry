@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useWideScreenLayout } from '../../utils/responsiveLayout';
 import { useTheme } from '../../context/ThemeContext';
 import { API_URL, COLORS, ENDPOINTS } from '../../utils/constants';
 import { apiService } from '../../services/api';
@@ -35,6 +37,8 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
   const { user } = useUser();
   const { socket, notificationCount, setNotificationCount, refreshNotificationCount } = useSocket();
   const { colors, theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const wideScreen = useWideScreenLayout();
   const showToast = useShowToast();
   const { t } = useLanguage();
   const { tabBarHeight } = useTabBarCollapse();
@@ -505,7 +509,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
+      <View style={[styles.header, { paddingTop: 15 + insets.top, borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('notifications')}</Text>
         {unreadCount > 0 && (
           <TouchableOpacity
@@ -524,6 +528,7 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
         contentContainerStyle={[
           styles.listContainer,
           { paddingBottom: 28 + tabBarHeight },
+          wideScreen.contentCap,
         ]}
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.4}

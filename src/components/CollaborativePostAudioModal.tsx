@@ -11,6 +11,7 @@ import {
   Pressable,
 } from 'react-native';
 import { useLanguage } from '../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -29,6 +30,7 @@ type Props = {
 const CollaborativePostAudioModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => {
   const { t } = useLanguage();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const showToast = useShowToast();
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -105,7 +107,16 @@ const CollaborativePostAudioModal: React.FC<Props> = ({ visible, onClose, post, 
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <Pressable style={styles.backdrop} onPress={onClose} />
-        <View style={[styles.sheet, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.sheet,
+            {
+              paddingBottom: 28 + insets.bottom,
+              backgroundColor: colors.backgroundLight,
+              borderColor: colors.border,
+            },
+          ]}
+        >
           <Text style={[styles.title, { color: colors.text }]}>
             {hasExistingAudio ? t('changeMusic') : t('addMusic')}
           </Text>

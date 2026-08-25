@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
-  Dimensions,
+  useWindowDimensions,
   ScrollView,
   Modal,
   StatusBar,
@@ -23,8 +23,6 @@ import { navigateToHomeFeed } from '../../utils/navigationHelpers';
 import { queuePendingGameEmit } from '../../utils/pendingGameEmit';
 import { useShowToast } from '../../hooks/useShowToast';
 import Card from '../../components/Card';
-
-const { width } = Dimensions.get('window');
 
 interface CardGameScreenProps {
   navigation: any;
@@ -64,6 +62,13 @@ interface GameState {
 const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) => {
   const { roomId, opponentId, isSpectator } = route.params || {};
   const insets = useSafeAreaInsets();
+  const { width: winWidth } = useWindowDimensions();
+  /** Four columns on phones, capped so cards don't become huge on tablets. */
+  const handCardSize = useMemo(() => {
+    const raw = Math.floor((winWidth - 50) / 4);
+    const cardWidth = Math.max(56, Math.min(110, raw));
+    return { width: cardWidth, height: Math.round(cardWidth * 1.4) };
+  }, [winWidth]);
   const { user } = useUser();
   const { socket } = useSocket();
   const showToast = useShowToast();
@@ -965,6 +970,7 @@ const CardGameScreen: React.FC<CardGameScreenProps> = ({ navigation, route }) =>
                   value={card.value}
                   style={[
                     styles.handCard,
+                    handCardSize,
                     isClickable && styles.clickableCard,
                     !isClickable && styles.disabledCard
                   ]}
@@ -1394,8 +1400,6 @@ const styles = StyleSheet.create({
   handCard: {
     marginRight: 5,
     marginBottom: 10,
-    width: (width - 50) / 4, // 4 columns: (screen width - padding) / 4
-    height: ((width - 50) / 4) * 1.4, // Maintain card aspect ratio (height = width * 1.4)
   },
   clickableCard: {
     borderWidth: 2,

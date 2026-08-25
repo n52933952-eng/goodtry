@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  Dimensions,
+  useWindowDimensions,
   ActivityIndicator,
   Linking,
   ScrollView,
@@ -1719,7 +1719,7 @@ const Post: React.FC<PostProps> = ({
     [displayVideoUrl, post.thumbnail]
   );
 
-  const { width, height: windowHeight } = Dimensions.get('window');
+  const { width, height: windowHeight } = useWindowDimensions();
 
   const showStoryRing =
     !!storyRing?.storyId &&
@@ -3583,7 +3583,7 @@ const styles = StyleSheet.create({
   },
   videoContainer: {
     width: '100%',
-    height: (Dimensions.get('window').width - 30) * 0.5625, // 16:9 aspect ratio
+    aspectRatio: 16 / 9,
     borderRadius: 12,
     marginBottom: 10,
     overflow: 'hidden',

@@ -28,6 +28,7 @@ import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useImagePicker, MAX_CAROUSEL_PHOTOS } from '../../hooks/useImagePicker';
 import { useLanguage } from '../../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../context/ThemeContext';
 import {
   isVideoWithinMaxDuration,
@@ -66,6 +67,7 @@ const CreatePostScreen = ({ navigation }: any) => {
   } = useImagePicker();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { width: winW } = useWindowDimensions();
 
   const imagePreviewHeight = useMemo(() => {
@@ -326,7 +328,11 @@ const CreatePostScreen = ({ navigation }: any) => {
       <View
         style={[
           styles.header,
-          { backgroundColor: colors.backgroundLight, borderBottomColor: colors.border },
+          {
+            paddingTop: 15 + insets.top,
+            backgroundColor: colors.backgroundLight,
+            borderBottomColor: colors.border,
+          },
         ]}
       >
         <TouchableOpacity onPress={() => navigation.goBack()}>

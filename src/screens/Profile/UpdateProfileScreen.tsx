@@ -136,7 +136,7 @@ const UpdateProfileScreen = ({ navigation }: any) => {
       ]}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: 10 + insets.top }]}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={[styles.backButton, { color: colors.text }]}>←</Text>
         </TouchableOpacity>

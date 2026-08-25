@@ -3,10 +3,14 @@ package com.playsocial
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.os.Build
+import androidx.core.view.WindowCompat
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.Arguments
 
@@ -236,6 +240,35 @@ class CallDataModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERROR", "Failed to clear shared prefs $prefsName: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Match status + navigation bar to the in-app theme (light mode was stuck on black).
+     * @param backgroundColor hex e.g. "#E4E9F0"
+     * @param lightContent true = white icons (dark bg); false = dark icons (light bg)
+     */
+    @ReactMethod
+    fun setSystemBars(backgroundColor: String, lightContent: Boolean) {
+        UiThreadUtil.runOnUiThread {
+            try {
+                val activity = currentActivity ?: return@runOnUiThread
+                val color = Color.parseColor(backgroundColor)
+                val window = activity.window
+                @Suppress("DEPRECATION")
+                window.statusBarColor = color
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = color
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.isNavigationBarContrastEnforced = false
+                }
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                // lightAppearance = dark icons on a light bar
+                controller.isAppearanceLightStatusBars = !lightContent
+                controller.isAppearanceLightNavigationBars = !lightContent
+            } catch (e: Exception) {
+                android.util.Log.w("CallDataModule", "setSystemBars failed: ${e.message}")
+            }
         }
     }
 }

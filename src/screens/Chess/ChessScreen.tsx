@@ -11,6 +11,7 @@ import {
   TextInput,
 } from 'react-native';
 import { useUser } from '../../context/UserContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSocket } from '../../context/SocketContext';
 import { COLORS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
@@ -38,6 +39,7 @@ const ChessScreen = ({ navigation }: any) => {
   const { user, refetchSessionUser } = useUser();
   const { socket, isUserOnline, refreshPresenceSubscription, setPresenceWatchUserIds } = useSocket();
   const showToast = useShowToast();
+  const insets = useSafeAreaInsets();
 
   const [challenges, setChallenges] = useState<ChessChallenge[]>([]);
   const [availableUsers, setAvailableUsers] = useState<AvailableUser[]>([]);
@@ -302,7 +304,7 @@ const ChessScreen = ({ navigation }: any) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: 15 + insets.top }]}>
         <Text style={styles.headerTitle}>♟️ Chess</Text>
         <TouchableOpacity style={styles.challengeButton} onPress={handleCreateChallenge}>
           <Text style={styles.challengeButtonText}>+ Challenge</Text>

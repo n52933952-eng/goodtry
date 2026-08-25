@@ -16,12 +16,13 @@ import {
   Keyboard,
   Modal,
   TouchableWithoutFeedback,
-  Dimensions,
+  useWindowDimensions,
   Animated,
   PanResponder,
   NativeSyntheticEvent,
   NativeScrollEvent,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ScrollView as GestureScrollView } from 'react-native-gesture-handler';
 import { useUser } from '../../context/UserContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -42,9 +43,8 @@ import { hideChannelPostComments } from '../../utils/channelPostUtils';
 import { useCollapsingHeader } from '../../hooks/useCollapsingHeader';
 import CollapsingStackHeader from '../../components/CollapsingStackHeader';
 
-const { height: SCREEN_H } = Dimensions.get('window');
-const SHEET_PARTIAL = Math.round(SCREEN_H * 0.72);
-const SHEET_FULL = Math.round(SCREEN_H * 0.94);
+const SHEET_PARTIAL_FRACTION = 0.72;
+const SHEET_FULL_FRACTION = 0.94;
 const QUICK_EMOJIS = ['❤️', '🙌', '🔥', '👏', '😢', '😍', '😮', '😂'];
 const COMMENTS_PAGE_SIZE = 12;
 
@@ -138,15 +138,31 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const modalScrollRef = useRef<ScrollView>(null);
   const [commentsVisible, setCommentsVisible] = useState(false);
   const mentionSearchGenRef = useRef(0);
-  const sheetHeightAnim = useRef(new Animated.Value(SHEET_PARTIAL)).current;
+  // Sheet size follows the live window, so it stays correct on any screen and after rotation.
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardUp(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardUp(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  /** Keyboard replaces the nav bar, so only reserve the bottom inset while it is hidden. */
+  const commentBarPadBottom = keyboardUp ? 12 : 12 + insets.bottom;
+  const sheetPartial = Math.round(windowHeight * SHEET_PARTIAL_FRACTION);
+  const sheetFull = Math.round(windowHeight * SHEET_FULL_FRACTION);
+  const sheetHeightAnim = useRef(new Animated.Value(sheetPartial)).current;
   const sheetExpandedRef = useRef(false);
-  const dragStartHeightRef = useRef(SHEET_PARTIAL);
+  const dragStartHeightRef = useRef(sheetPartial);
 
   const resetSheetPosition = useCallback(() => {
-    sheetHeightAnim.setValue(SHEET_PARTIAL);
+    sheetHeightAnim.setValue(sheetPartial);
     sheetExpandedRef.current = false;
-    dragStartHeightRef.current = SHEET_PARTIAL;
-  }, [sheetHeightAnim]);
+    dragStartHeightRef.current = sheetPartial;
+  }, [sheetHeightAnim, sheetPartial]);
 
   const clearMentionSuggestions = useCallback(() => {
     mentionSearchGenRef.current += 1;
@@ -166,7 +182,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
   const snapSheet = useCallback(
     (toFull: boolean) => {
       sheetExpandedRef.current = toFull;
-      const toValue = toFull ? SHEET_FULL : SHEET_PARTIAL;
+      const toValue = toFull ? sheetFull : sheetPartial;
       dragStartHeightRef.current = toValue;
       Animated.spring(sheetHeightAnim, {
         toValue,
@@ -175,7 +191,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         friction: 13,
       }).start();
     },
-    [sheetHeightAnim],
+    [sheetHeightAnim, sheetFull, sheetPartial],
   );
 
   useEffect(() => {
@@ -191,13 +207,13 @@ const PostDetailScreen = ({ route, navigation }: any) => {
         onPanResponderGrant: () => {
           sheetHeightAnim.stopAnimation((value) => {
             dragStartHeightRef.current =
-              typeof value === 'number' ? value : sheetExpandedRef.current ? SHEET_FULL : SHEET_PARTIAL;
+              typeof value === 'number' ? value : sheetExpandedRef.current ? sheetFull : sheetPartial;
           });
         },
         onPanResponderMove: (_, g) => {
           const next = dragStartHeightRef.current - g.dy;
-          const minH = SHEET_PARTIAL * 0.55;
-          sheetHeightAnim.setValue(Math.max(minH, Math.min(SHEET_FULL, next)));
+          const minH = sheetPartial * 0.55;
+          sheetHeightAnim.setValue(Math.max(minH, Math.min(sheetFull, next)));
         },
         onPanResponderRelease: (_, g) => {
           const isTap = Math.abs(g.dy) < 12 && Math.abs(g.dx) < 12;
@@ -220,13 +236,13 @@ const PostDetailScreen = ({ route, navigation }: any) => {
           }
 
           sheetHeightAnim.stopAnimation((value) => {
-            const v = typeof value === 'number' ? value : SHEET_PARTIAL;
-            const mid = (SHEET_PARTIAL + SHEET_FULL) / 2;
+            const v = typeof value === 'number' ? value : sheetPartial;
+            const mid = (sheetPartial + sheetFull) / 2;
             snapSheet(v >= mid);
           });
         },
       }),
-    [sheetHeightAnim, snapSheet, closeCommentsModal],
+    [sheetHeightAnim, snapSheet, closeCommentsModal, sheetPartial, sheetFull],
   );
 
   useEffect(() => {
@@ -917,7 +933,16 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                 ))}
               </ScrollView>
 
-              <View style={[styles.inputContainer, { backgroundColor: sheetUi.footer, borderTopColor: sheetUi.divider }]}>
+              <View
+                style={[
+                  styles.inputContainer,
+                  {
+                    paddingBottom: commentBarPadBottom,
+                    backgroundColor: sheetUi.footer,
+                    borderTopColor: sheetUi.divider,
+                  },
+                ]}
+              >
                 {user?.profilePic ? (
                   <Image source={{ uri: user.profilePic }} style={styles.inputAvatar} />
                 ) : (

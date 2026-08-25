@@ -9,14 +9,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
 
 const PAGE_SIZE = 20;
-const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 interface Liker {
   _id: string;
@@ -47,6 +47,9 @@ const PostLikesModal: React.FC<PostLikesModalProps> = ({
   onPressUser,
 }) => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const sheetHeight = Math.round(windowHeight * 0.62);
 
   const [users, setUsers] = useState<Liker[]>([]);
   const [total, setTotal] = useState<number>(initialCount ?? 0);
@@ -171,7 +174,7 @@ const PostLikesModal: React.FC<PostLikesModalProps> = ({
     >
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={[styles.sheet, { backgroundColor: colors.background }]}>
+        <View style={[styles.sheet, { height: sheetHeight, backgroundColor: colors.background }]}>
           <View style={styles.handleWrap}>
             <View style={[styles.handle, { backgroundColor: colors.border }]} />
           </View>
@@ -201,7 +204,10 @@ const PostLikesModal: React.FC<PostLikesModalProps> = ({
               onEndReached={handleLoadMore}
               onEndReachedThreshold={0.4}
               keyboardShouldPersistTaps="handled"
-              contentContainerStyle={users.length === 0 ? styles.emptyContainer : styles.listContent}
+              contentContainerStyle={[
+                users.length === 0 ? styles.emptyContainer : styles.listContent,
+                { paddingBottom: 6 + insets.bottom },
+              ]}
               ListEmptyComponent={
                 <Text style={[styles.emptyText, { color: colors.textGray }]}>No likes yet</Text>
               }
@@ -227,7 +233,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   sheet: {
-    height: SCREEN_HEIGHT * 0.62,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
     overflow: 'hidden',

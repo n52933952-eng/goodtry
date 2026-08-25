@@ -10,7 +10,6 @@ import {
   StyleSheet,
   Modal,
   StatusBar,
-  Dimensions,
   LayoutChangeEvent,
   PanResponder,
 } from 'react-native';
@@ -266,8 +265,6 @@ const ScreenShareViewer = ({
   );
 };
 
-const { width: SW, height: SH } = Dimensions.get('window');
-
 const styles = StyleSheet.create({
   stage: {
     flex: 1,
@@ -293,8 +290,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   fullRoot: {
-    width: SW,
-    height: SH,
+    flex: 1,
     backgroundColor: '#000',
   },
   labelPill: {

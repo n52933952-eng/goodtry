@@ -15,6 +15,7 @@ import { ENDPOINTS } from '../../utils/constants';
 import { apiService } from '../../services/api';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useLanguage } from '../../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../context/ThemeContext';
 import FootballMatchCard from '../../components/FootballMatchCard';
 
@@ -72,6 +73,7 @@ const FootballScreen = () => {
   );
 
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -90,6 +92,7 @@ const FootballScreen = () => {
           justifyContent: 'space-between',
           alignItems: 'center',
           padding: 15,
+          paddingTop: 15 + insets.top,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
         },
@@ -209,8 +212,8 @@ const FootballScreen = () => {
         },
         listContainer: {
           paddingHorizontal: 15,
-  paddingTop: 15,
-  paddingBottom: 130,
+          paddingTop: 15,
+          paddingBottom: 130 + insets.bottom,
         },
         emptyContainer: {
           padding: 60,
@@ -226,7 +229,7 @@ const FootballScreen = () => {
           textAlign: 'center',
         },
       }),
-    [colors],
+    [colors, insets.top, insets.bottom],
   );
 
   // Fetch matches function (can be called manually or via socket)

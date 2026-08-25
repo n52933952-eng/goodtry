@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useUser } from '../context/UserContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -34,6 +35,7 @@ const AddContributorModal: React.FC<Props> = ({
   const { user } = useUser();
   const { t } = useLanguage();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const showToast = useShowToast();
 
   const [selectedUsers, setSelectedUsers] = useState<CollaboratorUser[]>([]);
@@ -172,7 +174,16 @@ const AddContributorModal: React.FC<Props> = ({
             />
           </View>
 
-          <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: colors.backgroundLight }]}>
+          <View
+            style={[
+              styles.footer,
+              {
+                paddingBottom: 16 + insets.bottom,
+                borderTopColor: colors.border,
+                backgroundColor: colors.backgroundLight,
+              },
+            ]}
+          >
             <TouchableOpacity
               style={[
                 styles.primaryBtn,

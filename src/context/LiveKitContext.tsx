@@ -301,6 +301,17 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     });
 
+    /** Callee may join before caller finishes connect — ParticipantConnected won't replay. */
+    const markCallConnectedIfRemotePresent = () => {
+      if (lkRoom.remoteParticipants.size === 0) return;
+      if (!callAcceptedRef.current || isCallingRef.current) {
+        setCallAccepted(true);
+        callAcceptedRef.current = true;
+        setIsCalling(false);
+        isCallingRef.current = false;
+      }
+    };
+
     const syncRemoteTracksFromRoom = () => {
       let cam: RemoteTrack | null = null;
       let screen: RemoteTrack | null = null;
@@ -322,6 +333,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setRemoteVideoTrack(cam);
       setRemoteScreenTrack(screen);
       setRemoteAudioTrack(audio);
+      markCallConnectedIfRemotePresent();
     };
 
     lkRoom.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: any, participant: RemoteParticipant) => {
@@ -347,16 +359,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     lkRoom.on(RoomEvent.ParticipantConnected, () => {
-      setCallAccepted(true);
-      callAcceptedRef.current = true;
-      setIsCalling(false);
-      isCallingRef.current = false;
+      markCallConnectedIfRemotePresent();
       syncRemoteTracksFromRoom();
     });
 
     lkRoom.on(RoomEvent.Connected, () => {
       cancelScheduledCallEnd();
       syncRemoteTracksFromRoom();
+      // Weak WiFi: callee may already be in the room when we finish connecting.
+      setTimeout(() => syncRemoteTracksFromRoom(), 400);
     });
 
     lkRoom.on(RoomEvent.Reconnected, () => {
@@ -435,6 +446,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try { await camP; } catch (_) {}
       syncLocalVideoFromParticipant();
     }
+    syncRemoteTracksFromRoom();
     } catch (err: unknown) {
       if (
         isCallSessionAborted(connectSessionId, endedCallSessionIdRef.current, callSessionIdRef.current)

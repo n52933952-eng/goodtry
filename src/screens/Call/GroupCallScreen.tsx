@@ -378,7 +378,7 @@ const GroupCallScreen = () => {
   return (
     <View style={[styles.container, { backgroundColor: '#111' }]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 16 }]}>
         <Text style={styles.headerTitle}>Group Call</Text>
         <Text style={styles.headerSub}>
           {allTiles.length === 1 ? '1 participant' : `${allTiles.length} participants`}
@@ -427,7 +427,7 @@ const GroupCallScreen = () => {
       )}
 
       {/* Controls */}
-      <View style={styles.controls}>
+      <View style={[styles.controls, { paddingBottom: 20 + insets.bottom }]}>
         <TouchableOpacity
           style={[styles.ctrlBtn, { backgroundColor: isMuted ? colors.error : 'rgba(255,255,255,0.15)' }]}
           onPress={handleMute}

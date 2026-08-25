@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
 import { useLanguage } from '../context/LanguageContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from '../utils/constants';
@@ -47,6 +48,7 @@ type Props = {
 const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => {
   const { t } = useLanguage();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const showToast = useShowToast();
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
@@ -316,7 +318,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
       >
         <Pressable style={styles.backdrop} onPress={onClose} />
         <Pressable
-          style={[styles.sheet, { backgroundColor: colors.backgroundLight }]}
+          style={[styles.sheet, { paddingBottom: 24 + insets.bottom, backgroundColor: colors.backgroundLight }]}
           onPress={(e) => e.stopPropagation()}
         >
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
