@@ -249,10 +249,9 @@ const FootballMatchCard: React.FC<Props> = ({
         <Text style={styles.leagueName}>{match.league?.name || t('unknownLeague')}</Text>
         {showStatus && display.kind === 'live' && (
           <View style={styles.liveBadge}>
-            <Text style={styles.liveBadgeText}>
-              🔴 LIVE
-              {display.elapsed != null ? ` ${display.elapsed}'` : ''}
-            </Text>
+            {/* No minute: the free API sends no match clock, so any number here is an estimate
+                that drifts from the real time (stoppage time, late kickoff). */}
+            <Text style={styles.liveBadgeText}>🔴 LIVE</Text>
           </View>
         )}
         {showStatus && display.kind === 'finished' && (

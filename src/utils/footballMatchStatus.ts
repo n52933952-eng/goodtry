@@ -13,8 +13,15 @@ const FINISHED_STATUS_SHORT = [
 
 const EXTRA_TIME_LIVE_SHORT = ['ET', 'P', 'BT'];
 
-/** Kickoff delay we accept from `liveStartedAt`; beyond this the observation is untrustworthy. */
-const MAX_KICKOFF_DELAY_MIN = 15;
+/**
+ * Cap on how much kickoff delay we credit from `liveStartedAt`. The free tier can flip
+ * SCHEDULED → IN_PLAY ~5 minutes late, and trusting that fully started the badge at 1' during a
+ * match already at 6'.
+ */
+const MAX_CREDITED_KICKOFF_DELAY_MIN = 3;
+
+/** Kickoff passed but the API has not flipped the status yet — still show it as live. */
+const ASSUME_STARTED_WITHIN_MIN = 20;
 
 const DISPLAY_FINISHED_KICKOFF_MIN = 125;
 const DISPLAY_ET_FINISHED_KICKOFF_MIN = 185;
@@ -52,8 +59,8 @@ type MatchLike = {
 };
 
 /**
- * Minutes of actual play. Prefers the observed kickoff (`fixture.liveStartedAt`) over the
- * scheduled date, since matches start late and that made the badge run minutes fast.
+ * Minutes of actual play, anchored between the scheduled date (slightly early) and the observed
+ * live flip (late by the API's status lag). Error stays within ~3 minutes either way.
  */
 function kickoffAgeMinutes(match: MatchLike): number {
   const scheduled = match.fixture?.date ? new Date(match.fixture.date).getTime() : NaN;
@@ -62,13 +69,20 @@ function kickoffAgeMinutes(match: MatchLike): number {
   const observed = match.fixture?.liveStartedAt
     ? new Date(match.fixture.liveStartedAt).getTime()
     : NaN;
-  const delayMin = Number.isFinite(observed) ? (observed - scheduled) / (60 * 1000) : NaN;
-  const anchor =
-    Number.isFinite(delayMin) && delayMin >= 0 && delayMin <= MAX_KICKOFF_DELAY_MIN
-      ? observed
-      : scheduled;
+  const delayMin = Number.isFinite(observed) ? (observed - scheduled) / (60 * 1000) : 0;
+  const creditedDelayMin = Math.min(Math.max(delayMin, 0), MAX_CREDITED_KICKOFF_DELAY_MIN);
 
-  return (Date.now() - anchor) / (60 * 1000);
+  return (Date.now() - scheduled) / (60 * 1000) - creditedDelayMin;
+}
+
+/** True when kickoff has passed but the API still reports the match as not started. */
+function isStartedButNotYetLive(match: MatchLike): boolean {
+  const short = String(match.fixture?.status?.short || match.status || '').trim();
+  if (short !== 'NS' && short !== 'SCHEDULED' && short !== 'TIMED') return false;
+  if (!match.fixture?.date) return false;
+
+  const ageMin = kickoffAgeMinutes(match);
+  return ageMin >= 0 && ageMin <= ASSUME_STARTED_WITHIN_MIN;
 }
 
 function inferLiveShort(short: string, ageMin: number): string {
@@ -158,7 +172,10 @@ export function getMatchDisplayStatus(match: MatchLike): MatchDisplayStatus {
   if (FINISHED_STATUS_SHORT.includes(rawShort) && match.displayStatus?.kind === 'finished') {
     return match.displayStatus;
   }
-  if (rawShort === 'NS' || rawShort === 'SCHEDULED') {
+  if (rawShort === 'NS' || rawShort === 'SCHEDULED' || rawShort === 'TIMED') {
+    if (isStartedButNotYetLive(match)) {
+      return { kind: 'live', label: 'LIVE', elapsed: null };
+    }
     return match.displayStatus?.kind === 'scheduled'
       ? match.displayStatus
       : { kind: 'scheduled', label: rawShort, elapsed: null };
@@ -176,11 +193,7 @@ export function getMatchDisplayStatus(match: MatchLike): MatchDisplayStatus {
     return { kind: 'halftime', label: 'HALF TIME', elapsed: elapsed ?? 45 };
   }
   if (short === 'ET') {
-    return {
-      kind: 'extratime',
-      label: elapsed != null && elapsed > 90 ? `ET ${elapsed}'` : 'ET',
-      elapsed,
-    };
+    return { kind: 'extratime', label: 'EXTRA TIME', elapsed };
   }
   if (short === 'BT') {
     return { kind: 'extratime', label: 'EXTRA TIME', elapsed };
