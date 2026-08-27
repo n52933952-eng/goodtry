@@ -71,6 +71,8 @@ const FootballScreen = () => {
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  /** Re-render live badges so HT / 2nd half switch on kickoff age without waiting for the next socket. */
+  const [liveClockTick, setLiveClockTick] = useState(0);
 
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -282,6 +284,12 @@ const FootballScreen = () => {
     fetchMatches();
   }, []);
 
+  useEffect(() => {
+    if (activeTab !== 'live') return;
+    const id = setInterval(() => setLiveClockTick((n) => n + 1), 15000);
+    return () => clearInterval(id);
+  }, [activeTab]);
+
   // Listen for real-time match updates via socket
   useEffect(() => {
     if (!socket) return;
@@ -489,6 +497,7 @@ const FootballScreen = () => {
       <FlatList
       key={activeTab}
         data={getCurrentMatches()}
+        extraData={activeTab === 'live' ? liveClockTick : activeTab}
         renderItem={({ item }) => (
           <FootballMatchCard match={item} showStatus={activeTab !== 'upcoming'} />
         )}
