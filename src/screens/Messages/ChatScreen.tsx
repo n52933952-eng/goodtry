@@ -19,6 +19,7 @@ import {
   Modal,
   DeviceEventEmitter,
   InteractionManager,
+  Linking,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,6 +37,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
 import { parseLiveShareMessage, liveSharePreviewText } from '../../utils/liveShareMessage';
 import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
+import VideoFeedPreview from '../../components/VideoFeedPreview';
 import {
   getOutgoingDeliveryTicks,
   normalizeOutgoingDeliveryFields,
@@ -43,6 +45,19 @@ import {
 import { wasConversationLocallyDeleted } from '../../utils/localConversationDeletions';
 
 const SHARED_POST_LINK_REGEX = /https?:\/\/[^\s/]+\/[^/\s]+\/post\/([a-fA-F0-9]{24})/i;
+/** http(s) and www. links in chat text — tap opens browser / YouTube / Instagram like WhatsApp. */
+const CHAT_URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+
+function normalizeChatOpenUrl(raw: string): string {
+  const trimmed = String(raw || '').replace(/[)\].,;:!?]+$/g, '');
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function openChatUrl(raw: string) {
+  const url = normalizeChatOpenUrl(raw);
+  Linking.openURL(url).catch(() => {});
+}
 const sharedPostCache = new Map<string, any>();
 /** Wait for Messages → Chat transition before fetch/render heavy list (reduces jank). */
 const CHAT_OPEN_FETCH_DEFER_MS = 220;
@@ -1393,7 +1408,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     const optimized = mediaDisplayUrl(videoUrl);
     const safe = String(optimized).replace(/"/g, '&quot;').replace(/</g, '');
     const autoplayAttr = autoplay ? ' autoplay' : '';
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="auto"${autoplayAttr} src="${safe}"></video></body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="auto"${autoplayAttr} src="${safe}"></video><script>var v=document.querySelector('video');if(v){v.addEventListener('ended',function(){if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage('ended');});}</script></body></html>`;
   };
 
   const openChatImagePreview = useCallback((uri: string) => {
@@ -1630,7 +1645,36 @@ const ChatScreen = ({ route, navigation }: any) => {
                 { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor },
               ]}
             >
-              {textWithoutSharedLink}
+              {(() => {
+                const body = textWithoutSharedLink;
+                const chunks: Array<{ text: string; link: boolean }> = [];
+                const re = new RegExp(CHAT_URL_REGEX.source, 'gi');
+                let last = 0;
+                let match: RegExpExecArray | null;
+                while ((match = re.exec(body))) {
+                  if (match.index > last) {
+                    chunks.push({ text: body.slice(last, match.index), link: false });
+                  }
+                  chunks.push({ text: match[0], link: true });
+                  last = match.index + match[0].length;
+                }
+                if (last < body.length) chunks.push({ text: body.slice(last), link: false });
+                const linkColor = isSenderLeft ? '#53BDEB' : colors.primary;
+                if (chunks.length === 0) return body;
+                return chunks.map((chunk, idx) =>
+                  chunk.link ? (
+                    <Text
+                      key={`lnk-${idx}`}
+                      style={{ color: linkColor, textDecorationLine: 'underline' }}
+                      onPress={() => openChatUrl(chunk.text)}
+                    >
+                      {chunk.text}
+                    </Text>
+                  ) : (
+                    <Text key={`txt-${idx}`}>{chunk.text}</Text>
+                  ),
+                );
+              })()}
             </Text>
           )}
 
@@ -1668,6 +1712,14 @@ const ChatScreen = ({ route, navigation }: any) => {
                           showsVerticalScrollIndicator={false}
                           showsHorizontalScrollIndicator={false}
                           androidLayerType="hardware"
+                          onMessage={(e) => {
+                            if (e.nativeEvent.data !== 'ended' || !sharedVideoMsgKey) return;
+                            setSharedPostVideoPlaying((prev) => {
+                              const next = { ...prev };
+                              delete next[sharedVideoMsgKey];
+                              return next;
+                            });
+                          }}
                         />
                       ) : (
                         <>
@@ -1775,8 +1827,17 @@ const ChatScreen = ({ route, navigation }: any) => {
                     style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
                   >
                     <View style={[styles.chatVideo, styles.chatVideoPlaceholder, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
-                      <View style={styles.sharedPostPlayCircle}>
-                        <Text style={styles.sharedPostPlayIcon}>▶</Text>
+                      <VideoFeedPreview
+                        videoUrl={mediaDisplayUrl(item.img)}
+                        preferredTimeMs={800}
+                        placeholderColor="#111"
+                        spinnerColor="#fff"
+                        resizeMode="cover"
+                      />
+                      <View style={styles.chatVideoPlayOverlay} pointerEvents="none">
+                        <View style={styles.sharedPostPlayCircle}>
+                          <Text style={styles.sharedPostPlayIcon}>▶</Text>
+                        </View>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -1785,14 +1846,22 @@ const ChatScreen = ({ route, navigation }: any) => {
               return (
                 <View style={[styles.chatVideoContainer, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}>
                   <WebView
-                    source={{ html: buildChatVideoHtml(item.img) }}
+                    source={{ html: buildChatVideoHtml(item.img, true) }}
                     style={[styles.chatVideo, { width: CHAT_MEDIA_SIZE, height: CHAT_MEDIA_SIZE }]}
                     allowsFullscreenVideo
-                    mediaPlaybackRequiresUserAction
+                    mediaPlaybackRequiresUserAction={false}
                     scrollEnabled={false}
                     showsVerticalScrollIndicator={false}
                     showsHorizontalScrollIndicator={false}
                     androidLayerType="hardware"
+                    onMessage={(e) => {
+                      if (e.nativeEvent.data !== 'ended' || !inlineVideoKey) return;
+                      setInlineChatVideosPlaying((prev) => {
+                        const next = { ...prev };
+                        delete next[inlineVideoKey];
+                        return next;
+                      });
+                    }}
                   />
                 </View>
               );
@@ -2504,6 +2573,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#111',
+  },
+  chatVideoPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sharedPostCard: {
     marginTop: 8,

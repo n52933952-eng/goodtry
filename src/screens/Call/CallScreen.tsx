@@ -225,8 +225,6 @@ const CallScreen = () => {
     return !!live && live.remoteParticipants.size > 0;
   }, [resolveCallRoom]);
 
-  const liveKitCallerInRoom = connectionState === ConnectionState.Connected;
-
   // ── Direct track read (mirrors the working GROUP CALL approach) ───────────
   // Instead of trusting context state (which can go stale after backgrounding /
   // screen share), read the camera + screen tracks straight off the room's
@@ -459,8 +457,9 @@ const CallScreen = () => {
     const evaluatePresence = () => {
       if (offlineCheckGenRef.current !== gen) return;
       if (offlineCancelSentRef.current) return;
-      // Caller may already be in LiveKit while callee answers on slow FCM — never treat as offline.
-      if (liveKitHasRemotePeer() || liveKitCallerInRoom) {
+      // Only the *callee* in the room means they are reachable. The caller always joins LiveKit
+      // first, so `connectionState === Connected` must not block "User offline".
+      if (liveKitHasRemotePeer()) {
         setPartnerOfflinePhase(false);
         return;
       }
@@ -501,7 +500,6 @@ const CallScreen = () => {
     refreshPresenceSubscription,
     callTargetReachable,
     liveKitHasRemotePeer,
-    liveKitCallerInRoom,
   ]);
 
   // Partner came online (or server confirmed reachable via FCM) while ringing — stay on normal ring UI.
@@ -522,7 +520,7 @@ const CallScreen = () => {
   // Keep offline UI briefly, then clean up local state + navigate.
   useEffect(() => {
     if (!partnerOfflinePhase) return;
-    if (liveKitHasRemotePeer() || liveKitCallerInRoom) {
+    if (liveKitHasRemotePeer()) {
       setPartnerOfflinePhase(false);
       return;
     }
@@ -552,7 +550,6 @@ const CallScreen = () => {
     leaveCall,
     navigation,
     liveKitHasRemotePeer,
-    liveKitCallerInRoom,
   ]);
 
   // ── auto-cancel: outgoing ring timeout (online users — long ring like WhatsApp) ──

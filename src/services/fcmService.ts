@@ -228,9 +228,7 @@ class FCMService {
         return;
       }
       if (data.type === 'call_ended') return;
-      if (data.type === 'message' || data.type === 'group_message' || data.type === 'group_added') {
-        stashEarlyChatPush(data);
-      }
+      stashEarlyChatPush(data);
       DeviceEventEmitter.emit('NavigateFromPush', data);
     });
   }

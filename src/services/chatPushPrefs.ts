@@ -48,9 +48,8 @@ export async function getPendingChatPushFromNative(): Promise<Record<string, str
       raw.hasPendingChatPush === true ||
       raw.hasPendingChatPush === 'true' ||
       !!raw.conversationId ||
-      raw.type === 'message' ||
-      raw.type === 'group_message' ||
-      raw.type === 'group_added';
+      !!raw.postId ||
+      !!raw.type;
     if (!flagged) return null;
     return normalizePushMap(raw);
   } catch (e) {

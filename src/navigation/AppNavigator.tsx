@@ -1130,7 +1130,15 @@ const AppNavigator = () => {
 
     const nav = navigationRef.current;
     const navIsReady = nav?.isReady?.() ?? !!nav?.navigate;
-    if (!nav?.navigate || !navReadyRef.current || !navIsReady || !user) {
+    // From YouTube / shade: FCM often fires while AppState is still background.
+    // navigate() then no-ops — first tap does nothing, second tap works.
+    if (
+      !nav?.navigate ||
+      !navReadyRef.current ||
+      !navIsReady ||
+      !user ||
+      AppState.currentState !== 'active'
+    ) {
       pendingPushNavRef.current = data;
       return;
     }
@@ -1315,11 +1323,26 @@ const AppNavigator = () => {
 
     const pushListener = DeviceEventEmitter.addListener('NavigateFromPush', onPush);
     const chatListener = DeviceEventEmitter.addListener('NavigateToChatFromPush', onPush);
+
+    const flushOpenPush = () => {
+      void consumePendingChatPush().then((pending) => {
+        if (pending) tryNavigateFromPush(pending);
+        else flushPendingPushNavigation();
+      });
+    };
+    const appSub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      flushOpenPush();
+      setTimeout(flushOpenPush, 400);
+      setTimeout(flushOpenPush, 1200);
+    });
+
     return () => {
       pushListener.remove();
       chatListener.remove();
+      appSub.remove();
     };
-  }, [tryNavigateFromPush]);
+  }, [tryNavigateFromPush, flushPendingPushNavigation]);
 
   // Chess / Go Fish: attach listeners as soon as socket + user exist — NOT gated on navReady.
   // Otherwise server can emit (or pending deliver) before NavigationContainer is ready → event lost (common after Google login).

@@ -125,12 +125,24 @@ class MainActivity : ReactActivity() {
     android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] handleIntent STARTED - screen=$screen, shouldAutoAnswer=$shouldAutoAnswer, shouldCancelCall=$shouldCancelCall, fromPush=$fromPush, pushType=$pushType")
     android.util.Log.e("MainActivity", "🔥🔥🔥 [MainActivity] Intent extras: ${intent.extras?.keySet()?.joinToString()}")
 
-    val isChatPush =
-      fromPush ||
-      (pushConversationId.isNotEmpty() &&
-        (pushType == "message" || pushType == "group_message" || pushType == "group_added"))
-    if (isChatPush) {
-      android.util.Log.e("MainActivity", "💬💬💬 [MainActivity] Chat push intent detected — conversationId=$pushConversationId type=$pushType")
+    val isCallPush =
+      pushType == "incoming_call" ||
+        pushType == "call_ended" ||
+        pushType == "call_canceled" ||
+        pushType == "call_cancelled"
+    val hasSocialDeepLink =
+      !intent.getStringExtra("postId").isNullOrBlank() ||
+        !intent.getStringExtra("username").isNullOrBlank() ||
+        !intent.getStringExtra("userId").isNullOrBlank() ||
+        !intent.getStringExtra("gameId").isNullOrBlank()
+    val isOpenPush =
+      !isCallPush &&
+        (fromPush ||
+          pushConversationId.isNotEmpty() ||
+          (pushType.isNotEmpty()) ||
+          hasSocialDeepLink)
+    if (isOpenPush) {
+      android.util.Log.e("MainActivity", "🔔 [MainActivity] Open-push intent — type=$pushType conversationId=$pushConversationId")
       emitNavigateToChatFromPush(intent)
       return
     }
