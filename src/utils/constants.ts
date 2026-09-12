@@ -120,6 +120,7 @@ export const ENDPOINTS = {
   SEARCH_CONVERSATIONS: '/api/message/conversations/search',
   GET_CONVERSATION_BY_ID: '/api/message/conversation',
   GET_MESSAGES: '/api/message',
+  GET_MESSAGE_UNREAD_COUNT: '/api/message/unread/count',
   SEND_MESSAGE: '/api/message',
   MARK_MESSAGES_SEEN: '/api/message/seen',
   DELETE_CONVERSATION: '/api/message/conversation',

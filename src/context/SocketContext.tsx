@@ -37,6 +37,9 @@ interface SocketContextType {
   setNotificationCount: (count: number | ((prev: number) => number)) => void;
   /** Re-fetch unread notification count from server (badge on feed). */
   refreshNotificationCount: () => Promise<void>;
+  unreadMessageCount: number;
+  setUnreadMessageCount: (count: number | ((prev: number) => number)) => void;
+  refreshUnreadMessageCount: () => Promise<void>;
   selectedConversationId: string | null;
   setSelectedConversationId: (id: string | null) => void;
   selectedConversationPartnerId: string | null;
@@ -74,6 +77,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
   const [cardChallenges,  setCardChallenges]  = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
+  const [unreadMessageCount, setUnreadMessageCount] = useState<number>(0);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
   const [selectedConversationPartnerId, setSelectedConversationPartnerId] = useState<string | null>(null);
@@ -117,8 +121,26 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
+  const refreshUnreadMessageCount = useCallback(async () => {
+    if (!user?._id) return;
+    try {
+      // Same source as the Messages list: each chat's unreadCount, added up.
+      const data = await apiService.get(`${ENDPOINTS.GET_CONVERSATIONS}?limit=40`);
+      const list = Array.isArray(data?.conversations) ? data.conversations : Array.isArray(data) ? data : [];
+      const total = list.reduce((sum: number, conv: any) => {
+        const n = Math.floor(Number(conv?.unreadCount));
+        return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+      }, 0);
+      setUnreadMessageCount(total);
+    } catch (error) {
+      console.error('❌ [SocketContext] Error summing chat unread counts:', error);
+    }
+  }, [user?._id]);
+
   const refreshNotificationCountRef = useRef(refreshNotificationCount);
   refreshNotificationCountRef.current = refreshNotificationCount;
+  const refreshUnreadMessageCountRef = useRef(refreshUnreadMessageCount);
+  refreshUnreadMessageCountRef.current = refreshUnreadMessageCount;
   const setPresenceWatchUserIds = useCallback((userIds: string[]) => {
     const normalized = Array.from(
       new Set(
@@ -224,7 +246,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     if (!user?._id) return;
     refreshNotificationCount();
-  }, [user?._id, refreshNotificationCount]);
+    refreshUnreadMessageCount();
+  }, [user?._id, refreshNotificationCount, refreshUnreadMessageCount]);
 
   // Re-sync when app returns to foreground.
   useEffect(() => {
@@ -232,6 +255,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const onAppState = (state: AppStateStatus) => {
       if (state === 'active') {
         refreshNotificationCountRef.current?.();
+        refreshUnreadMessageCountRef.current?.();
       }
     };
     const sub = AppState.addEventListener('change', onAppState);
@@ -369,6 +393,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     if (!user) {
       // User logged out - clear notification count
       setNotificationCount(0);
+      setUnreadMessageCount(0);
       AsyncStorage.removeItem(NOTIFICATION_COUNT_KEY).catch(() => {});
       setIsNotificationCountLoaded(false);
       setOnlineUsers([]);
@@ -439,6 +464,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CARD_MOVE);
     socketService.off('newNotification');
+    socketService.off('unreadCountUpdate');
     socketService.off('newMessage', onNewMessageForSocket);
     socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
     socketService.off('chessGameEnded');
@@ -809,6 +835,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // Listen for new notifications
+    socketService.on('unreadCountUpdate', () => {
+      // Don't use the Redis total (it can show 99+ with no unread chats).
+      // Re-sum unreadCount from the conversation list instead.
+      refreshUnreadMessageCountRef.current?.();
+    });
+
     socketService.on('newNotification', (notification) => {
       console.log('🔔 New notification received:', notification);
       const isRead = notification.read === true;
@@ -1159,6 +1191,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       notificationCount,
       setNotificationCount,
       refreshNotificationCount,
+      unreadMessageCount,
+      setUnreadMessageCount,
+      refreshUnreadMessageCount,
       selectedConversationId,
       setSelectedConversationId,
       selectedConversationPartnerId,

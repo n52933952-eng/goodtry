@@ -67,6 +67,9 @@ const CHAT_OPEN_FETCH_DEFER_CACHED_MS = 0;
 const CHAT_MESSAGES_CACHE_TTL_MS = 5 * 60_000;
 /** Fixed so the "typing…" row can animate its height in/out instead of snapping. */
 const TYPING_ROW_HEIGHT = 34;
+const REACTION_BAR_HEIGHT = 56;
+/** After older messages load, nudge up just enough to peek them — not a full jump. */
+const LOAD_MORE_REVEAL_PX = 80;
 
 type ChatMessagesCacheEntry = {
   messages: any[];
@@ -187,7 +190,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   );
   const incomingMainTextColor = theme === 'dark' ? colors.text : WA.outgoingText;
   const incomingReplySurfaceColor = theme === 'dark' ? 'rgba(255,255,255,0.08)' : WA.replyBgOther;
-  const { t } = useLanguage();
+  const { t, tn } = useLanguage();
   const [messages, setMessages] = useState<any[]>([]);
   const messagesRef = useRef<any[]>([]);
   messagesRef.current = messages;
@@ -217,10 +220,11 @@ const ChatScreen = ({ route, navigation }: any) => {
   const messageCursorRef = useRef<string | null>(null);
 
   const lastScrollOffsetRef = useRef(0);
+  const [newIncomingCount, setNewIncomingCount] = useState(0);
+  const [pinVisibleWhileReading, setPinVisibleWhileReading] = useState(true);
   const CHAT_NEAR_BOTTOM_THRESHOLD = 80;
   const previousScrollYRef = useRef(0); // Only load older when user scrolls UP into top zone (not on initial short list)
   const loadingMoreRef = useRef(false); // Guard to prevent double load when scrolling fast
-  const estimatedMessageHeight = 72; // For scroll position after prepending (same as web pagination)
   const typingStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const partnerTypingClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -228,6 +232,9 @@ const ChatScreen = ({ route, navigation }: any) => {
   /** Keeps the row mounted while it animates out, so the messages glide back down. */
   const [typingRowVisible, setTypingRowVisible] = useState(false);
   const typingRowAnim = useRef(new Animated.Value(0)).current;
+  const [reactionBarVisible, setReactionBarVisible] = useState(false);
+  const reactionBarAnim = useRef(new Animated.Value(0)).current;
+  const pinnedReactionRef = useRef<{ id: string; item: any } | null>(null);
   const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
   const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
   const [inlineChatVideosPlaying, setInlineChatVideosPlaying] = useState<Record<string, boolean>>({});
@@ -246,6 +253,27 @@ const ChatScreen = ({ route, navigation }: any) => {
     });
     return () => animation.stop();
   }, [isPartnerTyping, typingRowAnim]);
+
+  const showReactionBar = !!(reactionTargetId && actionTarget);
+  if (reactionTargetId && actionTarget) {
+    pinnedReactionRef.current = { id: reactionTargetId, item: actionTarget };
+  }
+
+  useEffect(() => {
+    if (showReactionBar) setReactionBarVisible(true);
+    const animation = Animated.timing(reactionBarAnim, {
+      toValue: showReactionBar ? 1 : 0,
+      duration: showReactionBar ? 200 : 160,
+      useNativeDriver: false,
+    });
+    animation.start(({ finished }) => {
+      if (finished && !showReactionBar) {
+        setReactionBarVisible(false);
+        pinnedReactionRef.current = null;
+      }
+    });
+    return () => animation.stop();
+  }, [showReactionBar, reactionBarAnim]);
 
   const toIdString = useCallback((value: any): string => {
     if (!value) return '';
@@ -409,6 +437,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       // Inverted list: offset 0 is the latest (bottom)
       // Only auto-scroll if user is already near the bottom; don't disrupt if they're reading older messages.
       if (shouldAutoScrollRef.current) {
+        setNewIncomingCount(0);
         requestAnimationFrame(() => {
           try {
             (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
@@ -419,6 +448,10 @@ const ChatScreen = ({ route, navigation }: any) => {
             (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: true });
           } catch (_) {}
         }, 80);
+      } else {
+        const myId = user?._id != null ? String(user._id) : '';
+        const isFromMe = !!(myId && senderStr && senderStr === myId);
+        if (!isFromMe) setNewIncomingCount((n) => n + 1);
       }
     }
   }, [user?._id, userId, otherUser?._id, socket, isGroup, groupConversation?.isGroup, toIdString]);
@@ -733,6 +766,29 @@ const ChatScreen = ({ route, navigation }: any) => {
     }
   }, []);
 
+  // Instant jump — never animate through history (that freezes after a long scroll-up).
+  const jumpToLatestMessages = useCallback(() => {
+    setNewIncomingCount(0);
+    shouldAutoScrollRef.current = true;
+    lastScrollOffsetRef.current = 0;
+    setPinVisibleWhileReading(false);
+    const snap = () => {
+      try {
+        const list = messagesEndRef.current as any;
+        list?.scrollToOffset?.({ offset: 0, animated: false });
+        list?.scrollToIndex?.({ index: 0, animated: false, viewPosition: 0 });
+      } catch (_) {
+        try {
+          (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
+        } catch (_) {}
+      }
+    };
+    snap();
+    requestAnimationFrame(snap);
+    setTimeout(snap, 80);
+    setTimeout(() => setPinVisibleWhileReading(true), 160);
+  }, []);
+
   const toggleEmojiPicker = useCallback(() => {
     setAttachOpen(false);
     setEmojiOpen((open) => {
@@ -868,11 +924,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         setHasMoreMessages(hasMore);
         setLoadingMoreMessages(false);
         if (messagesData.length > 0) {
-          setMessages((prev) => {
-            const combined = [...messagesData, ...prev];
-            if (combined.length > 200) return combined.slice(0, 200);
-            return combined;
-          });
+          setMessages((prev) => [...messagesData, ...prev]);
           const ackIds = collectUndeliveredIncomingIds(
             messagesData,
             currentUserIdStr,
@@ -881,13 +933,17 @@ const ChatScreen = ({ route, navigation }: any) => {
           if (socket && ackIds.length) {
             socket.emit('ackMessageDelivered', { messageIds: ackIds });
           }
-          const prependedCount = messagesData.length;
-          setTimeout(() => {
-            messagesEndRef.current?.scrollToOffset({
-              offset: lastScrollOffsetRef.current + prependedCount * estimatedMessageHeight,
-              animated: false,
-            });
-          }, 80);
+          // Stay on the same message, then ease up a little so the newly
+          // loaded older rows peek into view (WhatsApp-style).
+          const stayAt = lastScrollOffsetRef.current;
+          requestAnimationFrame(() => {
+            try {
+              (messagesEndRef.current as any)?.scrollToOffset?.({
+                offset: stayAt + LOAD_MORE_REVEAL_PX,
+                animated: true,
+              });
+            } catch (_) {}
+          });
         }
         return;
       }
@@ -959,6 +1015,7 @@ const ChatScreen = ({ route, navigation }: any) => {
     hasMarkedSeenRef.current = false;
     previousScrollYRef.current = 0;
     messageCursorRef.current = null;
+    setNewIncomingCount(0);
 
     const cached = routeConversationIdStr ? readChatMessagesCache(routeConversationIdStr) : null;
     if (cached) {
@@ -1116,6 +1173,7 @@ const ChatScreen = ({ route, navigation }: any) => {
       setReplyingTo(null);
       // Always show the sent message at the bottom — instant jump, no scroll animation.
       shouldAutoScrollRef.current = true;
+      setNewIncomingCount(0);
       requestAnimationFrame(() => scrollToLatestMessages(false));
       setTimeout(() => scrollToLatestMessages(false), 50);
     }
@@ -2029,6 +2087,19 @@ const ChatScreen = ({ route, navigation }: any) => {
           </Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          onPress={() =>
+            Alert.alert(
+              t('messageRetentionTitle') || 'Chat history',
+              t('messageRetentionMessage') || 'Messages are kept for 200 days, then they are deleted automatically.',
+            )
+          }
+          style={styles.infoButton}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.infoIcon}>ℹ️</Text>
+        </TouchableOpacity>
+
         {/* Call Buttons — 1-to-1 only */}
         {!(isGroup || groupConversation?.isGroup) && (
           <>
@@ -2087,20 +2158,41 @@ const ChatScreen = ({ route, navigation }: any) => {
         )}
       </View>
 
+      <Animated.View
+        style={[
+          styles.messagesPane,
+          {
+            paddingBottom: reactionBarAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, REACTION_BAR_HEIGHT],
+            }),
+          },
+        ]}
+      >
       <FlatList
         ref={messagesEndRef}
+        style={styles.messagesPane}
         inverted
         data={listData}
         extraData={reactionTargetId}
         renderItem={renderMessage}
         keyExtractor={messageKeyExtractor}
         contentContainerStyle={styles.messagesList}
-        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
-        initialNumToRender={6}
-        maxToRenderPerBatch={6}
-        windowSize={5}
+        maintainVisibleContentPosition={
+          pinVisibleWhileReading && !reactionBarVisible
+            ? { minIndexForVisible: 0, autoscrollToTopThreshold: CHAT_NEAR_BOTTOM_THRESHOLD }
+            : undefined
+        }
+        onScrollToIndexFailed={() => {
+          try {
+            (messagesEndRef.current as any)?.scrollToOffset?.({ offset: 0, animated: false });
+          } catch (_) {}
+        }}
+        initialNumToRender={10}
+        maxToRenderPerBatch={8}
+        windowSize={9}
         updateCellsBatchingPeriod={50}
-        removeClippedSubviews
+        removeClippedSubviews={false}
         // With inverted lists, `onEndReached` is the natural "load older" trigger.
         onEndReached={() => {
           if (hasMoreMessages && !loadingMoreMessages && messages.length > 0) {
@@ -2116,7 +2208,9 @@ const ChatScreen = ({ route, navigation }: any) => {
           // With inverted lists, being "at the bottom" means contentOffset.y is near 0.
           const y = e?.nativeEvent?.contentOffset?.y ?? 0;
           lastScrollOffsetRef.current = y;
-          shouldAutoScrollRef.current = y < CHAT_NEAR_BOTTOM_THRESHOLD;
+          const atBottom = y < CHAT_NEAR_BOTTOM_THRESHOLD;
+          shouldAutoScrollRef.current = atBottom;
+          if (atBottom && newIncomingCount > 0) setNewIncomingCount(0);
         }}
         ListEmptyComponent={
           loading ? (
@@ -2125,7 +2219,7 @@ const ChatScreen = ({ route, navigation }: any) => {
             </View>
           ) : null
         }
-        ListHeaderComponent={
+        ListFooterComponent={
           loadingMoreMessages ? (
             <View style={styles.loadMoreIndicator}>
               <ActivityIndicator size="small" color={colors.primary} />
@@ -2133,6 +2227,91 @@ const ChatScreen = ({ route, navigation }: any) => {
           ) : null
         }
       />
+      {newIncomingCount > 0 ? (
+        <TouchableOpacity
+          style={styles.newMsgPill}
+          activeOpacity={0.85}
+          onPress={jumpToLatestMessages}
+        >
+          <Text style={styles.newMsgPillText}>
+            {newIncomingCount === 1
+              ? tn('newMessagePillOne', { count: newIncomingCount })
+              : tn('newMessagePillMany', { count: newIncomingCount })}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+
+      {reactionBarVisible ? (
+        <Animated.View
+          pointerEvents={showReactionBar ? 'auto' : 'none'}
+          style={[
+            styles.reactionPickerWrap,
+            {
+              opacity: reactionBarAnim,
+              transform: [
+                {
+                  translateY: reactionBarAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [REACTION_BAR_HEIGHT, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.reactionPicker,
+              {
+                backgroundColor: colors.backgroundLight,
+                borderTopColor: colors.border,
+              },
+            ]}
+          >
+            <TouchableOpacity
+              onPress={() => {
+                const target = pinnedReactionRef.current?.item ?? actionTarget;
+                setReplyingTo(target);
+                setReactionTargetId(null);
+                setActionTarget(null);
+              }}
+              style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.actionBtnText}>{t('reply')}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => handleDeleteMessage((pinnedReactionRef.current?.item ?? actionTarget)?._id)}
+              style={[styles.actionBtn, { backgroundColor: colors.error }]}
+            >
+              <Text style={[styles.actionBtnText, { color: '#FFFFFF' }]}>{t('delete')}</Text>
+            </TouchableOpacity>
+
+            <View style={[styles.actionDivider, { backgroundColor: colors.border }]} />
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionEmojiRow}>
+              {[
+                '👍','👎','❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💖',
+                '😂','🤣','😍','🥰','😘','😊','😎','🤯','😮','😢','😭','😡','🤔',
+                '🔥','💥','⚡','✨','🌟','🎉','🥳','👏','🙏','🤝','✅','❌',
+                '⚽','🏆','🎮','🎥','🎵','📌','📍','📝','📣','📸','🌤️','🌙',
+              ].map((e) => (
+                <TouchableOpacity
+                  key={e}
+                  onPress={() => handleToggleReaction(pinnedReactionRef.current?.id ?? reactionTargetId, e)}
+                  style={styles.reactionPickBtn}
+                >
+                  <Text style={styles.reactionPickEmoji}>{e}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity onPress={() => { setReactionTargetId(null); setActionTarget(null); }} style={styles.reactionPickBtn}>
+              <Text style={styles.reactionPickEmoji}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      ) : null}
+      </Animated.View>
 
       {typingRowVisible ? (
         <Animated.View
@@ -2176,47 +2355,6 @@ const ChatScreen = ({ route, navigation }: any) => {
           </Animated.View>
         </Animated.View>
       ) : null}
-
-      {/* Reaction picker (minimal) */}
-      {reactionTargetId && actionTarget && (
-        <View style={[styles.reactionPicker, { backgroundColor: colors.backgroundLight, borderTopColor: colors.border }]}>
-          <TouchableOpacity
-            onPress={() => {
-              setReplyingTo(actionTarget);
-              setReactionTargetId(null);
-              setActionTarget(null);
-            }}
-            style={[styles.actionBtn, { backgroundColor: colors.primary }]}
-          >
-            <Text style={styles.actionBtnText}>{t('reply')}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => handleDeleteMessage(actionTarget._id)}
-            style={[styles.actionBtn, { backgroundColor: colors.error }]}
-          >
-            <Text style={[styles.actionBtnText, { color: '#FFFFFF' }]}>{t('delete')}</Text>
-          </TouchableOpacity>
-
-          <View style={[styles.actionDivider, { backgroundColor: colors.border }]} />
-
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reactionEmojiRow}>
-            {[
-              '👍','👎','❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💖',
-              '😂','🤣','😍','🥰','😘','😊','😎','🤯','😮','😢','😭','😡','🤔',
-              '🔥','💥','⚡','✨','🌟','🎉','🥳','👏','🙏','🤝','✅','❌',
-              '⚽','🏆','🎮','🎥','🎵','📌','📍','📝','📣','📸','🌤️','🌙',
-            ].map((e) => (
-              <TouchableOpacity key={e} onPress={() => handleToggleReaction(reactionTargetId, e)} style={styles.reactionPickBtn}>
-                <Text style={styles.reactionPickEmoji}>{e}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <TouchableOpacity onPress={() => { setReactionTargetId(null); setActionTarget(null); }} style={styles.reactionPickBtn}>
-            <Text style={styles.reactionPickEmoji}>✕</Text>
-          </TouchableOpacity>
-        </View>
-      )}
 
       {replyingTo && (
         <View style={[styles.replyBanner, { backgroundColor: colors.border }]}>
@@ -2471,6 +2609,17 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: COLORS.success,
   },
+  infoButton: {
+    marginLeft: 8,
+    marginRight: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  infoIcon: {
+    fontSize: 14,
+    lineHeight: 16,
+    opacity: 0.7,
+  },
   callButton: {
     marginLeft: 15,
   },
@@ -2480,8 +2629,30 @@ const styles = StyleSheet.create({
   callIcon: {
     fontSize: 24,
   },
+  messagesPane: {
+    flex: 1,
+  },
   messagesList: {
     padding: 15,
+  },
+  newMsgPill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    bottom: 12,
+    backgroundColor: '#3182CE',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  newMsgPillText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   messageRow: {
     width: '100%',
@@ -2723,12 +2894,20 @@ const styles = StyleSheet.create({
   reactionEmoji: {
     fontSize: 14,
   },
+  reactionPickerWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: REACTION_BAR_HEIGHT,
+    overflow: 'hidden',
+  },
   reactionPicker: {
+    height: REACTION_BAR_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingVertical: 10,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.background,

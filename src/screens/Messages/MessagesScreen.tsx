@@ -92,6 +92,7 @@ const MessagesScreen = ({ navigation }: any) => {
     setPresenceWatchUserIds,
     isUserOnline,
     refreshPresenceSubscription,
+    setUnreadMessageCount,
   } = useSocket();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -735,6 +736,14 @@ const MessagesScreen = ({ navigation }: any) => {
   }, [fetchConversations]);
 
   // Refresh conversations when screen comes into focus (tab return or back from chat).
+  useEffect(() => {
+    const total = conversations.reduce((sum, conv) => {
+      const n = Math.floor(Number(conv?.unreadCount));
+      return sum + (Number.isFinite(n) && n > 0 ? n : 0);
+    }, 0);
+    setUnreadMessageCount(total);
+  }, [conversations, setUnreadMessageCount]);
+
   useFocusEffect(
     React.useCallback(() => {
       const first = isFirstLoadRef.current;

@@ -3,21 +3,29 @@
  * Incoming calls: `type === incoming_call` is handled in fcmService → DeviceEventEmitter NavigateToCallScreen.
  */
 
+/**
+ * Route names we can confirm afterwards via `getCurrentRoute()`. A cold start can drop a
+ * `navigate()` that happens before the target navigator registered its screens, and
+ * react-navigation only logs a warning — so the caller verifies instead of assuming.
+ */
+export const VERIFIABLE_PUSH_ROUTES = ['ChatScreen', 'PostDetail', 'ChessGame', 'UserProfile'];
+
+/** @returns the route name we navigated to, or null when the payload isn't a deep link. */
 export function navigateFromPushData(
   navigationRef: { current: any } | null,
   raw: Record<string, string> | undefined | null
-): boolean {
+): string | null {
   const nav = navigationRef?.current;
-  if (!nav || !raw) return false;
+  if (!nav || !raw) return null;
 
   let type = raw.type ? String(raw.type) : '';
   if (!type && raw.conversationId) {
     type = raw.isGroup === 'true' ? 'group_message' : 'message';
   }
-  if (!type) return false;
+  if (!type) return null;
 
   if (type === 'incoming_call' || type === 'call_ended' || type === 'call_canceled' || type === 'call_cancelled') {
-    return false;
+    return null;
   }
 
   try {
@@ -32,7 +40,7 @@ export function navigateFromPushData(
             ? { username: profileUsername }
             : { userId: profileQuery },
         });
-        return true;
+        return 'UserProfile';
       }
     }
 
@@ -50,7 +58,7 @@ export function navigateFromPushData(
           screen: 'PostDetail',
           params: { postId: String(postId) },
         });
-        return true;
+        return 'PostDetail';
       }
     }
 
@@ -58,7 +66,7 @@ export function navigateFromPushData(
       const roomId = raw.gameId || raw.roomId;
       if (roomId) {
         nav.navigate('ChessGame', { roomId: String(roomId) });
-        return true;
+        return 'ChessGame';
       }
     }
 
@@ -80,7 +88,7 @@ export function navigateFromPushData(
               }
             : {}),
         });
-        return true;
+        return 'ChatScreen';
       }
       if (senderId) {
         nav.navigate('ChatScreen', {
@@ -92,10 +100,11 @@ export function navigateFromPushData(
             profilePic: raw.senderProfilePic,
           },
         });
-        return true;
+        return 'ChatScreen';
       }
-      nav.navigate('Messages');
-      return true;
+      // Incomplete payload (common on cold start from FCM) — keep pending so
+      // ChatPushPrefs can supply conversationId on the next retry.
+      return null;
     }
 
     if (type === 'group_message' || type === 'group_added') {
@@ -112,30 +121,29 @@ export function navigateFromPushData(
             participants: [],
           },
         });
-        return true;
+        return 'ChatScreen';
       }
-      nav.navigate('Messages');
-      return true;
+      return null;
     }
 
     if (type === 'group_removed') {
       nav.navigate('Messages');
-      return true;
+      return 'Messages';
     }
 
     if (type === 'missed_call') {
-      return false;
+      return null;
     }
 
     /** Live alert — home feed only (stream may have ended by the time user opens the app). */
     if (type === 'live_started') {
       nav.navigate('MainTabs', { screen: 'Feed' });
-      return true;
+      return 'Feed';
     }
 
-    return false;
+    return null;
   } catch (e) {
     console.warn('[pushNavigation] navigateFromPushData', e);
-    return false;
+    return null;
   }
 }

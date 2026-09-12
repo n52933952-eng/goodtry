@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable, Animated } from 'react-native';
+import { View, Text, DeviceEventEmitter, Platform, AppState, TouchableOpacity, Pressable, Animated, StyleSheet } from 'react-native';
 import { TabBarCollapseProvider, useTabBarCollapse } from '../context/TabBarCollapseContext';
 import { NavigationContainer, DarkTheme, DefaultTheme, CommonActions } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -10,7 +10,7 @@ import { useWebRTC } from '../context/LiveKitContext';
 import { useGroupCall } from '../context/GroupCallContext';
 import { useTheme } from '../context/ThemeContext';
 import fcmService from '../services/fcmService';
-import { navigateFromPushData } from '../services/pushNavigation';
+import { navigateFromPushData, VERIFIABLE_PUSH_ROUTES } from '../services/pushNavigation';
 import { peekPendingChatPush, clearPendingChatPush } from '../services/chatPushPrefs';
 import { getPendingCallData, clearCallData } from '../services/callData';
 
@@ -268,6 +268,7 @@ const MainTabsNavigator = ({
 }) => {
   const { colors } = useTheme();
   const { user } = useUser();
+  const { unreadMessageCount } = useSocket();
   const { tabBarTranslateStyle } = useTabBarCollapse();
   const myUsername = user?.username ? String(user.username) : '';
 
@@ -480,7 +481,9 @@ const MainTabsNavigator = ({
       component={MessagesScreen}
       options={{
         tabBarLabel: 'Messages',
-        tabBarIcon: ({ color }) => <MessagesIcon color={color} />,
+        tabBarIcon: ({ color }) => (
+          <MessagesIcon color={color} unreadCount={unreadMessageCount} />
+        ),
       }}
     />
     {/* Hidden tabs */}
@@ -709,9 +712,44 @@ const ProfileIcon = ({ color }: { color: string }) => (
   <Text style={{ fontSize: 24, color }}>👤</Text>
 );
 
-const MessagesIcon = ({ color }: { color: string }) => (
-  <Text style={{ fontSize: 24, color }}>💬</Text>
+const MessagesIcon = ({ color, unreadCount = 0 }: { color: string; unreadCount?: number }) => (
+  <View style={tabIconStyles.wrap}>
+    <Text style={{ fontSize: 24, color }}>💬</Text>
+    {unreadCount > 0 ? (
+      <View style={tabIconStyles.badge}>
+        <Text style={tabIconStyles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+      </View>
+    ) : null}
+  </View>
 );
+
+const tabIconStyles = StyleSheet.create({
+  wrap: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -8,
+    backgroundColor: '#FF3B30',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+});
 
 function syncRootRoute(navRef: React.MutableRefObject<any>) {
   const state = navRef.current?.getRootState();
@@ -820,6 +858,7 @@ const AppNavigator = () => {
   const pendingPushNavRef = useRef<Record<string, string> | null>(null);
   /** Last deep link actually opened — blocks duplicate navigation from overlapping retries. */
   const handledPushKeyRef = useRef<string | null>(null);
+  const verifyingPushKeyRef = useRef<string | null>(null);
   const pushRetryActiveRef = useRef(false);
   const pendingChessAcceptNavRef = useRef<any>(null);
   const pendingCardAcceptNavRef  = useRef<any>(null);
@@ -1133,12 +1172,22 @@ const AppNavigator = () => {
 
     const nav = navigationRef.current;
     const navIsReady = nav?.isReady?.() ?? !!nav?.navigate;
+    // Cold start from a killed app: the container reports ready while MainStack is still
+    // mounting, so navigate() gets dropped and the user lands on the home tab. Wait until
+    // the logged-in stack has actually registered its screens.
+    let mainStackMounted = false;
+    try {
+      mainStackMounted = (nav?.getRootState?.()?.routeNames || []).includes('ChatScreen');
+    } catch (_) {
+      mainStackMounted = false;
+    }
     // From YouTube / shade: FCM often fires while AppState is still background.
     // navigate() then no-ops — first tap does nothing, second tap works.
     if (
       !nav?.navigate ||
       !navReadyRef.current ||
       !navIsReady ||
+      !mainStackMounted ||
       !user ||
       AppState.currentState !== 'active'
     ) {
@@ -1162,16 +1211,43 @@ const AppNavigator = () => {
       void clearPendingChatPush();
       return;
     }
-
-    const ok = navigateFromPushData(navigationRef, data);
-    // Keep it pending if navigation refused, so a later retry can still land it.
-    if (!ok) {
+    // A verify is already in flight for this tap — don't navigate again or
+    // treat it as done (that used to wipe ChatPushPrefs before ChatScreen mounted).
+    if (verifyingPushKeyRef.current === dedupeKey) {
       pendingPushNavRef.current = data;
       return;
     }
-    handledPushKeyRef.current = dedupeKey;
-    pendingPushNavRef.current = null;
-    void clearPendingChatPush();
+
+    const target = navigateFromPushData(navigationRef, data);
+    // Keep it pending if navigation refused, so a later retry can still land it.
+    if (!target) {
+      pendingPushNavRef.current = data;
+      return;
+    }
+
+    if (!VERIFIABLE_PUSH_ROUTES.includes(target)) {
+      handledPushKeyRef.current = dedupeKey;
+      pendingPushNavRef.current = null;
+      void clearPendingChatPush();
+      return;
+    }
+
+    verifyingPushKeyRef.current = dedupeKey;
+    pendingPushNavRef.current = data;
+    // Only drop the stored deep link once the screen is really on top; otherwise
+    // keep it so the retry poll can try again instead of leaving the user on home.
+    setTimeout(() => {
+      const landed = navigationRef.current?.getCurrentRoute?.()?.name;
+      if (landed === target) {
+        handledPushKeyRef.current = dedupeKey;
+        pendingPushNavRef.current = null;
+        verifyingPushKeyRef.current = null;
+        void clearPendingChatPush();
+        return;
+      }
+      verifyingPushKeyRef.current = null;
+      pendingPushNavRef.current = data;
+    }, 500);
   }, [user, refreshPresenceSubscription]);
 
   const flushPendingPushNavigation = useCallback(() => {
@@ -1211,14 +1287,21 @@ const AppNavigator = () => {
       const openFromSources = async () => {
         try {
           const initial = await fcmService.getInitialPushData();
-          if (initial) {
-            tryNavigateFromPush(initial);
-            if (!pendingPushNavRef.current) return;
+          const stored = await peekPendingChatPush();
+          // Native intent extras beat FCM's cold-start payload — FCM often
+          // arrives without conversationId and used to send the user to home.
+          const merged =
+            initial || stored
+              ? { ...(initial || {}), ...(stored || {}) }
+              : null;
+          if (merged && Object.keys(merged).length) {
+            tryNavigateFromPush(merged);
           }
         } catch (_) {
           /* fall through */
         }
-        // Native may persist ChatPushPrefs a beat after NavigationContainer mounts.
+        // Always keep polling: a "successful" navigate can still be dropped
+        // while MainStack is mounting.
         retryPendingPushNavigation();
       };
       void openFromSources();
@@ -1348,6 +1431,7 @@ const AppNavigator = () => {
       if (next !== 'active') {
         // Leaving the app ends the dedupe window so the next tray tap always opens.
         handledPushKeyRef.current = null;
+        verifyingPushKeyRef.current = null;
         return;
       }
       retryPendingPushNavigation();

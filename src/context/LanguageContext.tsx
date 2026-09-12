@@ -78,6 +78,8 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Chat Screen
     'typeMessage': 'Type a message...',
+    'newMessagePillOne': '{{count}} new message ↓',
+    'newMessagePillMany': '{{count}} new messages ↓',
     'typing': 'is typing',
     'send': 'Send',
     'online': 'Online',
@@ -86,6 +88,8 @@ const translations: Record<Language, Record<string, string>> = {
     'react': 'React',
     'deleteMessage': 'Delete Message',
     'confirmDeleteMessage': 'Are you sure you want to delete this message?',
+    'messageRetentionTitle': 'Chat history',
+    'messageRetentionMessage': 'Messages are kept for 200 days, then they are deleted automatically.',
     
     // Profile Screen
     'profile': 'Profile',
@@ -451,6 +455,8 @@ const translations: Record<Language, Record<string, string>> = {
     
     // Chat Screen
     'typeMessage': 'اكتب رسالة...',
+    'newMessagePillOne': 'رسالة جديدة ↓',
+    'newMessagePillMany': '{{count}} رسائل جديدة ↓',
     'typing': 'يكتب',
     'send': 'إرسال',
     'online': 'متصل',
@@ -459,6 +465,8 @@ const translations: Record<Language, Record<string, string>> = {
     'react': 'تفاعل',
     'deleteMessage': 'حذف الرسالة',
     'confirmDeleteMessage': 'هل أنت متأكد أنك تريد حذف هذه الرسالة؟',
+    'messageRetentionTitle': 'سجل المحادثة',
+    'messageRetentionMessage': 'تُحفظ الرسائل لمدة 200 يومًا، ثم تُحذف تلقائيًا.',
     
     // Profile Screen
     'profile': 'الملف الشخصي',
