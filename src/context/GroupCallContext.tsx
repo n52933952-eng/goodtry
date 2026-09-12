@@ -28,6 +28,7 @@ import { useUser } from './UserContext';
 import { API_URL } from '../utils/constants';
 import { startOngoingCallNative, stopOngoingCallNative } from '../services/callData';
 import { callSessionNav } from '../services/callSessionNav';
+import { releaseLiveForCall } from '../services/liveBroadcastNav';
 
 interface IncomingGroupCall {
   conversationId: string;
@@ -204,6 +205,7 @@ export const GroupCallProvider: React.FC<{ children: ReactNode }> = ({ children 
     const { conversationId, callType } = incomingGroupCall;
     try {
       const { token, livekitUrl } = await fetchToken(conversationId);
+      await releaseLiveForCall();
       groupCallStartedAtRef.current = Date.now();
       await connectGroupRoom(token, livekitUrl, callType);
       setGroupCallActive(true);

@@ -39,6 +39,10 @@ export function takeEarlyChatPush(): Record<string, string> | null {
   return next;
 }
 
+export function peekEarlyChatPush(): Record<string, string> | null {
+  return earlyChatPush;
+}
+
 export async function getPendingChatPushFromNative(): Promise<Record<string, string> | null> {
   if (Platform.OS !== 'android' || !CallDataModule?.getSharedPreferences) return null;
   try {
@@ -67,13 +71,18 @@ export async function clearPendingChatPushNative(): Promise<void> {
   }
 }
 
-export async function consumePendingChatPush(): Promise<Record<string, string> | null> {
-  const early = takeEarlyChatPush();
-  if (early) {
-    await clearPendingChatPushNative();
-    return early;
-  }
-  const fromNative = await getPendingChatPushFromNative();
-  if (fromNative) await clearPendingChatPushNative();
-  return fromNative;
+/**
+ * Read the pending deep-link WITHOUT dropping it. Clearing on read used to lose the
+ * tap when nav/auth wasn't ready yet (notification already dismissed → tap did nothing).
+ * Call `clearPendingChatPush()` only once navigation actually happened.
+ */
+export async function peekPendingChatPush(): Promise<Record<string, string> | null> {
+  const early = peekEarlyChatPush();
+  if (early) return early;
+  return await getPendingChatPushFromNative();
+}
+
+export async function clearPendingChatPush(): Promise<void> {
+  earlyChatPush = null;
+  await clearPendingChatPushNative();
 }

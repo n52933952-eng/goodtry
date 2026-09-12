@@ -1,5 +1,7 @@
 /** Navigation hooks filled by AppNavigator when the container is ready. */
 
+import { Platform } from 'react-native';
+
 type RouteListener = () => void;
 type UiBlockListener = () => void;
 
@@ -69,3 +71,22 @@ export const liveBroadcastNav = {
     };
   },
 };
+
+/**
+ * End an active broadcast before joining a call room (1:1 or group, incoming or outgoing).
+ * Overlapping LiveKit rooms fail Android WebRTC negotiation, so the live camera/mic must be
+ * released first. No-op when not live. Covers share + minimize too — a call always wins.
+ */
+export async function releaseLiveForCall(): Promise<void> {
+  if (!liveBroadcastNav.endForCall) return;
+  const wasLive = liveBroadcastNav.isLiveSessionActive;
+  try {
+    await liveBroadcastNav.endForCall();
+  } catch (e) {
+    console.warn('[liveBroadcastNav] releaseLiveForCall failed', e);
+  }
+  if (wasLive) {
+    // room.disconnect() can resolve before the native camera/PeerConnection is free.
+    await new Promise<void>((r) => setTimeout(r, Platform.OS === 'android' ? 350 : 150));
+  }
+}

@@ -303,8 +303,10 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         createGeneralNotificationChannel()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        // MainActivity is singleTask: SINGLE_TOP delivers onNewIntent instead of letting
+        // CLEAR_TOP tear the activity down mid-launch (tap opened the app but lost the chat).
         val tapIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("fromPush", true)
             for ((key, value) in data) {
                 putExtra(key, value)
@@ -313,7 +315,10 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 putExtra("conversationId", conversationId)
             }
         }
-        val reqCode = (messageId.ifEmpty { conversationId }.hashCode() and 0x7FFF) + 50000
+        // Keyed per conversation so a newer message replaces the old row instead of
+        // stacking one notification per message.
+        val notifKey = conversationId.ifEmpty { messageId }
+        val reqCode = (notifKey.hashCode() and 0x7FFF) + 50000
         val contentPending = PendingIntent.getActivity(
             this,
             reqCode,
@@ -321,13 +326,19 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notifId = (messageId.hashCode() and 0x0FFFFFFF) + 0x30000000
+        val notifId = (notifKey.hashCode() and 0x0FFFFFFF) + 0x30000000
         val notification = NotificationCompat.Builder(this, PLAYSOC_GENERAL_CHANNEL)
             .setContentTitle(title)
             .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(R.drawable.ic_stat_ic_launcher)
             .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setContentIntent(contentPending)
             .build()
 
@@ -432,12 +443,15 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = getSystemService(NotificationManager::class.java)
             if (notificationManager.getNotificationChannel(PLAYSOC_GENERAL_CHANNEL) == null) {
+                // Must match MainApplication: IMPORTANCE_HIGH, otherwise the first channel
+                // created wins and messages never show the heads-up banner.
                 val channel = NotificationChannel(
                     PLAYSOC_GENERAL_CHANNEL,
                     "Messages & activity",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_HIGH
                 ).apply {
                     description = "Direct messages and social notifications"
+                    enableVibration(true)
                 }
                 notificationManager.createNotificationChannel(channel)
             }

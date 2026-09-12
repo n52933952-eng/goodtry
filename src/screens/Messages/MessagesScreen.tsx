@@ -33,6 +33,7 @@ import StoryOrProfileSheet from '../../components/StoryOrProfileSheet';
 import ConversationListItem from './ConversationListItem';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { liveSharePreviewText } from '../../utils/liveShareMessage';
+import { mediaPreviewLabel } from '../../utils/mediaUrl';
 import { isLastMessageFromUser, normalizeConversationLastMessage } from '../../utils/messageDeliveryTicks';
 import {
   mergeUsersById,
@@ -49,6 +50,7 @@ const LIST_AVATAR = 50;
 const LIST_RING_OUTER = 56;
 const LIST_RING_STROKE = 2;
 const CONVERSATIONS_PAGE_SIZE = 8;
+const RECENT_CONVERSATION_LIMIT = 40;
 
 const conversationIdKey = (conversation: any): string =>
   conversation?._id?.toString?.() ?? String(conversation?._id ?? '');
@@ -135,11 +137,12 @@ const MessagesScreen = ({ navigation }: any) => {
   /** Promote opened chat to top on return without waiting for a full list refetch. */
   const lastOpenedConversationIdRef = useRef<string | null>(null);
   /**
-   * Keep recently opened chat at top across refetches. Opening alone does not change
-   * server `updatedAt`, so a plain replace jumps the row back when someone else sent last.
+   * Recently opened/messaged chats, most recent first. Opening alone does not change
+   * server `updatedAt`, so keeping only one pin makes the previously opened chat fall
+   * back to its old slot on the next refetch (open A then B → B, then A drops away).
    */
-  const preferTopConversationIdRef = useRef<string | null>(null);
-  const pinnedConversationSnapshotRef = useRef<any | null>(null);
+  const recentConversationOrderRef = useRef<string[]>([]);
+  const recentConversationSnapshotsRef = useRef<Record<string, any>>({});
   /** Avoid re-sending the same presence watch set when `conversations` gets a new array reference with the same partners. */
   const lastPresenceWatchKeyRef = useRef('');
   const convCursorRef = useRef<string | null>(null);
@@ -162,29 +165,51 @@ const MessagesScreen = ({ navigation }: any) => {
     });
   }, []);
 
-  const pinConversationToTop = useCallback((list: any[], pinId: string | null | undefined) => {
-    const id = pinId ? String(pinId) : '';
-    if (!id || !Array.isArray(list) || !list.length) return list;
-    const idx = list.findIndex((c) => conversationIdKey(c) === id);
-    if (idx === 0) return list;
-    if (idx > 0) return [list[idx], ...list.filter((_, i) => i !== idx)];
-    return list;
+  /** Mark a chat as the most recently opened/messaged one. */
+  const touchRecentConversation = useCallback((id: string | null | undefined, snapshot?: any) => {
+    const key = id ? String(id) : '';
+    if (!key) return;
+    recentConversationOrderRef.current = [
+      key,
+      ...recentConversationOrderRef.current.filter((existing) => existing !== key),
+    ].slice(0, RECENT_CONVERSATION_LIMIT);
+    if (snapshot) {
+      recentConversationSnapshotsRef.current = {
+        ...recentConversationSnapshotsRef.current,
+        [key]: snapshot,
+      };
+    }
   }, []);
 
-  /** Force pinned/opened chat to stay #1 even if the API page omitted it. */
-  const applyPinnedConversation = useCallback((list: any[]) => {
-    const pinId = preferTopConversationIdRef.current
-      ? String(preferTopConversationIdRef.current)
-      : '';
-    if (!pinId || !Array.isArray(list)) return list || [];
-    const fromList = list.find((c) => conversationIdKey(c) === pinId);
-    const snap = pinnedConversationSnapshotRef.current;
-    const pinned =
-      fromList ||
-      (snap && conversationIdKey(snap) === pinId ? snap : null);
-    if (!pinned) return list;
-    const rest = list.filter((c) => conversationIdKey(c) !== pinId);
-    return [pinned, ...rest];
+  const forgetRecentConversation = useCallback((id: string | null | undefined) => {
+    const key = id ? String(id) : '';
+    if (!key) return;
+    recentConversationOrderRef.current = recentConversationOrderRef.current.filter(
+      (existing) => existing !== key,
+    );
+    if (recentConversationSnapshotsRef.current[key]) {
+      const next = { ...recentConversationSnapshotsRef.current };
+      delete next[key];
+      recentConversationSnapshotsRef.current = next;
+    }
+  }, []);
+
+  /** Keep recently opened chats stacked on top (newest first), server order below. */
+  const applyRecentConversationOrder = useCallback((list: any[]) => {
+    if (!Array.isArray(list)) return list || [];
+    const order = recentConversationOrderRef.current;
+    if (!order.length) return list;
+    const byId = new Map(list.map((conv) => [conversationIdKey(conv), conv]));
+    const head: any[] = [];
+    const used = new Set<string>();
+    for (const id of order) {
+      const row = byId.get(id) || recentConversationSnapshotsRef.current[id];
+      if (!row) continue;
+      head.push(row);
+      used.add(id);
+    }
+    if (!head.length) return list;
+    return [...head, ...list.filter((conv) => !used.has(conversationIdKey(conv)))];
   }, []);
 
   /** Tab focus: first page only + scroll to top (instant, no delayed jump). Returns true if list was trimmed. */
@@ -217,6 +242,8 @@ const MessagesScreen = ({ navigation }: any) => {
     lastPresenceRefreshAtRef.current = 0;
     lastConvListAndStoryFetchAtRef.current = 0;
     lastPresenceWatchKeyRef.current = '';
+    recentConversationOrderRef.current = [];
+    recentConversationSnapshotsRef.current = {};
     resetConversationPagination();
   }, [user?._id, resetConversationPagination]);
 
@@ -249,7 +276,7 @@ const MessagesScreen = ({ navigation }: any) => {
         const lastMessageText =
           liveSharePreviewText(messageData.text)
           || messageData.text
-          || (messageData.img ? '📷 Image' : '');
+          || mediaPreviewLabel(messageData.img);
         
         const updatedConversation = {
           ...prevConvos[existingIndex],
@@ -277,24 +304,20 @@ const MessagesScreen = ({ navigation }: any) => {
         }
 
         // Otherwise move to top WITHOUT full re-sort (new message => most recent)
-        if (conversationId !== preferTopConversationIdRef.current) {
-          preferTopConversationIdRef.current = null;
-          pinnedConversationSnapshotRef.current = null;
-        } else {
-          pinnedConversationSnapshotRef.current = updatedConversation;
-        }
-        return [updatedConversation, ...prevConvos.filter((_, i) => i !== existingIndex)];
+        touchRecentConversation(conversationId, updatedConversation);
+        return applyRecentConversationOrder(
+          prevConvos.map((conv, i) => (i === existingIndex ? updatedConversation : conv)),
+        );
       } else {
         // New conversation - fetch it from API to get full conversation data
-        preferTopConversationIdRef.current = null;
-        pinnedConversationSnapshotRef.current = null;
+        touchRecentConversation(conversationId);
         if (fetchConversationsRef.current) {
           fetchConversationsRef.current(false, { silent: true });
         }
         return prevConvos;
       }
     });
-  }, [user?._id]);
+  }, [user?._id, touchRecentConversation, applyRecentConversationOrder]);
 
   const handleUnreadCountUpdate = React.useCallback((_data: any) => {
     // Optionally update total unread count if needed
@@ -309,10 +332,7 @@ const MessagesScreen = ({ navigation }: any) => {
   const handleConversationDeleted = React.useCallback((data: any) => {
     const conversationId = data?.conversationId != null ? String(data.conversationId) : '';
     if (!conversationId) return;
-    if (preferTopConversationIdRef.current === conversationId) {
-      preferTopConversationIdRef.current = null;
-      pinnedConversationSnapshotRef.current = null;
-    }
+    forgetRecentConversation(conversationId);
     if (lastOpenedConversationIdRef.current === conversationId) {
       lastOpenedConversationIdRef.current = null;
     }
@@ -322,7 +342,7 @@ const MessagesScreen = ({ navigation }: any) => {
     if (selectedConversationIdRef.current === conversationId) {
       setSelectedConversationId(null);
     }
-  }, [setSelectedConversationId]);
+  }, [setSelectedConversationId, forgetRecentConversation]);
 
   /** Admin deleted the group — same local list tombstone as conversationDeleted. */
   const handleGroupDeleted = React.useCallback((data: any) => {
@@ -552,23 +572,15 @@ const MessagesScreen = ({ navigation }: any) => {
             updatedAt: payload.updatedAt || new Date(),
             unreadCount: 0,
           };
-          preferTopConversationIdRef.current = conversationId;
-          pinnedConversationSnapshotRef.current = updatedConversation;
-
-          if (existingIndex === 0) {
-            const updated = [...prevConvos];
-            updated[0] = updatedConversation;
-            return updated;
-          }
-          return [
-            updatedConversation,
-            ...prevConvos.filter((_, i) => i !== existingIndex),
-          ];
+          touchRecentConversation(conversationId, updatedConversation);
+          return applyRecentConversationOrder(
+            prevConvos.map((conv, i) => (i === existingIndex ? updatedConversation : conv)),
+          );
         });
       },
     );
     return () => sub.remove();
-  }, []);
+  }, [touchRecentConversation, applyRecentConversationOrder]);
 
   // Deleted/left a group from GroupInfo/Chat — drop it from the list right away (no reload).
   useEffect(() => {
@@ -577,13 +589,14 @@ const MessagesScreen = ({ navigation }: any) => {
       (payload: { conversationId?: string }) => {
         const removedId = payload?.conversationId != null ? String(payload.conversationId) : '';
         if (!removedId) return;
+        forgetRecentConversation(removedId);
         setConversations((prev) =>
           prev.filter((c) => conversationIdKey(c) !== removedId),
         );
       },
     );
     return () => sub.remove();
-  }, []);
+  }, [forgetRecentConversation]);
 
   const fetchStoryStrip = useCallback(async () => {
     if (!user?._id) return;
@@ -676,13 +689,17 @@ const MessagesScreen = ({ navigation }: any) => {
         setHasMoreConversations(hasMore);
         hasMoreConversationsRef.current = hasMore;
         setConversations((prev) => {
-          // Keep a local snapshot fresh if the pin is already on screen.
-          const pinId = preferTopConversationIdRef.current;
-          if (pinId) {
-            const local = prev.find((c) => conversationIdKey(c) === String(pinId));
-            if (local) pinnedConversationSnapshotRef.current = local;
+          // Keep local snapshots fresh for recent chats still on screen.
+          for (const id of recentConversationOrderRef.current) {
+            const local = prev.find((c) => conversationIdKey(c) === id);
+            if (local) {
+              recentConversationSnapshotsRef.current = {
+                ...recentConversationSnapshotsRef.current,
+                [id]: local,
+              };
+            }
           }
-          return applyPinnedConversation(convos);
+          return applyRecentConversationOrder(convos);
         });
         // Only block auto load-more for visible (initial) loads. Silent focus
         // refreshes must NOT clear the flag: the user may already be scrolling,
@@ -731,14 +748,13 @@ const MessagesScreen = ({ navigation }: any) => {
       if (!first) {
         if (openedId) {
           returnedFromChat = true;
-          preferTopConversationIdRef.current = openedId;
           userHasScrolledListRef.current = false;
           lastLoadMoreAtRef.current = 0;
           let hadMore = false;
           setConversations((prev) => {
             const existing = prev.find((c) => conversationIdKey(c) === openedId);
-            if (existing) pinnedConversationSnapshotRef.current = existing;
-            const ordered = pinConversationToTop(prev, openedId);
+            touchRecentConversation(openedId, existing);
+            const ordered = applyRecentConversationOrder(prev);
             if (ordered.length > CONVERSATIONS_PAGE_SIZE) {
               hadMore = true;
             }
@@ -782,7 +798,8 @@ const MessagesScreen = ({ navigation }: any) => {
       fetchStoryStrip,
       resetConversationListToFirstPage,
       scrollConversationListToTop,
-      pinConversationToTop,
+      touchRecentConversation,
+      applyRecentConversationOrder,
     ])
   );
 
@@ -1042,8 +1059,7 @@ const MessagesScreen = ({ navigation }: any) => {
         const convId =
           existingConvo._id?.toString?.() ?? String(existingConvo._id);
         lastOpenedConversationIdRef.current = convId;
-        preferTopConversationIdRef.current = convId;
-        pinnedConversationSnapshotRef.current = existingConvo;
+        touchRecentConversation(convId, existingConvo);
         // Navigate to existing conversation
         navigation.navigate('ChatScreen', {
           conversationId: existingConvo._id,
@@ -1099,22 +1115,25 @@ const MessagesScreen = ({ navigation }: any) => {
   );
 
   const handleGroupCreated = React.useCallback((conv: any) => {
+    touchRecentConversation(conversationIdKey(conv), conv);
     setConversations((prev) => {
       if (prev.some((c) => c._id?.toString() === conv._id?.toString())) return prev;
       return [conv, ...prev];
     });
-  }, []);
+  }, [touchRecentConversation]);
 
   const handleGroupMemberLeft = React.useCallback((data: any) => {
     const myId = user?._id?.toString();
     if (data?.userId?.toString() === myId) {
+      forgetRecentConversation(data?.conversationId);
       setConversations((prev) => prev.filter((c) => c._id?.toString() !== data.conversationId?.toString()));
     }
-  }, [user?._id]);
+  }, [user?._id, forgetRecentConversation]);
 
   const handleRemovedFromGroup = React.useCallback((data: any) => {
+    forgetRecentConversation(data?.conversationId);
     setConversations((prev) => prev.filter((c) => c._id?.toString() !== data.conversationId?.toString()));
-  }, []);
+  }, [forgetRecentConversation]);
 
   // Bind group socket events
   useEffect(() => {
@@ -1145,10 +1164,7 @@ const MessagesScreen = ({ navigation }: any) => {
       const otherUserData = !isGroupConv && otherUser && typeof otherUser !== 'string' ? otherUser : null;
       const convId = toIdString(item._id);
       lastOpenedConversationIdRef.current = convId || null;
-      if (convId) {
-        preferTopConversationIdRef.current = convId;
-        pinnedConversationSnapshotRef.current = item;
-      }
+      touchRecentConversation(convId, item);
       navigation.navigate('ChatScreen', {
         conversationId: convId,
         otherUser: isGroupConv ? null : otherUserData,
@@ -1157,14 +1173,15 @@ const MessagesScreen = ({ navigation }: any) => {
         conversation: item,
       });
     },
-    [navigation, getOtherUser],
+    [navigation, getOtherUser, touchRecentConversation],
   );
 
   const handleConversationRemoved = useCallback((conversationId: string) => {
+    forgetRecentConversation(conversationId);
     setConversations((prev) =>
       prev.filter((c) => (c._id?.toString?.() ?? String(c._id)) !== conversationId),
     );
-  }, []);
+  }, [forgetRecentConversation]);
 
   const renderConversation = useCallback(
     ({ item }: { item: any }) => {

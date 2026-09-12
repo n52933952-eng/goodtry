@@ -11,7 +11,7 @@ import { useGroupCall } from '../context/GroupCallContext';
 import { useTheme } from '../context/ThemeContext';
 import fcmService from '../services/fcmService';
 import { navigateFromPushData } from '../services/pushNavigation';
-import { consumePendingChatPush, clearPendingChatPushNative } from '../services/chatPushPrefs';
+import { peekPendingChatPush, clearPendingChatPush } from '../services/chatPushPrefs';
 import { getPendingCallData, clearCallData } from '../services/callData';
 
 // Auth Screens
@@ -818,6 +818,9 @@ const AppNavigator = () => {
   const [navReady, setNavReady] = useState(false);
   const pendingNavigationEvent = useRef<any>(null); // Store NavigateToCallScreen event if received before navigation ref is ready
   const pendingPushNavRef = useRef<Record<string, string> | null>(null);
+  /** Last deep link actually opened — blocks duplicate navigation from overlapping retries. */
+  const handledPushKeyRef = useRef<string | null>(null);
+  const pushRetryActiveRef = useRef(false);
   const pendingChessAcceptNavRef = useRef<any>(null);
   const pendingCardAcceptNavRef  = useRef<any>(null);
   const lastNavigateToCallRef = useRef<{ callerId: string; ts: number; auto?: boolean } | null>(null); // P0: Navigate at most once per call (MainActivity emits 7x). `auto` = that nav was an auto-answer.
@@ -1142,20 +1145,60 @@ const AppNavigator = () => {
       pendingPushNavRef.current = data;
       return;
     }
-    pendingPushNavRef.current = null;
-    const ok = navigateFromPushData(navigationRef, data);
-    if (
-      ok &&
-      (data.type === 'message' || data.type === 'group_message' || data.type === 'group_added')
-    ) {
-      void clearPendingChatPushNative();
+    // Retries can overlap (AppState change + native event + poll); don't open twice.
+    const dedupeKey = [
+      data.type,
+      data.conversationId || '',
+      data.messageId || '',
+      data.postId || '',
+      data.userId || '',
+      data.username || '',
+      data.gameId || '',
+    ].join(':');
+    if (handledPushKeyRef.current === dedupeKey) {
+      pendingPushNavRef.current = null;
+      // Already opened: make sure the stored link is gone so a later resume
+      // (which resets the dedupe window) can't re-open this chat by itself.
+      void clearPendingChatPush();
+      return;
     }
+
+    const ok = navigateFromPushData(navigationRef, data);
+    // Keep it pending if navigation refused, so a later retry can still land it.
+    if (!ok) {
+      pendingPushNavRef.current = data;
+      return;
+    }
+    handledPushKeyRef.current = dedupeKey;
+    pendingPushNavRef.current = null;
+    void clearPendingChatPush();
   }, [user, refreshPresenceSubscription]);
 
   const flushPendingPushNavigation = useCallback(() => {
     const pending = pendingPushNavRef.current;
     if (pending) tryNavigateFromPush(pending);
   }, [tryNavigateFromPush]);
+
+  /**
+   * Tapping the tray from another app / lock screen races nav mount + auth load, so a
+   * single attempt (or a few fixed timers) sometimes missed and the tap did nothing.
+   * Poll briefly instead and stop as soon as the deep link is consumed.
+   */
+  const retryPendingPushNavigation = useCallback(() => {
+    if (pushRetryActiveRef.current) return;
+    pushRetryActiveRef.current = true;
+    let attempts = 0;
+    const tick = () => {
+      attempts += 1;
+      void peekPendingChatPush().then((pending) => {
+        if (pending) tryNavigateFromPush(pending);
+        else flushPendingPushNavigation();
+        if (pendingPushNavRef.current && attempts < 40) setTimeout(tick, 300);
+        else pushRetryActiveRef.current = false;
+      });
+    };
+    tick();
+  }, [tryNavigateFromPush, flushPendingPushNavigation]);
 
   // Set up navigation ref for FCM deep links when navigation is ready
   useEffect(() => {
@@ -1164,37 +1207,21 @@ const AppNavigator = () => {
     console.log('✅ [AppNavigator] Setting up navigation refs...');
     fcmService.setNavigationRef(navigationRef);
 
-    let chatPushRetryTimer: ReturnType<typeof setTimeout> | null = null;
     if (user) {
       const openFromSources = async () => {
         try {
           const initial = await fcmService.getInitialPushData();
           if (initial) {
             tryNavigateFromPush(initial);
-            return;
+            if (!pendingPushNavRef.current) return;
           }
         } catch (_) {
           /* fall through */
         }
-        try {
-          const pendingNative = await consumePendingChatPush();
-          if (pendingNative) {
-            tryNavigateFromPush(pendingNative);
-            return;
-          }
-        } catch (_) {
-          /* fall through */
-        }
-        flushPendingPushNavigation();
+        // Native may persist ChatPushPrefs a beat after NavigationContainer mounts.
+        retryPendingPushNavigation();
       };
       void openFromSources();
-      // Native may emit / persist ChatPushPrefs a beat after NavigationContainer mounts.
-      chatPushRetryTimer = setTimeout(() => {
-        void consumePendingChatPush().then((pending) => {
-          if (pending) tryNavigateFromPush(pending);
-          else flushPendingPushNavigation();
-        });
-      }, 900);
     }
 
     const guard = cancelGuardRef.current;
@@ -1202,16 +1229,12 @@ const AppNavigator = () => {
     if ((guard.pendingCancel || guard.hasPendingCancelFromPrefs) && !pendingHasAnswer) {
       console.log('⏸️ [AppNavigator] Skipping pending-call processing - cancel guard active', guard);
       pendingNavigationEvent.current = null;
-      return () => {
-        if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
-      };
+      return;
     }
     if (!pendingHasAnswer && guard.callEnded) {
       console.log('⏸️ [AppNavigator] Skipping pending-call processing - call ended', guard);
       pendingNavigationEvent.current = null;
-      return () => {
-        if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
-      };
+      return;
     }
 
     // Process pending NavigateToCallScreen event if any (e.g. user pressed Answer, nav wasn't ready)
@@ -1304,10 +1327,7 @@ const AppNavigator = () => {
       console.log('✅ [AppNavigator] Native IncomingCallActivity will handle call notifications');
     }
 
-    return () => {
-      if (chatPushRetryTimer) clearTimeout(chatPushRetryTimer);
-    };
-  }, [navReady, user, setIncomingCallFromNotification, tryNavigateFromPush, flushPendingPushNavigation]);
+  }, [navReady, user, setIncomingCallFromNotification, tryNavigateFromPush, retryPendingPushNavigation]);
 
   // All social / message push deep links — wait until NavigationContainer is ready
   useEffect(() => {
@@ -1324,17 +1344,13 @@ const AppNavigator = () => {
     const pushListener = DeviceEventEmitter.addListener('NavigateFromPush', onPush);
     const chatListener = DeviceEventEmitter.addListener('NavigateToChatFromPush', onPush);
 
-    const flushOpenPush = () => {
-      void consumePendingChatPush().then((pending) => {
-        if (pending) tryNavigateFromPush(pending);
-        else flushPendingPushNavigation();
-      });
-    };
     const appSub = AppState.addEventListener('change', (next) => {
-      if (next !== 'active') return;
-      flushOpenPush();
-      setTimeout(flushOpenPush, 400);
-      setTimeout(flushOpenPush, 1200);
+      if (next !== 'active') {
+        // Leaving the app ends the dedupe window so the next tray tap always opens.
+        handledPushKeyRef.current = null;
+        return;
+      }
+      retryPendingPushNavigation();
     });
 
     return () => {
@@ -1342,7 +1358,7 @@ const AppNavigator = () => {
       chatListener.remove();
       appSub.remove();
     };
-  }, [tryNavigateFromPush, flushPendingPushNavigation]);
+  }, [tryNavigateFromPush, retryPendingPushNavigation]);
 
   // Chess / Go Fish: attach listeners as soon as socket + user exist — NOT gated on navReady.
   // Otherwise server can emit (or pending deliver) before NavigationContainer is ready → event lost (common after Google login).

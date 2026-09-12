@@ -19,6 +19,7 @@ import { ENDPOINTS } from '../../utils/constants';
 import { useShowToast } from '../../hooks/useShowToast';
 import UserListSearchBar from '../../components/UserListSearchBar';
 import { filterUsersByQuery } from '../../utils/filterUsersByQuery';
+import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 
 const PAGE_SIZE = 12;
 
@@ -63,6 +64,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
       : null;
   const displayUsername = route.params?.displayUsername;
   const { colors } = useTheme();
+  const { tabBarHeight } = useTabBarCollapse();
   const { user: currentUser, updateUser } = useUser();
   const { t, tn } = useLanguage();
   const showToast = useShowToast();
@@ -380,7 +382,7 @@ const FollowListScreen: React.FC<FollowListScreenProps> = ({ navigation, route }
         contentContainerStyle={
           filteredUsers.length === 0
             ? styles.emptyContainer
-            : [styles.listContent, { backgroundColor: colors.background }]
+            : [styles.listContent, { backgroundColor: colors.background, paddingBottom: 28 + tabBarHeight }]
         }
       />
     </View>

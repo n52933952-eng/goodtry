@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
+  Animated,
   View,
   Text,
   FlatList,
@@ -27,6 +28,7 @@ import { useUser } from '../../context/UserContext';
 import { useSocket } from '../../context/SocketContext';
 import { useWebRTC } from '../../context/LiveKitContext';
 import { useGroupCall } from '../../context/GroupCallContext';
+import { useLiveBroadcast } from '../../context/LiveBroadcastContext';
 import { useTheme } from '../../context/ThemeContext';
 import { COLORS } from '../../utils/constants';
 import { apiService } from '../../services/api';
@@ -36,7 +38,7 @@ import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
 import { parseLiveShareMessage, liveSharePreviewText } from '../../utils/liveShareMessage';
-import { isVideoUrl, mediaDisplayUrl } from '../../utils/mediaUrl';
+import { isVideoUrl, mediaDisplayUrl, mediaPreviewLabel } from '../../utils/mediaUrl';
 import VideoFeedPreview from '../../components/VideoFeedPreview';
 import {
   getOutgoingDeliveryTicks,
@@ -63,6 +65,8 @@ const sharedPostCache = new Map<string, any>();
 const CHAT_OPEN_FETCH_DEFER_MS = 220;
 const CHAT_OPEN_FETCH_DEFER_CACHED_MS = 0;
 const CHAT_MESSAGES_CACHE_TTL_MS = 5 * 60_000;
+/** Fixed so the "typing…" row can animate its height in/out instead of snapping. */
+const TYPING_ROW_HEIGHT = 34;
 
 type ChatMessagesCacheEntry = {
   messages: any[];
@@ -150,6 +154,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const { socket, isUserOnline, isUserBusy, setSelectedConversationId, setSelectedConversationPartnerId, refreshPresenceSubscription } = useSocket();
   const { callUser, isCalling, callAccepted, callEnded } = useWebRTC(); // useWebRTC → useLiveKit alias
   const { startGroupCall, groupCallActive } = useGroupCall();
+  const { isLive } = useLiveBroadcast();
   const { colors, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [keyboardUp, setKeyboardUp] = useState(false);
@@ -220,11 +225,27 @@ const ChatScreen = ({ route, navigation }: any) => {
   const partnerTypingClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
+  /** Keeps the row mounted while it animates out, so the messages glide back down. */
+  const [typingRowVisible, setTypingRowVisible] = useState(false);
+  const typingRowAnim = useRef(new Animated.Value(0)).current;
   const [sharedPostMap, setSharedPostMap] = useState<Record<string, any>>({});
   const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
   const [inlineChatVideosPlaying, setInlineChatVideosPlaying] = useState<Record<string, boolean>>({});
   const [chatImagePreviewUri, setChatImagePreviewUri] = useState<string | null>(null);
   const isChatFocused = useIsFocused();
+
+  useEffect(() => {
+    if (isPartnerTyping) setTypingRowVisible(true);
+    const animation = Animated.timing(typingRowAnim, {
+      toValue: isPartnerTyping ? 1 : 0,
+      duration: isPartnerTyping ? 180 : 140,
+      useNativeDriver: false, // height/layout cannot run on the native driver
+    });
+    animation.start(({ finished }) => {
+      if (finished && !isPartnerTyping) setTypingRowVisible(false);
+    });
+    return () => animation.stop();
+  }, [isPartnerTyping, typingRowAnim]);
 
   const toIdString = useCallback((value: any): string => {
     if (!value) return '';
@@ -1173,7 +1194,7 @@ const ChatScreen = ({ route, navigation }: any) => {
           const previewText =
             liveSharePreviewText(textSnapshot) ||
             textSnapshot ||
-            (imgUrl ? '📷 Image' : '');
+            mediaPreviewLabel(imgUrl);
           DeviceEventEmitter.emit('conversationPreviewUpdated', {
             conversationId: previewConversationId,
             updatedAt: response.createdAt || new Date().toISOString(),
@@ -1323,6 +1344,15 @@ const ChatScreen = ({ route, navigation }: any) => {
   };
 
   const handleCallPress = async (type: 'voice' | 'video') => {
+    // A broadcast owns the camera/mic — calling while live breaks both. End live first.
+    if (isLive) {
+      Alert.alert(
+        t('endLiveToCallTitle') || 'You are live',
+        t('endLiveToCallMessage') || 'End your live stream before starting a call.',
+      );
+      return;
+    }
+
     // Block if partner is already in a call
     if (isPartnerBusy) {
       Alert.alert(t('userBusyTitle') || 'User Busy', t('userBusyMessage') || 'This user is busy right now (in a call or game). Please try again later.');
@@ -2002,10 +2032,18 @@ const ChatScreen = ({ route, navigation }: any) => {
         {/* Call Buttons — 1-to-1 only */}
         {!(isGroup || groupConversation?.isGroup) && (
           <>
-            <TouchableOpacity onPress={() => handleCallPress('voice')} style={styles.callButton}>
+            <TouchableOpacity
+              onPress={() => handleCallPress('voice')}
+              disabled={isLive}
+              style={[styles.callButton, isLive && styles.callButtonDisabled]}
+            >
               <Text style={styles.callIcon}>📞</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => handleCallPress('video')} style={styles.callButton}>
+            <TouchableOpacity
+              onPress={() => handleCallPress('video')}
+              disabled={isLive}
+              style={[styles.callButton, isLive && styles.callButtonDisabled]}
+            >
               <Text style={styles.callIcon}>📹</Text>
             </TouchableOpacity>
           </>
@@ -2013,9 +2051,16 @@ const ChatScreen = ({ route, navigation }: any) => {
         {/* Group call button — group chats only */}
         {(isGroup || activeGroupConversation?.isGroup) && (
           <TouchableOpacity
-            style={[styles.callButton, groupCallActive && { opacity: 0.4 }]}
-            disabled={groupCallActive}
+            style={[styles.callButton, (groupCallActive || isLive) && styles.callButtonDisabled]}
+            disabled={groupCallActive || isLive}
             onPress={() => {
+              if (isLive) {
+                Alert.alert(
+                  t('endLiveToCallTitle') || 'You are live',
+                  t('endLiveToCallMessage') || 'End your live stream before starting a call.',
+                );
+                return;
+              }
               const convId = String(conversationId || activeGroupConversation?._id || '');
               if (!convId) return;
               // Pre-flight busy check before navigating to call screen
@@ -2089,20 +2134,47 @@ const ChatScreen = ({ route, navigation }: any) => {
         }
       />
 
-      {isPartnerTyping ? (
-        <View
+      {typingRowVisible ? (
+        <Animated.View
           style={[
-            styles.typingRow,
-            { borderTopColor: colors.border, backgroundColor: colors.background },
+            styles.typingRowWrap,
+            {
+              height: typingRowAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, TYPING_ROW_HEIGHT],
+              }),
+              opacity: typingRowAnim,
+            },
           ]}
         >
-          <Text style={[styles.typingText, { color: colors.textGray }]}>
-            {otherUser?.name
-              ? `${(otherUser.name as string).split(/\s+/)[0]} `
-              : ''}
-            {t('typing')}…
-          </Text>
-        </View>
+          <Animated.View
+            style={[
+              styles.typingRow,
+              {
+                borderTopColor: colors.border,
+                backgroundColor: colors.background,
+                transform: [
+                  {
+                    translateY: typingRowAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [TYPING_ROW_HEIGHT / 2, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Text
+              numberOfLines={1}
+              style={[styles.typingText, { color: colors.textGray }]}
+            >
+              {otherUser?.name
+                ? `${(otherUser.name as string).split(/\s+/)[0]} `
+                : ''}
+              {t('typing')}…
+            </Text>
+          </Animated.View>
+        </Animated.View>
       ) : null}
 
       {/* Reaction picker (minimal) */}
@@ -2401,6 +2473,9 @@ const styles = StyleSheet.create({
   },
   callButton: {
     marginLeft: 15,
+  },
+  callButtonDisabled: {
+    opacity: 0.4,
   },
   callIcon: {
     fontSize: 24,
@@ -2786,9 +2861,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: 'bold',
   },
+  typingRowWrap: {
+    overflow: 'hidden',
+  },
   typingRow: {
+    height: TYPING_ROW_HEIGHT,
+    justifyContent: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   typingText: {
