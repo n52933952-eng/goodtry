@@ -131,6 +131,22 @@ export const ThreadedComment: React.FC<Props> = ({
   return (
     <View style={[styles.container, isNested && styles.nestedContainer]}>
       <View style={styles.row}>
+        <TouchableOpacity
+          onPress={() => {
+            const username = String(reply?.username || '').trim();
+            const uid =
+              reply?.userId?._id != null
+                ? String(reply.userId._id)
+                : reply?.userId != null
+                  ? String(reply.userId)
+                  : '';
+            onMentionPress?.(username || uid);
+          }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          accessibilityRole="button"
+          accessibilityLabel="Open profile"
+        >
         {avatarPic ? (
           <Image
             source={{ uri: avatarPic }}
@@ -149,6 +165,7 @@ export const ThreadedComment: React.FC<Props> = ({
             </Text>
           </View>
         )}
+        </TouchableOpacity>
 
         <View style={styles.content}>
           {renderBody()}

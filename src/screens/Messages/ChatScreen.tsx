@@ -1477,8 +1477,53 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  };
+
+  const openUserProfile = useCallback((username?: string, profileUserId?: string) => {
+    const name = String(username || '').trim();
+    const uid = String(profileUserId || '').trim();
+    if (!name && !uid) return;
+    navigation.navigate('MainTabs', {
+      screen: 'Profile',
+      params: {
+        screen: 'UserProfile',
+        params: name ? { username: name } : { userId: uid },
+      },
+    });
+  }, [navigation]);
+
+  const renderChatAvatar = (
+    pic: string | undefined,
+    name: string | undefined,
+    onPress: () => void,
+  ) => (
+    <TouchableOpacity
+      style={styles.messageAvatarContainer}
+      onPress={onPress}
+      activeOpacity={0.7}
+      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+      accessibilityRole="button"
+      accessibilityLabel="Open profile"
+    >
+      {pic ? (
+        <Image source={{ uri: pic }} style={styles.messageAvatar} />
+      ) : (
+        <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+          <Text style={styles.messageAvatarText}>
+            {name?.[0]?.toUpperCase() || '?'}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
 
   const CHAT_EMOJIS = useMemo(
     () => [
@@ -1658,19 +1703,11 @@ const ChatScreen = ({ route, navigation }: any) => {
     return (
       <View style={[styles.messageRow, isSenderLeft ? styles.leftRow : styles.rightRow]}>
         {/* Profile picture - on left for sender, on right for receiver */}
-        {isSenderLeft ? (
-          <View style={styles.messageAvatarContainer}>
-            {senderProfilePic ? (
-              <Image source={{ uri: senderProfilePic }} style={styles.messageAvatar} />
-            ) : (
-              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                <Text style={styles.messageAvatarText}>
-                  {senderName?.[0]?.toUpperCase() || '?'}
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : null}
+        {isSenderLeft
+          ? renderChatAvatar(senderProfilePic, senderName, () =>
+              openUserProfile(user?.username || 'self', currentUserIdStr),
+            )
+          : null}
         
         <TouchableOpacity
           activeOpacity={0.9}
@@ -1969,6 +2006,7 @@ const ChatScreen = ({ route, navigation }: any) => {
                 { color: isSenderLeft ? WA.metaTimeOwn : colors.textGray },
               ]}
             >
+              <Text style={styles.messageDate}>{formatDate(item.createdAt)} </Text>
               {formatTime(item.createdAt)}
             </Text>
             {isSenderLeft && outgoingTicks ? (
@@ -2003,19 +2041,14 @@ const ChatScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
         
         {/* Profile picture - on right for receiver */}
-        {!isSenderLeft ? (
-          <View style={styles.messageAvatarContainer}>
-            {senderProfilePic ? (
-              <Image source={{ uri: senderProfilePic }} style={styles.messageAvatar} />
-            ) : (
-              <View style={[styles.messageAvatar, styles.messageAvatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-                <Text style={styles.messageAvatarText}>
-                  {senderName?.[0]?.toUpperCase() || '?'}
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : null}
+        {!isSenderLeft
+          ? renderChatAvatar(senderProfilePic, senderName, () =>
+              openUserProfile(
+                item.sender?.username || otherUser?.username,
+                senderId || otherUser?._id,
+              ),
+            )
+          : null}
       </View>
     );
   };
@@ -2046,14 +2079,23 @@ const ChatScreen = ({ route, navigation }: any) => {
           <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: '#1a4a8a' }]}>
             <Text style={[styles.avatarText, { fontSize: 20 }]}>👥</Text>
           </View>
-        ) : otherUser?.profilePic ? (
-          <Image source={{ uri: otherUser.profilePic }} style={styles.avatar} />
         ) : (
-          <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
-            <Text style={styles.avatarText}>
-              {otherUser?.name?.[0]?.toUpperCase() || '?'}
-            </Text>
-          </View>
+          <TouchableOpacity
+            onPress={() => openUserProfile(otherUser?.username, otherUser?._id || userId)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile"
+          >
+            {otherUser?.profilePic ? (
+              <Image source={{ uri: otherUser.profilePic }} style={styles.avatar} />
+            ) : (
+              <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.avatarBg }]}>
+                <Text style={styles.avatarText}>
+                  {otherUser?.name?.[0]?.toUpperCase() || '?'}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
         )}
 
         <TouchableOpacity
@@ -2733,8 +2775,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   messageTime: {
-    fontSize: 12,
+    fontSize: 10,
     color: COLORS.textGray,
+  },
+  messageDate: {
+    fontSize: 10,
   },
   senderTime: {
     color: WA.metaTimeOwn,

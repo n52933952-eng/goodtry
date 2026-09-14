@@ -345,9 +345,29 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         // Foreground: JS onMessage already handles UI; avoid duplicate tray noise.
         if (!isAppInForeground()) {
             notificationManager.notify(notifId, notification)
+            wakeScreenForChatPush()
             Log.d(TAG, "✅ [FCM] Message tray notification posted")
         } else {
             Log.d(TAG, "✅ [FCM] App foreground — tray skipped, ack still sent")
+        }
+    }
+
+    /**
+     * Lights the screen so a chat push can appear on the lock shade.
+     * Does not open the app, skip the PIN, or touch the call path.
+     */
+    @Suppress("DEPRECATION")
+    private fun wakeScreenForChatPush() {
+        try {
+            val powerManager = getSystemService(PowerManager::class.java) ?: return
+            val wakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "PlaySocial:ChatPush"
+            )
+            wakeLock.acquire(4000)
+            Log.d(TAG, "✅ [FCM] Chat screen wake acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ [FCM] Chat screen wake failed: ${e.message}")
         }
     }
 

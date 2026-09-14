@@ -179,6 +179,39 @@ const PostDetailScreen = ({ route, navigation }: any) => {
     resetSheetPosition();
   }, [clearMentionSuggestions, resetSheetPosition]);
 
+  const openCommentUserProfile = useCallback((usernameOrId?: string) => {
+    const query = String(usernameOrId || '').trim();
+    if (!query) return;
+    closeCommentsModal();
+    const params = { username: query };
+    const tryPushUserProfile = (nav: any): boolean => {
+      if (!nav) return false;
+      try {
+        const names = nav.getState?.()?.routeNames ?? [];
+        if (names.includes('UserProfile')) {
+          if (typeof nav.push === 'function') {
+            nav.push('UserProfile', params);
+          } else {
+            nav.navigate('UserProfile', params);
+          }
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    };
+    if (tryPushUserProfile(navigation)) return;
+    if (tryPushUserProfile(navigation.getParent?.())) return;
+    const tabNav = navigation.getParent?.();
+    if (tabNav?.navigate) {
+      tabNav.navigate('Profile', { screen: 'UserProfile', params });
+      return;
+    }
+    navigation.navigate('MainTabs', {
+      screen: 'Profile',
+      params: { screen: 'UserProfile', params },
+    });
+  }, [closeCommentsModal, navigation]);
+
   const snapSheet = useCallback(
     (toFull: boolean) => {
       sheetExpandedRef.current = toFull;
@@ -835,10 +868,7 @@ const PostDetailScreen = ({ route, navigation }: any) => {
                       onReplyPress={handleReplyPress}
                       onLikePress={handleLikeComment}
                       onDeletePress={handleDeleteComment}
-                      onMentionPress={(username: string) => {
-                        closeCommentsModal();
-                        navigation.navigate('UserProfile', { username });
-                      }}
+                      onMentionPress={openCommentUserProfile}
                     />
                   ))
                 )}

@@ -142,13 +142,25 @@ export function useTabBarCollapseOnFocus(screenId: string, enabled = true) {
   }
   const instanceId = instanceIdRef.current;
 
+  const tabBarCtx = useContext(TabBarCollapseContext);
   const {
     registerCollapsibleScreen,
     unregisterCollapsibleScreen,
     resetTabBar,
     mergeTabBarScroll,
     tabBarHeight,
-  } = useTabBarCollapse();
+  } = tabBarCtx ?? {
+    registerCollapsibleScreen: () => {},
+    unregisterCollapsibleScreen: () => {},
+    resetTabBar: () => {},
+    mergeTabBarScroll: (
+      ...handlers: Array<(e: NativeSyntheticEvent<NativeScrollEvent>) => void>
+    ) =>
+      (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+        handlers.forEach((handler) => handler?.(e));
+      },
+    tabBarHeight: 0,
+  };
 
   useFocusEffect(
     useCallback(() => {
