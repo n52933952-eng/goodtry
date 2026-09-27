@@ -20,7 +20,7 @@ import { apiService } from '../../services/api';
 import { ENDPOINTS } from '../../utils/constants';
 import { uploadMediaToR2 } from '../../utils/directR2Upload';
 import { useLanguage } from '../../context/LanguageContext';
-import { COUNTRIES, getCountryFlagByName } from '../../utils/countries';
+import { COUNTRY_OPTIONS, getCountryFlagByName } from '../../utils/countries';
 
 const TAB_BAR_HEIGHT = 60;
 
@@ -285,7 +285,7 @@ const UpdateProfileScreen = ({ navigation }: any) => {
             {t('selectCountry')}
           </Text>
           <FlatList
-            data={COUNTRIES}
+            data={COUNTRY_OPTIONS}
             keyExtractor={(item) => item.name}
             keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => (
@@ -296,7 +296,7 @@ const UpdateProfileScreen = ({ navigation }: any) => {
                   setCountryModalVisible(false);
                 }}
               >
-                <Text style={styles.modalFlag}>{getCountryFlagByName(item.name)}</Text>
+                <Text style={styles.modalFlag}>{item.flag}</Text>
                 <Text style={[styles.modalItemText, { color: colors.text }]}>{item.name}</Text>
               </TouchableOpacity>
             )}

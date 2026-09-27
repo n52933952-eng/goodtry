@@ -19,6 +19,8 @@ interface User {
   followers: string[];
   following: string[];
   weatherCities: string[];
+  country?: string;
+  admin?: boolean;
 }
 
 interface UserContextType {
@@ -353,6 +355,12 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
     const sub = AppState.addEventListener('change', onActive);
     return () => sub.remove();
   }, [user?._id]);
+
+  // Old saved logins have no admin flag — pull it from /me once after boot.
+  useEffect(() => {
+    if (isLoading || !user?._id) return;
+    void refetchSessionUser();
+  }, [isLoading, user?._id]);
 
   return (
     <UserContext.Provider

@@ -721,7 +721,7 @@ const FeedScreen = ({ navigation }: any) => {
     }, [filterPostsForFeed, setPosts]),
   );
 
-  const fetchFeed = async (loadMore = false, options: { merge?: boolean } = {}) => {
+  const fetchFeed = async (loadMore = false, options: { merge?: boolean; fresh?: boolean } = {}) => {
     // Prevent duplicate requests
     if (isFetchingRef.current) {
       console.log('⏭️ [FeedScreen] fetchFeed: Skipping (already fetching)');
@@ -744,6 +744,9 @@ const FeedScreen = ({ navigation }: any) => {
     try {
       const limit = FEED_PAGE_SIZE;
       let url = `${ENDPOINTS.GET_FEED}?limit=${limit}`;
+      if (!loadMore && options.fresh) {
+        url += '&fresh=1';
+      }
       if (loadMore) {
         const token = feedCursorRef.current;
         if (!token) {
@@ -821,6 +824,16 @@ const FeedScreen = ({ navigation }: any) => {
     }
   };
 
+  const fetchFeedRef = useRef(fetchFeed);
+  fetchFeedRef.current = fetchFeed;
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('discover-country-set', () => {
+      fetchFeedRef.current(false);
+    });
+    return () => sub.remove();
+  }, []);
+
   const handleRefresh = () => {
     setRefreshing(true);
     setHasMore(true);
@@ -834,7 +847,7 @@ const FeedScreen = ({ navigation }: any) => {
     scrollOffsetRef.current = 0;
     feedListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
     fetchStoryStrip();
-    fetchFeed(false); // Reset and fetch from beginning
+    fetchFeed(false, { fresh: true }); // Reset and fetch from beginning
   };
 
   const handleLoadMore = () => {
@@ -1101,6 +1114,17 @@ const FeedScreen = ({ navigation }: any) => {
       >
         <TouchableOpacity
           style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+          onPress={() => {
+            const root = navigation.getParent()?.getParent() || navigation.getParent() || navigation
+            root.navigate('ExplorePeople')
+          }}
+        >
+          <Text style={styles.quickAccessIcon}>👥</Text>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Explore</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
           onPress={() =>
             navigation.navigate('Notifications', { screen: 'NotificationsMain' })
           }
@@ -1281,10 +1305,11 @@ const FeedScreen = ({ navigation }: any) => {
         }}
         onScroll={mergeOnScroll(mergeTabBarScroll(handleFeedScroll))}
         scrollEventThrottle={16}
-        maintainVisibleContentPosition={{
-          minIndexForVisible: 0,
-          autoscrollToTopThreshold: 10,
-        }}
+        maintainVisibleContentPosition={
+          Platform.OS === 'ios'
+            ? { minIndexForVisible: 0 }
+            : undefined
+        }
         viewabilityConfigCallbackPairs={viewabilityPairs}
         ListHeaderComponent={
           <View>

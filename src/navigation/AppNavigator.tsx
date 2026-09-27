@@ -44,6 +44,7 @@ import CardChallengeNotification from '../components/CardChallengeNotification';
 import CardScreen from '../screens/Card/CardScreen';
 import CardGameScreen from '../screens/Card/CardGameScreen';
 import ActivityScreen from '../screens/Activity/ActivityScreen';
+import ExplorePeopleScreen from '../screens/Explore/ExplorePeopleScreen';
 import CreateStoryScreen from '../screens/Stories/CreateStoryScreen';
 import StoryViewerScreen from '../screens/Stories/StoryViewerScreen';
 import { useSocket } from '../context/SocketContext';
@@ -614,6 +615,69 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
   );
 };
 
+// Explore stack — profile/post open here so ← / phone back return to Explore, not Home
+const ExploreStack = () => {
+  const { colors } = useTheme();
+
+  const exploreProfileHeaderOptions = ({ navigation }: any) => ({
+    headerShown: true,
+    title: 'Profile',
+    headerTitleAlign: 'center' as const,
+    headerStyle: {
+      backgroundColor: colors.backgroundLight,
+    },
+    headerTintColor: colors.text,
+    headerTitleStyle: {
+      fontWeight: 'bold' as const,
+      fontSize: 18,
+    },
+    headerLeft: () => (
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        style={{ marginLeft: 15, padding: 5 }}
+      >
+        <Text style={{ color: colors.text, fontSize: 28, fontWeight: 'bold' }}>←</Text>
+      </TouchableOpacity>
+    ),
+  });
+
+  return (
+    <Stack.Navigator
+      detachInactiveScreens={true}
+      screenOptions={{
+        headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="ExploreHome" component={ExplorePeopleScreen} />
+      <Stack.Screen
+        name="UserProfile"
+        component={UserProfileScreen}
+        options={exploreProfileHeaderOptions}
+      />
+      <Stack.Screen
+        name="PostDetail"
+        component={PostDetailScreen}
+        options={{
+          headerShown: true,
+          headerTitle: () => (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.text, fontWeight: 'bold', fontSize: 18 }}>Post</Text>
+            </View>
+          ),
+          headerTitleAlign: 'center',
+          headerStyle: {
+            backgroundColor: colors.backgroundLight,
+          },
+          headerTintColor: colors.text,
+          headerRight: () => <View style={{ width: 44 }} />,
+        }}
+      />
+      <Stack.Screen name="FollowList" component={FollowListScreen} />
+    </Stack.Navigator>
+  );
+};
+
 // Main Stack with Tabs and Modals
 const MainStack = () => {
   const { colors } = useTheme();
@@ -647,6 +711,7 @@ const MainStack = () => {
         }}
       />
       <Stack.Screen name="Activity" component={ActivityScreen} />
+      <Stack.Screen name="ExplorePeople" component={ExploreStack} />
       <Stack.Screen
         name="ChatScreen"
         component={ChatScreen}

@@ -38,7 +38,7 @@ import WebView from 'react-native-webview';
 import { useLanguage } from '../../context/LanguageContext';
 import LiveShareChatCard from '../../components/LiveShareChatCard';
 import { parseLiveShareMessage, liveSharePreviewText } from '../../utils/liveShareMessage';
-import { isVideoUrl, mediaDisplayUrl, mediaPreviewLabel } from '../../utils/mediaUrl';
+import { hydrateReplyThumbs, isVideoUrl, mediaDisplayUrl, mediaPreviewLabel, replyMediaUrl, replyPreviewLabel } from '../../utils/mediaUrl';
 import VideoFeedPreview from '../../components/VideoFeedPreview';
 import {
   getOutgoingDeliveryTicks,
@@ -239,6 +239,7 @@ const ChatScreen = ({ route, navigation }: any) => {
   const [sharedPostVideoPlaying, setSharedPostVideoPlaying] = useState<Record<string, boolean>>({});
   const [inlineChatVideosPlaying, setInlineChatVideosPlaying] = useState<Record<string, boolean>>({});
   const [chatImagePreviewUri, setChatImagePreviewUri] = useState<string | null>(null);
+  const [chatVideoPreviewUri, setChatVideoPreviewUri] = useState<string | null>(null);
   const isChatFocused = useIsFocused();
 
   useEffect(() => {
@@ -924,7 +925,7 @@ const ChatScreen = ({ route, navigation }: any) => {
         setHasMoreMessages(hasMore);
         setLoadingMoreMessages(false);
         if (messagesData.length > 0) {
-          setMessages((prev) => [...messagesData, ...prev]);
+          setMessages((prev) => hydrateReplyThumbs([...messagesData, ...prev]));
           const ackIds = collectUndeliveredIncomingIds(
             messagesData,
             currentUserIdStr,
@@ -948,7 +949,9 @@ const ChatScreen = ({ route, navigation }: any) => {
         return;
       }
 
-      const normalizedPage = normalizeMessagesFromServer(messagesData, currentUserIdStr, getSenderId);
+      const normalizedPage = hydrateReplyThumbs(
+        normalizeMessagesFromServer(messagesData, currentUserIdStr, getSenderId),
+      );
       setMessages(normalizedPage);
       const ackIds = collectUndeliveredIncomingIds(messagesData, currentUserIdStr, getSenderId);
       if (socket && ackIds.length) {
@@ -1019,7 +1022,7 @@ const ChatScreen = ({ route, navigation }: any) => {
 
     const cached = routeConversationIdStr ? readChatMessagesCache(routeConversationIdStr) : null;
     if (cached) {
-      setMessages(cached.messages);
+      setMessages(hydrateReplyThumbs(cached.messages));
       setHasMoreMessages(cached.hasMore);
       messageCursorRef.current = cached.cursor;
       setLoading(false);
@@ -1222,6 +1225,21 @@ const ChatScreen = ({ route, navigation }: any) => {
             username: user?.username,
             profilePic: user?.profilePic,
           },
+          ...(replySnapshot
+            ? {
+                replyTo: {
+                  ...(response.replyTo || {}),
+                  img: response.replyTo?.img || replySnapshot.img,
+                  text: response.replyTo?.text ?? replySnapshot.text,
+                  sender: response.replyTo?.sender || replySnapshot.sender,
+                },
+                replyPreview: response.replyPreview || {
+                  text: replySnapshot.text || '',
+                  img: replySnapshot.img || '',
+                  senderName: replySnapshot.sender?.name || replySnapshot.sender?.username || '',
+                },
+              }
+            : {}),
         });
 
         setMessages((prev) => {
@@ -1233,8 +1251,8 @@ const ChatScreen = ({ route, navigation }: any) => {
           } else {
             next = [...prev, messageWithSender];
           }
-          if (next.length > 200) return next.slice(-200);
-          return next;
+          if (next.length > 200) return hydrateReplyThumbs(next.slice(-200));
+          return hydrateReplyThumbs(next);
         });
 
         if (!currentConversationId && response.conversationId) {
@@ -1487,6 +1505,38 @@ const ChatScreen = ({ route, navigation }: any) => {
     return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
   };
 
+  const renderReplyMediaThumb = (text?: string, img?: string) => {
+    const uri = replyMediaUrl(text, img);
+    if (!uri) return null;
+    const video = isVideoUrl(uri);
+    return (
+      <TouchableOpacity
+        style={styles.replyMediaThumb}
+        activeOpacity={0.85}
+        onPress={() => openReplyMedia(text, img)}
+        accessibilityRole="button"
+        accessibilityLabel={video ? 'Play video' : 'View image'}
+      >
+        {video ? (
+          <View style={styles.replyMediaVideoFill}>
+            <VideoFeedPreview
+              videoUrl={uri}
+              preferredTimeMs={800}
+              placeholderColor="#111"
+              spinnerColor="#fff"
+              resizeMode="cover"
+            />
+            <View style={styles.replyMediaPlayWrap} pointerEvents="none">
+              <Text style={styles.replyMediaPlay}>▶</Text>
+            </View>
+          </View>
+        ) : (
+          <Image source={{ uri }} style={styles.replyMediaImage} />
+        )}
+      </TouchableOpacity>
+    );
+  };
+
   const openUserProfile = useCallback((username?: string, profileUserId?: string) => {
     const name = String(username || '').trim();
     const uid = String(profileUserId || '').trim();
@@ -1537,16 +1587,24 @@ const ChatScreen = ({ route, navigation }: any) => {
 
   const CHAT_MEDIA_SIZE = 220;
 
-  const buildChatVideoHtml = (videoUrl: string, autoplay = false) => {
+  const buildChatVideoHtml = (videoUrl: string, autoplay = false, contain = false) => {
     const optimized = mediaDisplayUrl(videoUrl);
     const safe = String(optimized).replace(/"/g, '&quot;').replace(/</g, '');
     const autoplayAttr = autoplay ? ' autoplay' : '';
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:cover;display:block;vertical-align:top}</style></head><body><video controls playsinline preload="auto"${autoplayAttr} src="${safe}"></video><script>var v=document.querySelector('video');if(v){v.addEventListener('ended',function(){if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage('ended');});}</script></body></html>`;
+    const fit = contain ? 'contain' : 'cover';
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:${fit};display:block;vertical-align:top}</style></head><body><video controls playsinline preload="auto"${autoplayAttr} src="${safe}"></video><script>var v=document.querySelector('video');if(v){v.addEventListener('ended',function(){if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage('ended');});}</script></body></html>`;
   };
 
   const openChatImagePreview = useCallback((uri: string) => {
     const u = String(uri || '').trim();
     if (u) setChatImagePreviewUri(u);
+  }, []);
+
+  const openReplyMedia = useCallback((text?: string, img?: string) => {
+    const uri = replyMediaUrl(text, img);
+    if (!uri) return;
+    if (isVideoUrl(uri)) setChatVideoPreviewUri(uri);
+    else setChatImagePreviewUri(uri);
   }, []);
 
   const returnToChatParams = useMemo(
@@ -1740,25 +1798,22 @@ const ChatScreen = ({ route, navigation }: any) => {
                 },
               ]}
             >
-              <Text
-                style={[
-                  styles.replyPreviewLabel,
-                  { color: isSenderLeft ? WA.outgoingText : incomingMainTextColor },
-                ]}
-              >
-                Reply to {item.replyTo?.sender?.name || item.replyTo?.sender?.username || 'message'}
-              </Text>
-              <Text
-                numberOfLines={2}
-                style={[
-                  styles.replyPreviewText,
-                  {
-                    color: isSenderLeft ? WA.metaTimeOwn : theme === 'dark' ? colors.textGray : WA.metaTimeOwn,
-                  },
-                ]}
-              >
-                {item.replyTo?.text || (item.replyTo?.img ? '📎 Attachment' : '')}
-              </Text>
+              {!replyMediaUrl(item.replyTo?.text, item.replyTo?.img) ? (
+                <View style={styles.replyPreviewCopy}>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.replyPreviewText,
+                      {
+                        color: isSenderLeft ? WA.metaTimeOwn : theme === 'dark' ? colors.textGray : WA.metaTimeOwn,
+                      },
+                    ]}
+                  >
+                    {replyPreviewLabel(item.replyTo?.text, item.replyTo?.img)}
+                  </Text>
+                </View>
+              ) : null}
+              {renderReplyMediaThumb(item.replyTo?.text, item.replyTo?.img)}
             </View>
           )}
 
@@ -2404,10 +2459,13 @@ const ChatScreen = ({ route, navigation }: any) => {
             <Text style={[styles.replyBannerTitle, { color: colors.text }]}>
               {t('replyingTo')} {replyingTo?.sender?.name || replyingTo?.sender?.username || t('message')}
             </Text>
-            <Text numberOfLines={1} style={[styles.replyBannerText, { color: colors.textGray }]}>
-              {replyingTo?.text || (replyingTo?.img ? t('attachment') : '')}
-            </Text>
+            {!replyMediaUrl(replyingTo?.text, replyingTo?.img) ? (
+              <Text numberOfLines={1} style={[styles.replyBannerText, { color: colors.textGray }]}>
+                {replyPreviewLabel(replyingTo?.text, replyingTo?.img)}
+              </Text>
+            ) : null}
           </View>
+          {renderReplyMediaThumb(replyingTo?.text, replyingTo?.img)}
           <TouchableOpacity onPress={() => setReplyingTo(null)}>
             <Text style={[styles.replyBannerClose, { color: colors.text }]}>✕</Text>
           </TouchableOpacity>
@@ -2539,6 +2597,34 @@ const ChatScreen = ({ route, navigation }: any) => {
           </TouchableOpacity>
         </View>
       )}
+
+      <Modal
+        visible={!!chatVideoPreviewUri}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setChatVideoPreviewUri(null)}
+      >
+        <View style={styles.chatImagePreviewRoot}>
+          {chatVideoPreviewUri ? (
+            <WebView
+              source={{ html: buildChatVideoHtml(chatVideoPreviewUri, true, true) }}
+              style={styles.chatVideoPreviewWeb}
+              allowsFullscreenVideo
+              mediaPlaybackRequiresUserAction={false}
+              scrollEnabled={false}
+            />
+          ) : null}
+          <TouchableOpacity
+            style={styles.chatImagePreviewClose}
+            onPress={() => setChatVideoPreviewUri(null)}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            accessibilityRole="button"
+            accessibilityLabel={t('close')}
+          >
+            <Text style={styles.chatImagePreviewCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
 
       <Modal
         visible={!!chatImagePreviewUri}
@@ -3003,10 +3089,51 @@ const styles = StyleSheet.create({
     padding: 6,
   },
   replyPreviewInBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
     borderLeftWidth: 3,
     paddingLeft: 8,
+    paddingRight: 4,
+    paddingVertical: 4,
     marginBottom: 6,
     borderRadius: 4,
+  },
+  replyPreviewCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  replyMediaThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: '#111B21',
+  },
+  replyMediaImage: {
+    width: 44,
+    height: 44,
+  },
+  replyMediaVideoFill: {
+    width: 44,
+    height: 44,
+    backgroundColor: '#111B21',
+  },
+  replyMediaPlayWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  replyMediaPlay: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    marginLeft: 2,
+  },
+  chatVideoPreviewWeb: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
   },
   replyPreviewLabel: {
     fontSize: 11,

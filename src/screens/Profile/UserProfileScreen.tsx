@@ -30,6 +30,7 @@ import Post from '../../components/Post';
 import StoryAvatarRing from '../../components/StoryAvatarRing';
 import { apiService } from '../../services/api';
 import { rememberFollowProfile, removeFollowProfile } from '../../utils/recentFollowProfiles';
+import { getCountryFlagByName } from '../../utils/countries';
 import { API_URL, ENDPOINTS, STORY_STRIP_SHOULD_REFRESH } from '../../utils/constants';
 import { navigateToMainStack } from '../../utils/navigationHelpers';
 import { useLanguage } from '../../context/LanguageContext';
@@ -90,6 +91,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [skip, setSkip] = useState(0);
+  const skipRef = useRef(0);
+  const loadingMoreRef = useRef(false);
   const POSTS_PER_PAGE = 9;
   const [activeVideoPostId, setActiveVideoPostId] = useState<string | null>(null);
   const activeVideoPostIdRef = useRef<string | null>(null);
@@ -258,6 +261,8 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     setFollowing(false);
     setLoading(true);
     setSkip(0);
+    skipRef.current = 0;
+    loadingMoreRef.current = false;
     setHasMore(true);
     setShowScrollTop(false);
     lastScrollYRef.current = 0;
@@ -517,14 +522,17 @@ const UserProfileScreen = ({ route, navigation }: any) => {
     }
 
     if (isLoadMore) {
+      if (loadingMoreRef.current) return;
+      loadingMoreRef.current = true;
       setLoadingMore(true);
     } else {
+      skipRef.current = 0;
       setSkip(0);
       setHasMore(true);
     }
 
     try {
-      const currentSkip = isLoadMore ? skip : 0;
+      const currentSkip = isLoadMore ? skipRef.current : 0;
       const data = await apiService.get(
         `${ENDPOINTS.GET_USER_POSTS}/${currentUsername}?limit=${POSTS_PER_PAGE}&skip=${currentSkip}`
       );
@@ -553,14 +561,18 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           }));
           const uniqueNewPosts = newPosts.filter(p => {
             const id = p._id?.toString?.() ?? String(p._id);
-            return !existingIds.has(id);
+            return !existingIds.has(id) && !isLivePseudoPostId(id);
           });
-          return [...prev, ...uniqueNewPosts];
+          const next = [...prev, ...uniqueNewPosts];
+          skipRef.current = next.filter((p) => !isLivePseudoPostId(p?._id)).length;
+          return next;
         });
-        setSkip(prev => prev + POSTS_PER_PAGE);
+        setSkip(skipRef.current);
       } else {
-        setPosts(newPosts.filter((p: any) => !isLivePseudoPostId(p?._id)));
-        setSkip(POSTS_PER_PAGE);
+        const realPosts = newPosts.filter((p: any) => !isLivePseudoPostId(p?._id));
+        skipRef.current = realPosts.length;
+        setPosts(realPosts);
+        setSkip(realPosts.length);
       }
 
       if (data.hasMore !== undefined) {
@@ -574,17 +586,19 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         showToast('Error', 'Failed to load posts', 'error');
       }
     } finally {
+      loadingMoreRef.current = false;
       if (currentUsername === username || currentUsername === profileUser?.username) {
         setLoadingMore(false);
         setRefreshing(false);
+      } else {
+        setLoadingMore(false);
       }
     }
   };
 
   const handleLoadMore = () => {
-    if (!loadingMore && hasMore) {
-      fetchUserPosts(true);
-    }
+    if (loading || loadingMoreRef.current || !hasMore) return;
+    fetchUserPosts(true);
   };
 
   const handleFollow = async () => {
@@ -1020,8 +1034,20 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   </Text>
                 </View>
               </View>
-              {!!profileUser.bio && (
-                <Text style={[styles.bio, { color: colors.text, marginTop: 12 }]}>{profileUser.bio}</Text>
+              {(!!profileUser.bio || !!String(profileUser.country || '').trim()) && (
+                <View style={styles.bioBlock}>
+                  {!!String(profileUser.country || '').trim() && (
+                    <View style={[styles.countryChip, { backgroundColor: colors.background, borderColor: colors.border }]}>
+                      <Text style={styles.countryFlag}>{getCountryFlagByName(profileUser.country)}</Text>
+                      <Text style={[styles.countryName, { color: colors.textGray }]} numberOfLines={1}>
+                        {String(profileUser.country).trim()}
+                      </Text>
+                    </View>
+                  )}
+                  {!!profileUser.bio && (
+                    <Text style={[styles.bio, { color: colors.text }]}>{profileUser.bio}</Text>
+                  )}
+                </View>
               )}
 
               {isOwnProfile && (
@@ -1479,6 +1505,30 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
     textAlign: 'left',
     alignSelf: 'flex-start',
+  },
+  bioBlock: {
+    marginTop: 12,
+    width: '100%',
+  },
+  countryChip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: '100%',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 8,
+  },
+  countryFlag: {
+    fontSize: 14,
+    marginRight: 6,
+  },
+  countryName: {
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   bio: {
     fontSize: 14,

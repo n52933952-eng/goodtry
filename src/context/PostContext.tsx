@@ -91,6 +91,8 @@ export interface Post {
   __viewerSortBoostMs?: number;
   /** Live stream pseudo-post; kept above the feed block so it does not reorder Football/Weather/normals. */
   isLive?: boolean;
+  /** Extra discovery card from unfollowed users. Not part of the follow index. */
+  isSuggested?: boolean;
 }
 
 interface PostContextType {
@@ -104,6 +106,8 @@ interface PostContextType {
    * Used when following someone so their recent posts appear on the home feed.
    */
   injectPostsIntoFeed: (incoming: Post[]) => void;
+  /** After follow on a suggested card: keep that person, drop the other suggested cards. No reload. */
+  dropOtherSuggestedAfterFollow: (authorId: string) => void;
   updatePost: (postId: string, updates: Partial<Post>) => void;
   deletePost: (postId: string) => void;
   /** Remove live pseudo-card(s) for a streamer (handles both live_<streamerId> and legacy live_<docId>). */
@@ -283,6 +287,28 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
+  const followingCountRef = useRef(0);
+  followingCountRef.current = Array.isArray(user?.following) ? user.following.length : 0;
+
+  const capSuggestedIfFollowing = useCallback((list: Post[]) => {
+    if (followingCountRef.current <= 0) return list;
+    let n = 0;
+    return list.filter((p: any) => {
+      if (!p?.isSuggested) return true;
+      n += 1;
+      return n <= 3;
+    });
+  }, []);
+
+  const followCount = Array.isArray(user?.following) ? user.following.length : 0;
+  useEffect(() => {
+    if (followCount <= 0) return;
+    setPosts((prev) => {
+      const next = capSuggestedIfFollowing(prev);
+      return next.length === prev.length ? prev : next;
+    });
+  }, [followCount, capSuggestedIfFollowing]);
+
   const filterPostsForFeed = useCallback((list: Post[]) => {
     const hidden = hiddenFeedPostIdsRef.current;
     const sources = hiddenFeedSourcesRef.current;
@@ -293,8 +319,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       if (uname && sources.has(uname)) return false;
       return true;
     });
-    return dedupeGamePostsForFeed(filtered);
-  }, []);
+    return capSuggestedIfFollowing(dedupeGamePostsForFeed(filtered));
+  }, [capSuggestedIfFollowing]);
 
   // When hidden IDs load from storage (or change), drop those posts from the current feed list
   useEffect(() => {
@@ -508,10 +534,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const injectPostsIntoFeed = useCallback(
     (incoming: Post[]) => {
       if (!Array.isArray(incoming) || incoming.length === 0) return;
-      // Oldest first so mergePostIntoFeed's insert-at-front leaves newest on top.
-      const sorted = [...incoming].sort((a, b) => getSortTimeMs(a) - getSortTimeMs(b));
       setPosts((prev) => {
-        let next = prev;
+        const list = Array.isArray(prev) ? prev : [];
+        const suggestedCount = list.filter((p) => (p as any)?.isSuggested).length;
+        // First-login pack: do not insert + re-sort — that jumps cards and breaks scroll.
+        if (suggestedCount >= 8) return list;
+        // Oldest first so mergePostIntoFeed's insert-at-front leaves newest on top.
+        const sorted = [...incoming].sort((a, b) => getSortTimeMs(a) - getSortTimeMs(b));
+        let next = list;
         for (const post of sorted) {
           next = mergePostIntoFeed(next, post);
         }
@@ -520,6 +550,34 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     },
     [mergePostIntoFeed],
   );
+
+  const dropOtherSuggestedAfterFollow = useCallback((authorId: string) => {
+    const id = String(authorId || '').trim();
+    if (!id) return;
+    setPosts((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list
+        .filter((p: any) => {
+          if (!p?.isSuggested) return true;
+          const aid =
+            p?.postedBy?._id != null
+              ? String(p.postedBy._id)
+              : p?.postedBy != null
+                ? String(p.postedBy)
+                : '';
+          return aid === id;
+        })
+        .map((p: any) => {
+          const aid =
+            p?.postedBy?._id != null
+              ? String(p.postedBy._id)
+              : p?.postedBy != null
+                ? String(p.postedBy)
+                : '';
+          return aid === id && p?.isSuggested ? { ...p, isSuggested: false } : p;
+        });
+    });
+  }, []);
 
   const updatePost = useCallback((postId: string, updates: Partial<Post>) => {
     setPosts((prevPosts) => {
@@ -733,6 +791,8 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         const removed = removedPostIdsRef.current;
         const fromApi = (Array.isArray(apiPosts) ? apiPosts : []).filter((p) => {
           const id = p?._id != null ? String(p._id) : '';
+          // Silent merge: do not swap in a new suggested pack (that remounts ads).
+          if ((p as any)?.isSuggested) return false;
           return id && !removed.has(id);
         });
         const apiIds = new Set(fromApi.map((p) => String(p._id)));
@@ -741,6 +801,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           const id = p?._id != null ? String(p._id) : '';
           if (!id || removed.has(id)) return false;
           if ((p as any)?.isLive) return true;
+          if ((p as any)?.isSuggested) return true;
           if (apiIds.has(id)) return false;
           const t = new Date((p as any).updatedAt || (p as any).createdAt).getTime();
           if (!Number.isFinite(t)) return false;
@@ -759,10 +820,10 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
           const nt = new Date((p as any).updatedAt || (p as any).createdAt).getTime();
           if (nt >= pt) byId.set(id, p);
         }
-        return Array.from(byId.values());
+        return capSuggestedIfFollowing(filterPostsForFeed(Array.from(byId.values())));
       });
     },
-    [],
+    [capSuggestedIfFollowing, filterPostsForFeed],
   );
 
   const addComment = useCallback((postId: string, comment: any) => {
@@ -797,6 +858,7 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
         appendPosts,
         addPost,
         injectPostsIntoFeed,
+        dropOtherSuggestedAfterFollow,
         updatePost,
         deletePost,
         removeLivePostsByStreamerId,

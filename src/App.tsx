@@ -10,6 +10,7 @@ import { LiveBroadcastProvider } from './context/LiveBroadcastContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import AppNavigator from './navigation/AppNavigator';
+import CountryRequiredModal from './components/CountryRequiredModal';
 import fcmService from './services/fcmService';
 import './config/googleSignIn';
 import mobileAds from 'react-native-google-mobile-ads';
@@ -59,6 +60,7 @@ const App = () => {
                     <GroupCallProvider>
                       <LiveBroadcastProvider>
                         <AppNavigator />
+                        <CountryRequiredModal />
                       </LiveBroadcastProvider>
                     </GroupCallProvider>
                   </LiveKitProvider>

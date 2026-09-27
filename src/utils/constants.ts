@@ -41,6 +41,7 @@ export const ENDPOINTS = {
   SEARCH_USER: '/api/user/search',
   SEARCH_USERS: '/api/user/search',
   GET_SUGGESTED_USERS: '/api/user/suggested',
+  EXPLORE_PEOPLE: '/api/user/explore',
   // Returns list of user objects (server-side limited), used by Messages search
   GET_FOLLOWING_USERS: '/api/user/following',
   GET_FOLLOWERS_USERS: '/api/user/followers',
@@ -59,6 +60,7 @@ export const ENDPOINTS = {
   /** PUT /api/post/:id — update text (owner or collaborative contributor) */
   UPDATE_POST: '/api/post',
   DELETE_POST: '/api/post',
+  REPORT_POST: '/api/post/report',
   // Backend route is /api/post/likes/:id
   LIKE_POST: '/api/post/likes',
   // Backend route is /api/post/likes-list/:id (paginated "who liked" list)

@@ -37,6 +37,7 @@ import {
   MAX_POST_AUDIO_DURATION_SEC,
 } from '../../utils/videoDuration';
 import { uploadManyMediaToR2, uploadMediaToR2 } from '../../utils/directR2Upload';
+import VideoFeedPreview from '../../components/VideoFeedPreview';
 
 const MAX_CHAR = 500;
 const PREVIEW_ZOOM_MIN = 1;
@@ -68,16 +69,20 @@ const CreatePostScreen = ({ navigation }: any) => {
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { width: winW } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
+  const mediaFrameWidth = Math.max(220, winW - 30);
+  const mediaMaxHeight = Math.round(winH * 0.5);
+  const mediaMinHeight = Math.min(180, mediaMaxHeight);
 
   const imagePreviewHeight = useMemo(() => {
     const w = imageData?.width;
     const h = imageData?.height;
-    const frameW = Math.max(200, winW - 60);
-    if (!w || !h || w <= 0 || h <= 0) return 220;
-    const computed = Math.round(frameW * (h / w));
-    return Math.min(320, Math.max(180, computed));
-  }, [imageData?.width, imageData?.height, winW]);
+    if (!w || !h || w <= 0 || h <= 0) {
+      return Math.min(mediaMaxHeight, Math.round(mediaFrameWidth * (9 / 16)));
+    }
+    const computed = Math.round(mediaFrameWidth * (h / w));
+    return Math.min(mediaMaxHeight, Math.max(mediaMinHeight, computed));
+  }, [imageData?.width, imageData?.height, mediaFrameWidth, mediaMaxHeight, mediaMinHeight]);
 
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -408,7 +413,7 @@ const CreatePostScreen = ({ navigation }: any) => {
           <View style={[styles.carouselPreviewWrap, { backgroundColor: colors.backgroundLight }]}>
             <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
               {carouselImages.map((asset, idx) => (
-                <View key={`${asset.uri}-${idx}`} style={{ width: winW - 30, height: imagePreviewHeight }}>
+                <View key={`${asset.uri}-${idx}`} style={{ width: mediaFrameWidth, height: imagePreviewHeight }}>
                   <Image source={{ uri: asset.uri! }} style={styles.imageFill} resizeMode="contain" />
                   <TouchableOpacity
                     style={styles.removeImageButton}
@@ -537,9 +542,18 @@ const CreatePostScreen = ({ navigation }: any) => {
         ) : null}
 
         {imageUri && isVideo && !carouselImages.length && (
-          <View style={styles.imageContainer}>
-            <View style={styles.videoPreview}>
-              <Text style={styles.videoPreviewIcon}>🎬</Text>
+          <View
+            style={[
+              styles.imageContainer,
+              { height: imagePreviewHeight, backgroundColor: '#000' },
+            ]}
+          >
+            <VideoFeedPreview
+              videoUrl={imageUri}
+              placeholderColor="#111"
+              spinnerColor={colors.primary}
+            />
+            <View style={styles.videoPreviewBadge} pointerEvents="none">
               <Text style={styles.videoPreviewText}>{t('videoSelected')}</Text>
               {!!imageData?.duration && imageData.duration > 0 && (
                 <Text style={styles.videoPreviewMeta}>
@@ -803,6 +817,7 @@ const styles = StyleSheet.create({
   },
   imageContainer: {
     marginTop: 15,
+    width: '100%',
     position: 'relative',
     borderRadius: 12,
     overflow: 'hidden',
@@ -851,27 +866,24 @@ const styles = StyleSheet.create({
   previewZoomChipDisabled: {
     opacity: 0.35,
   },
-  videoPreview: {
-    width: '100%',
-    height: 200,
-    borderRadius: 12,
-    backgroundColor: '#111',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  videoPreviewIcon: {
-    fontSize: 42,
-    marginBottom: 8,
+  videoPreviewBadge: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.62)',
   },
   videoPreviewText: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '600',
   },
   videoPreviewMeta: {
     color: '#94A3B8',
-    fontSize: 14,
-    marginTop: 6,
+    fontSize: 12,
+    marginTop: 2,
   },
   removeImageButton: {
     position: 'absolute',

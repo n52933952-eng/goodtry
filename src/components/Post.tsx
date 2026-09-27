@@ -283,13 +283,14 @@ const Post: React.FC<PostProps> = ({
     } catch (e) {}
   };
 
-  const { user } = useUser();
+  const { user, updateUser } = useUser();
   const {
     deletePost: deletePostContext,
     updatePost,
     hideFeedPostFromFeed,
     hideFeedSourceFromFeed,
     addHiddenFeedPostId,
+    dropOtherSuggestedAfterFollow,
   } = usePost();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
@@ -304,7 +305,11 @@ const Post: React.FC<PostProps> = ({
   const [editPostOpen, setEditPostOpen] = useState(false);
   const [collabMenuOpen, setCollabMenuOpen] = useState(false);
   const [carouselMenuOpen, setCarouselMenuOpen] = useState(false);
+  const [feedMenuOpen, setFeedMenuOpen] = useState(false);
+  const [feedMenuStep, setFeedMenuStep] = useState<'menu' | 'report'>('menu');
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
+  const [suggestedFollowed, setSuggestedFollowed] = useState(false);
+  const [suggestedFollowBusy, setSuggestedFollowBusy] = useState(false);
   const [postImagePreviewOpen, setPostImagePreviewOpen] = useState(false);
   const [carouselPreviewUri, setCarouselPreviewUri] = useState<string | null>(null);
   const [carouselPreviewIndex, setCarouselPreviewIndex] = useState(0);
@@ -1059,6 +1064,45 @@ const Post: React.FC<PostProps> = ({
     });
   }, [showFeedExtras, user?.following, postedById, isOwner]);
 
+  const showSuggestedFollow =
+    !!post?.isSuggested && !isOwner && !isFollowedAuthor && !suggestedFollowed && !!postedById;
+
+  const handleSuggestedFollow = useCallback(async () => {
+    if (!postedById || suggestedFollowBusy || suggestedFollowed) return;
+    setSuggestedFollowBusy(true);
+    try {
+      const data = await apiService.post(`${ENDPOINTS.FOLLOW_USER}/${postedById}`);
+      if (data?.error) {
+        showToast('Error', data.error, 'error');
+        return;
+      }
+      const serverFollowing = data?.current?.following;
+      if (Array.isArray(serverFollowing)) {
+        updateUser({
+          following: serverFollowing as any,
+          followers: data.current?.followers || user?.followers,
+        });
+      } else {
+        updateUser({ following: [...(user?.following || []), postedById] as any });
+      }
+      setSuggestedFollowed(true);
+      dropOtherSuggestedAfterFollow(postedById);
+    } catch (e: any) {
+      showToast('Error', e?.message || 'Follow failed', 'error');
+    } finally {
+      setSuggestedFollowBusy(false);
+    }
+  }, [
+    postedById,
+    suggestedFollowBusy,
+    suggestedFollowed,
+    showToast,
+    updateUser,
+    user?.followers,
+    user?.following,
+    dropOtherSuggestedAfterFollow,
+  ]);
+
   const showAuthorPresenceDot =
     isFollowedAuthor &&
     !isChannelPostFlag &&
@@ -1499,6 +1543,8 @@ const Post: React.FC<PostProps> = ({
   const isMyChannelFeedCard =
     !!post?.channelAddedBy && String(post.channelAddedBy) === String(user?._id);
 
+  const isAdminUser = !!user?.admin;
+
   const canHideRegularUserPost =
     showFeedExtras &&
     !!user &&
@@ -1512,16 +1558,31 @@ const Post: React.FC<PostProps> = ({
     !!post?._id &&
     /^[0-9a-fA-F]{24}$/.test(String(post._id));
 
+  const canReportPost =
+    !!user &&
+    !isOwner &&
+    !isChannelPostFlag &&
+    !isFootballPost &&
+    !isWeatherPost &&
+    !isChessPost &&
+    !isCardPost &&
+    !post?.isLive &&
+    !!post?._id &&
+    /^[0-9a-fA-F]{24}$/.test(String(post._id));
+
   /** Feed ⋮ menu: regular posts, Weather, or channels you added. No Football / system channels / games / live / own posts. */
   const showFeedPostMenu =
-    showFeedExtras &&
     !!user &&
     !isChessPost &&
     !isCardPost &&
     !post?.isLive &&
     !isFootballPost &&
     !isOwner &&
-    (canHideRegularUserPost || isWeatherPost || isMyChannelFeedCard);
+    (
+      canReportPost ||
+      isAdminUser ||
+      (showFeedExtras && (canHideRegularUserPost || isWeatherPost || isMyChannelFeedCard))
+    );
 
   const hideRegularPostFromFeed = () => {
     const isSelfContributor =
@@ -1605,14 +1666,49 @@ const Post: React.FC<PostProps> = ({
     );
   };
 
+  const reportThisPost = async () => {
+    try {
+      await apiService.post(`${ENDPOINTS.REPORT_POST}/${post._id}`, { reason: 'adult' });
+      deletePostContext(post._id);
+      onPostDeleted?.(String(post._id));
+      showToast('Success', 'Reported. Hidden for everyone.', 'success');
+    } catch (e: any) {
+      showToast('Error', e?.message || 'Failed to report', 'error');
+    }
+  };
+
+  const closeFeedMenu = () => {
+    setFeedMenuOpen(false);
+    setFeedMenuStep('menu');
+  };
+
   const handleFeedPostMenuPress = () => {
-    if (isWeatherPost || isMyChannelFeedCard) {
-      hideChannelOrWeatherFromFeed();
-      return;
-    }
-    if (canHideRegularUserPost) {
-      hideRegularPostFromFeed();
-    }
+    setFeedMenuStep('menu');
+    setFeedMenuOpen(true);
+  };
+
+  const onFeedMenuReport = () => {
+    setFeedMenuStep('report');
+  };
+
+  const onFeedMenuConfirmReport = async () => {
+    closeFeedMenu();
+    await reportThisPost();
+  };
+
+  const onFeedMenuNotInterested = () => {
+    closeFeedMenu();
+    hideRegularPostFromFeed();
+  };
+
+  const onFeedMenuRemoveChannel = () => {
+    closeFeedMenu();
+    hideChannelOrWeatherFromFeed();
+  };
+
+  const onFeedMenuAdminDelete = () => {
+    closeFeedMenu();
+    handleDelete();
   };
 
   const canEditPostText =
@@ -1756,7 +1852,13 @@ const Post: React.FC<PostProps> = ({
     : Math.round(windowHeight * (isFeedListCard ? 0.52 : 0.42));
   const capCarouselHeight = (h: number) => Math.min(h, carouselMaxHeight);
   const showContributorNamesOnProfile = fromScreen === 'UserProfile';
-  const feedMediaHeight = useFeedWideLayout ? feedCard.mediaHeight : (width - 30) * 0.5625;
+  /** Default media box = 16:9 of the real card width (not a fixed 220px strip). */
+  const feedMediaBoxWidth = useFeedWideLayout
+    ? feedCard.screenWidth
+    : fullWidthCard
+      ? width
+      : width - 30;
+  const feedMediaHeight = capFeedMediaHeight(Math.round(feedMediaBoxWidth * (9 / 16)));
   const feedWideContainerStyle = useFeedWideLayout
     ? {
         marginHorizontal: 0,
@@ -1816,7 +1918,7 @@ const Post: React.FC<PostProps> = ({
    * Clamped so nothing gets extreme (too short for ultrawide / too tall for 9:16).
    */
   const videoMediaWidth = useFeedWideLayout ? feedCard.screenWidth : width - 30;
-  const MIN_VIDEO_ASPECT = 0.75; // tallest allowed → up to 4:3 portrait (h = w / 0.75)
+  const MIN_VIDEO_ASPECT = 9 / 16; // tallest allowed → phone-recorded 9:16
   const MAX_VIDEO_ASPECT = 1.91; // widest allowed → ~1.91:1
   const dynamicVideoHeight = useMemo(() => {
     if (!videoAspect || !Number.isFinite(videoAspect) || videoAspect <= 0) {
@@ -2017,34 +2119,37 @@ const Post: React.FC<PostProps> = ({
         ) : (
           <View style={styles.headerInfo}>
             <View style={styles.headerTop}>
-              <Text style={[styles.name, { color: colors.text }]}>{post.postedBy?.name || 'Unknown'}</Text>
+              <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>
+                {post.postedBy?.name || 'Unknown'}
+              </Text>
               {post.isCollaborative && (
                 <Text style={styles.collaborativeBadge}>👥</Text>
               )}
-              <View style={styles.timeMetaRow}>
-                <Text style={[styles.time, styles.timeLtr, { color: colors.textGray }]}>
-                  {`· ${formatTime(post.createdAt)}`}
-                </Text>
-                {post.editedAt ? (
-                  <Text
-                    style={[
-                      styles.time,
-                      styles.timeLtr,
-                      { color: colors.textGray },
-                      isRTL ? styles.timeEditedRtl : null,
-                    ]}
-                  >
-                    {` · ${t('editedPost')}`}
-                  </Text>
-                ) : null}
-              </View>
+              {showSuggestedFollow && (
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    handleSuggestedFollow();
+                  }}
+                  style={styles.suggestedFollowBtn}
+                  disabled={suggestedFollowBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Follow"
+                >
+                  <Text style={styles.suggestedFollowText}>{suggestedFollowBusy ? '…' : 'Follow'}</Text>
+                </TouchableOpacity>
+              )}
             </View>
-            <Text style={[styles.username, { color: colors.textGray }]}>@{post.postedBy?.username}</Text>
+            <Text style={[styles.username, { color: colors.textGray }]} numberOfLines={1}>
+              @{post.postedBy?.username}
+              {` · ${formatTime(post.createdAt)}`}
+              {post.editedAt ? ` · ${t('editedPost')}` : ''}
+            </Text>
           </View>
         )}
 
         <View style={styles.headerActions}>
-          {canMessagePostOwner && (
+          {canMessagePostOwner && !showSuggestedFollow && (
             <TouchableOpacity
               onPress={(e) => {
                 e.stopPropagation();
@@ -3330,6 +3435,120 @@ const Post: React.FC<PostProps> = ({
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={feedMenuOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={closeFeedMenu}
+        statusBarTranslucent
+      >
+        <View style={styles.collabMenuOverlay}>
+          <Pressable style={styles.collabMenuBackdrop} onPress={closeFeedMenu} />
+          <View
+            style={[
+              styles.feedMenuSheet,
+              { backgroundColor: colors.backgroundLight, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.feedMenuGrabberWrap}>
+              <View style={[styles.feedMenuGrabber, { backgroundColor: colors.border }]} />
+            </View>
+            {feedMenuStep === 'report' ? (
+              <>
+                <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
+                  <Text style={[styles.collabMenuTitle, { color: colors.text }]}>Report post</Text>
+                  <TouchableOpacity onPress={closeFeedMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={[styles.collabMenuClose, { color: colors.textGray }]}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={[styles.feedMenuHint, { color: colors.textGray }]}>
+                  This hides the post for everyone.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                  onPress={() => { void onFeedMenuConfirmReport(); }}
+                >
+                  <Text style={styles.feedMenuEmoji}>🚩</Text>
+                  <View style={styles.feedMenuCopy}>
+                    <Text style={[styles.collabMenuRowText, { color: colors.error }]}>Report</Text>
+                    <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Adult or harmful content</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.feedMenuCancel} onPress={() => setFeedMenuStep('menu')}>
+                  <Text style={[styles.feedMenuCancelText, { color: colors.text }]}>Back</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
+                  <Text style={[styles.collabMenuTitle, { color: colors.text }]}>Post</Text>
+                  <TouchableOpacity onPress={closeFeedMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={[styles.collabMenuClose, { color: colors.textGray }]}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                {canReportPost ? (
+                  <TouchableOpacity
+                    style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                    onPress={onFeedMenuReport}
+                  >
+                    <Text style={styles.feedMenuEmoji}>🚩</Text>
+                    <View style={styles.feedMenuCopy}>
+                      <Text style={[styles.collabMenuRowText, { color: colors.error }]}>Report</Text>
+                      <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Hide this post for everyone</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+                {canHideRegularUserPost ? (
+                  <TouchableOpacity
+                    style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                    onPress={onFeedMenuNotInterested}
+                  >
+                    <Text style={styles.feedMenuEmoji}>🚫</Text>
+                    <View style={styles.feedMenuCopy}>
+                      <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                        {t('notInterested') || 'Not interested'}
+                      </Text>
+                      <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Remove it from your feed only</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+                {isWeatherPost || isMyChannelFeedCard ? (
+                  <TouchableOpacity
+                    style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                    onPress={onFeedMenuRemoveChannel}
+                  >
+                    <Text style={styles.feedMenuEmoji}>🗑️</Text>
+                    <View style={styles.feedMenuCopy}>
+                      <Text style={[styles.collabMenuRowText, { color: colors.text }]}>
+                        {t('removeFromFeed') || 'Remove from feed'}
+                      </Text>
+                      <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Hide this card from your home</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+                {isAdminUser ? (
+                  <TouchableOpacity
+                    style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                    onPress={onFeedMenuAdminDelete}
+                  >
+                    <Text style={styles.feedMenuEmoji}>⛔</Text>
+                    <View style={styles.feedMenuCopy}>
+                      <Text style={[styles.collabMenuRowText, { color: colors.error }]}>Delete for everyone</Text>
+                      <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Remove the post and its media</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity style={styles.feedMenuCancel} onPress={closeFeedMenu}>
+                  <Text style={[styles.feedMenuCancelText, { color: colors.text }]}>
+                    {t('cancel') || 'Cancel'}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
       <AddContributorModal
         visible={addContribOpen}
         onClose={() => setAddContribOpen(false)}
@@ -3446,10 +3665,12 @@ const styles = StyleSheet.create({
   },
   headerInfo: {
     flex: 1,
+    minWidth: 0,
   },
   headerTop: {
     flexDirection: 'row',
     alignItems: 'center',
+    minWidth: 0,
   },
   timeMetaRow: {
     flexDirection: 'row',
@@ -3462,6 +3683,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginLeft: 6,
     flexShrink: 0,
+  },
+  suggestedFollowBtn: {
+    backgroundColor: '#1DA1F2',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginLeft: 8,
+    flexShrink: 0,
+  },
+  suggestedFollowText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
   },
   headerMessageBtn: {
     padding: 6,
@@ -3488,6 +3722,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     color: COLORS.text,
+    flexShrink: 1,
+    minWidth: 0,
   },
   authorOnlineDot: {
     position: 'absolute',
@@ -3583,7 +3819,6 @@ const styles = StyleSheet.create({
   },
   videoContainer: {
     width: '100%',
-    aspectRatio: 16 / 9,
     borderRadius: 12,
     marginBottom: 10,
     overflow: 'hidden',
@@ -4044,6 +4279,61 @@ const styles = StyleSheet.create({
   collabMenuRowText: {
     fontSize: 16,
     fontWeight: '500',
+  },
+  feedMenuSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingBottom: 28,
+  },
+  feedMenuGrabberWrap: {
+    alignItems: 'center',
+    paddingTop: 10,
+  },
+  feedMenuGrabber: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+  },
+  feedMenuHint: {
+    fontSize: 14,
+    lineHeight: 20,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  feedMenuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+  },
+  feedMenuEmoji: {
+    fontSize: 20,
+    width: 28,
+    textAlign: 'center',
+  },
+  feedMenuCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  feedMenuSub: {
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  feedMenuCancel: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: 'rgba(127,127,127,0.14)',
+  },
+  feedMenuCancelText: {
+    fontSize: 16,
+    fontWeight: '700',
   },
   modalCard: {
     borderRadius: 12,
