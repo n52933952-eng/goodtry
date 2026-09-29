@@ -125,12 +125,28 @@ export function TabBarCollapseProvider({ children, tabBarHeight }: ProviderProps
   );
 }
 
+const detachedTabBarTranslate = new Animated.Value(0);
+const detachedTabBar = {
+  tabBarHeight: 0,
+  tabBarTranslateY: detachedTabBarTranslate,
+  tabBarTranslateStyle: { transform: [{ translateY: detachedTabBarTranslate }] },
+  onTabBarScroll: () => {},
+  mergeTabBarScroll: (
+    ...handlers: Array<(e: NativeSyntheticEvent<NativeScrollEvent>) => void>
+  ) =>
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      handlers.forEach((handler) => handler?.(e));
+    },
+  resetTabBar: () => {},
+  registerCollapsibleScreen: () => {},
+  unregisterCollapsibleScreen: () => {},
+};
+
 export function useTabBarCollapse() {
   const ctx = useContext(TabBarCollapseContext);
-  if (!ctx) {
-    throw new Error('useTabBarCollapse must be used within TabBarCollapseProvider');
-  }
-  return ctx;
+  // Explore, profile, and follow lists can open above the tabs. Those screens
+  // have no tab bar to collapse, so they use a no-op instead of crashing.
+  return ctx ?? detachedTabBar;
 }
 
 /** Enable tab-bar hide/show while this screen is focused (Feed, User Profile). */

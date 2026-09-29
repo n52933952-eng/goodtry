@@ -176,6 +176,19 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
   const deferIncomingFeedPostsRef = useRef(false);
   const pendingNewPostsRef = useRef<Post[]>([]);
   const [pendingNewPostsCount, setPendingNewPostsCount] = useState(0);
+  const feedOwnerRef = useRef('');
+  const feedOwnerId = user?._id ? String(user._id) : '';
+  if (feedOwnerRef.current !== feedOwnerId) {
+    feedOwnerRef.current = feedOwnerId;
+    pendingNewPostsRef.current = [];
+    removedPostIdsRef.current = new Set();
+    viewerSortBoostRef.current = {};
+    deferIncomingFeedPostsRef.current = false;
+    if (posts.length > 0 || pendingNewPostsCount > 0) {
+      setPosts([]);
+      setPendingNewPostsCount(0);
+    }
+  }
 
   const getSortTimeMs = (p: any): number => {
     const id = p?._id?.toString?.() ?? (p?._id != null ? String(p._id) : '');
@@ -280,18 +293,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [user?._id]);
 
-  // Drop feed when logged out or between accounts so a new session never flashes the prior user's posts.
-  useEffect(() => {
-    if (!user?._id) {
-      setPosts([]);
-    }
-  }, [user?._id]);
-
   const followingCountRef = useRef(0);
   followingCountRef.current = Array.isArray(user?.following) ? user.following.length : 0;
 
   const capSuggestedIfFollowing = useCallback((list: Post[]) => {
     if (followingCountRef.current <= 0) return list;
+    const suggestedCount = list.filter((p: any) => p?.isSuggested).length;
+    // First-login pack stays on screen after Follow, same as web, until a refresh replaces it.
+    if (suggestedCount >= 8) return list;
     let n = 0;
     return list.filter((p: any) => {
       if (!p?.isSuggested) return true;

@@ -494,6 +494,11 @@ const MainTabsNavigator = ({
       options={{ tabBarButton: () => null }}
     />
     <Tab.Screen
+      name="Explore"
+      component={ExploreStack}
+      options={{ tabBarButton: () => null }}
+    />
+    <Tab.Screen
       name="Chess"
       component={ChessScreen}
       options={{ tabBarButton: () => null }}
@@ -615,7 +620,8 @@ const ProfileStack = ({ navigation: stackNavigation }: any) => {
   );
 };
 
-// Explore stack — profile/post open here so ← / phone back return to Explore, not Home
+// Explore lives inside the tab bar (hidden tab, same as Notifications).
+// A profile opened from here keeps the bottom tabs, and back returns to Explore.
 const ExploreStack = () => {
   const { colors } = useTheme();
 
@@ -711,7 +717,6 @@ const MainStack = () => {
         }}
       />
       <Stack.Screen name="Activity" component={ActivityScreen} />
-      <Stack.Screen name="ExplorePeople" component={ExploreStack} />
       <Stack.Screen
         name="ChatScreen"
         component={ChatScreen}

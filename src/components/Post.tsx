@@ -290,7 +290,6 @@ const Post: React.FC<PostProps> = ({
     hideFeedPostFromFeed,
     hideFeedSourceFromFeed,
     addHiddenFeedPostId,
-    dropOtherSuggestedAfterFollow,
   } = usePost();
   const { t, isRTL } = useLanguage();
   const { colors } = useTheme();
@@ -1086,7 +1085,6 @@ const Post: React.FC<PostProps> = ({
         updateUser({ following: [...(user?.following || []), postedById] as any });
       }
       setSuggestedFollowed(true);
-      dropOtherSuggestedAfterFollow(postedById);
     } catch (e: any) {
       showToast('Error', e?.message || 'Follow failed', 'error');
     } finally {
@@ -1100,7 +1098,6 @@ const Post: React.FC<PostProps> = ({
     updateUser,
     user?.followers,
     user?.following,
-    dropOtherSuggestedAfterFollow,
   ]);
 
   const showAuthorPresenceDot =

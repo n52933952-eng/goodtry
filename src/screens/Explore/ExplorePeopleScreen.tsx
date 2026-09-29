@@ -23,10 +23,37 @@ import { rememberFollowProfile } from '../../utils/recentFollowProfiles';
 import { isVideoUrl, mediaDisplayUrl, videoPosterUrl } from '../../utils/mediaUrl';
 import VideoFeedPreview from '../../components/VideoFeedPreview';
 import { useWideScreenLayout } from '../../utils/responsiveLayout';
+import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 
 const PAGE_SIZE = 16;
 const GRID_PAD = 10;
 const GRID_GAP = 8;
+
+function exploreNameKey(user: any) {
+  const name = String(user?.name || '').trim().toLowerCase();
+  if (name) return name;
+  return String(user?.username || '').trim().toLowerCase();
+}
+
+function uniqueExplorePeople(list: any[]) {
+  const seenUser = new Set<string>();
+  const seenName = new Set<string>();
+  const seenPost = new Set<string>();
+  const out: any[] = [];
+  for (const u of list) {
+    const id = String(u?._id || '');
+    const postId = String(u?.latestPost?._id || '');
+    const name = exploreNameKey(u);
+    if (!id || seenUser.has(id)) continue;
+    if (name && seenName.has(name)) continue;
+    if (postId && seenPost.has(postId)) continue;
+    seenUser.add(id);
+    if (name) seenName.add(name);
+    if (postId) seenPost.add(postId);
+    out.push(u);
+  }
+  return out;
+}
 
 function clipWords(text: string, max = 10) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean);
@@ -37,6 +64,7 @@ function clipWords(text: string, max = 10) {
 
 const ExplorePeopleScreen = ({ navigation }: any) => {
   const insets = useSafeAreaInsets();
+  const { tabBarHeight } = useTabBarCollapse();
   const { width: windowWidth } = useWindowDimensions();
   const wide = useWideScreenLayout(720);
   const numColumns = wide.isWide ? 3 : 2;
@@ -86,11 +114,15 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
       setHasMore(more);
       if (mode === 'more') {
         setUsers((prev) => {
-          const seen = new Set(prev.map((u) => String(u._id)));
-          return [...prev, ...next.filter((u) => !seen.has(String(u._id)))];
+          const merged = uniqueExplorePeople([...prev, ...next]);
+          if (merged.length === prev.length) {
+            hasMoreRef.current = false;
+            setHasMore(false);
+          }
+          return merged;
         });
       } else {
-        setUsers(next);
+        setUsers(uniqueExplorePeople(next));
       }
     } catch (e: any) {
       showToast('Error', e?.message || 'Could not load people', 'error');
@@ -171,7 +203,7 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
             </View>
           )}
           <Text style={[styles.nameOnCard, compact && styles.nameCompact, !onPhoto && { color: colors.text, textShadowRadius: 0 }]} numberOfLines={1}>
-            {item.name || item.username}
+            {item.username ? `@${item.username}` : (item.name || 'User')}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -244,7 +276,16 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
   return (
     <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <TouchableOpacity
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+              return;
+            }
+            navigation.navigate('Feed', { screen: 'FeedScreen' });
+          }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Text style={[styles.back, { color: colors.text }]}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.text }]}>Explore</Text>
@@ -263,7 +304,7 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
           numColumns={numColumns}
           columnWrapperStyle={{ gap: GRID_GAP, paddingHorizontal: GRID_PAD, marginBottom: GRID_GAP }}
           contentContainerStyle={[
-            { paddingTop: 4, paddingBottom: 24 + insets.bottom },
+            { paddingTop: 4, paddingBottom: 24 + tabBarHeight },
             wide.contentCap,
           ]}
           onEndReached={() => load('more')}

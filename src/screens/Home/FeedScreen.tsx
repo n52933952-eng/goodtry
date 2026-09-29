@@ -159,6 +159,19 @@ const FeedScreen = ({ navigation }: any) => {
   const [storyRingReplayKey, setStoryRingReplayKey] = useState(0);
   const isFetchingRef = useRef(false);
   const feedCursorRef = useRef<string | null>(null);
+  const feedEpochRef = useRef(0);
+  const feedUserIdRef = useRef('');
+  const activeFeedUserId = user?._id ? String(user._id) : '';
+  if (feedUserIdRef.current !== activeFeedUserId) {
+    feedUserIdRef.current = activeFeedUserId;
+    feedEpochRef.current += 1;
+    isFetchingRef.current = false;
+    lastFeedRefreshAtMs = 0;
+    feedCursorRef.current = null;
+    if (Object.keys(storyByUserId).length > 0) {
+      setStoryByUserId({});
+    }
+  }
   const lastLoadMoreTimeRef = useRef<number>(0);
   const feedSessionUserIdRef = useRef<string | undefined>(undefined);
   const activeVideoPostIdRef = useRef<string | null>(null);
@@ -428,10 +441,6 @@ const FeedScreen = ({ navigation }: any) => {
   }, [hasNewPosts, newPostsAppearAnim, newPostsPulseAnim]);
 
   useEffect(() => {
-    feedSessionUserIdRef.current = user?._id;
-  }, [user?._id]);
-
-  useEffect(() => {
     const unsub = navigation.addListener('scrollToTop', () => {
       scrollFeedToTop();
     });
@@ -520,11 +529,17 @@ const FeedScreen = ({ navigation }: any) => {
 
       // Only refetch when empty or older than FEED_FOCUS_REFRESH_MIN_MS (module-level timer).
       const now = Date.now();
+      const uid = user?._id ? String(user._id) : '';
+      const accountChanged = feedSessionUserIdRef.current !== uid;
       const hasPosts = postsRef.current.length > 0;
       const feedStale = now - lastFeedRefreshAtMs >= FEED_FOCUS_REFRESH_MIN_MS;
-      if ((!hasPosts || feedStale) && !isFetchingRef.current) {
+      if ((accountChanged || !hasPosts || feedStale) && !isFetchingRef.current) {
+        if (accountChanged) {
+          feedSessionUserIdRef.current = uid;
+          lastFeedRefreshAtMs = 0;
+        }
         lastFeedRefreshAtMs = now;
-        fetchFeed(false, { merge: true });
+        fetchFeed(false, { merge: !accountChanged && hasPosts, fresh: accountChanged });
       } else if (loadingRef.current && hasPosts) {
         // Remount (e.g. after game → home) resets loading=true but skips fetch when
         // posts still exist and refresh is <30s — clear spinner so existing posts show.
@@ -547,7 +562,7 @@ const FeedScreen = ({ navigation }: any) => {
       };
       // fetchFeed intentionally omitted — use refs above to avoid focus-loop on loading/state changes
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fetchStoryStrip, refreshNotificationCount, refreshPresenceSubscription])
+    }, [user?._id, fetchStoryStrip, refreshNotificationCount, refreshPresenceSubscription])
   );
 
   /** First visit to home after login: ask camera + mic so calls/live do not block on permission dialogs. */
@@ -740,6 +755,7 @@ const FeedScreen = ({ navigation }: any) => {
     }
 
     isFetchingRef.current = true;
+    const epoch = feedEpochRef.current;
 
     try {
       const limit = FEED_PAGE_SIZE;
@@ -766,6 +782,9 @@ const FeedScreen = ({ navigation }: any) => {
       console.log(`📥 [FeedScreen] Fetching feed: loadMore=${loadMore}, limit=${limit}`);
 
       const data = await apiService.get(url);
+      if (epoch !== feedEpochRef.current) {
+        return;
+      }
       const postsArray = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
       const responseHasMore = data.hasMore !== undefined ? data.hasMore : postsArray.length === limit;
 
@@ -788,6 +807,9 @@ const FeedScreen = ({ navigation }: any) => {
 
       const prunedLive = loadMore ? uniquePosts : await pruneStaleLiveFeedPosts(uniquePosts);
       const prunedPosts = loadMore ? prunedLive : await pruneStaleGameFeedPosts(prunedLive);
+      if (epoch !== feedEpochRef.current) {
+        return;
+      }
 
       if (loadMore) {
         // Append without re-sorting existing rows (pagination)
@@ -1114,10 +1136,7 @@ const FeedScreen = ({ navigation }: any) => {
       >
         <TouchableOpacity
           style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
-          onPress={() => {
-            const root = navigation.getParent()?.getParent() || navigation.getParent() || navigation
-            root.navigate('ExplorePeople')
-          }}
+          onPress={() => navigation.navigate('Explore', { screen: 'ExploreHome' })}
         >
           <Text style={styles.quickAccessIcon}>👥</Text>
           <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Explore</Text>
