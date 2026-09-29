@@ -1495,13 +1495,17 @@ const styles = StyleSheet.create({
   },
   name: {
     fontSize: 22,
-    fontWeight: 'bold',
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    letterSpacing: 0.2,
     color: COLORS.text,
     textAlign: 'left',
     alignSelf: 'flex-start',
   },
   username: {
     fontSize: 15,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontStyle: 'italic',
     color: COLORS.textGray,
     textAlign: 'left',
     alignSelf: 'flex-start',

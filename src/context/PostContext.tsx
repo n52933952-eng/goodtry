@@ -530,10 +530,14 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
 
   const addPost = useCallback((post: Post) => {
     const id = post?._id != null ? String(post._id) : '';
+    const isLiveCard = !!(post as any)?.isLive;
+    const isGameCard = !!(post as any)?.chessGameData || !!(post as any)?.cardGameData;
+    // Suggested feed holds new posts while you are scrolled down. Live and game cards must not wait there.
+    if (isLiveCard && id) removedPostIdsRef.current.delete(id);
     if (id && removedPostIdsRef.current.has(id)) {
       return;
     }
-    if (deferIncomingFeedPostsRef.current) {
+    if (deferIncomingFeedPostsRef.current && !isLiveCard && !isGameCard) {
       queuePendingFeedPost(post);
       return;
     }

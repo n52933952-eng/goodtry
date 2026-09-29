@@ -1697,8 +1697,10 @@ const styles = StyleSheet.create({
     elevation: 20,
   },
   headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 26,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    letterSpacing: 0.4,
     color: COLORS.text,
   },
   headerButtons: {

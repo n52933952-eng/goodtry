@@ -6,6 +6,24 @@ import 'react-native-gesture-handler';
 import '@react-native-firebase/app'; // Import Firebase app first to ensure initialization
 import { registerGlobals } from '@livekit/react-native';
 
+// This Hermes build has no WeakRef. livekit-client needs it to open a room.
+if (typeof global.WeakRef !== 'function') {
+  global.WeakRef = class WeakRef {
+    constructor(target) {
+      this.target = target;
+    }
+    deref() {
+      return this.target;
+    }
+  };
+}
+if (typeof global.FinalizationRegistry !== 'function') {
+  global.FinalizationRegistry = class FinalizationRegistry {
+    register() {}
+    unregister() {}
+  };
+}
+
 // Hermes (RN) may not expose DOMException, but some RTC deps expect it.
 if (typeof global.DOMException === 'undefined') {
   global.DOMException = class DOMException extends Error {

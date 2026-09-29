@@ -314,6 +314,13 @@ const MainTabsNavigator = ({
       },
     }}
     tabBar={(props) => {
+      const focusedRoute = props.state.routes[props.state.index];
+      const nested = focusedRoute?.state;
+      const nestedName = nested?.routes?.[nested.index ?? 0]?.name;
+      // Explore grid is full screen. A profile opened from it still shows the tabs.
+      if (focusedRoute?.name === 'Explore' && (!nestedName || nestedName === 'ExploreHome')) {
+        return null;
+      }
       // Filter out hidden tabs (routes with tabBarButton: () => null)
       const visibleRoutes = props.state.routes.filter((route) => {
         const { options } = props.descriptors[route.key];

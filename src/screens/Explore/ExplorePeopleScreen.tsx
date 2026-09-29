@@ -23,7 +23,6 @@ import { rememberFollowProfile } from '../../utils/recentFollowProfiles';
 import { isVideoUrl, mediaDisplayUrl, videoPosterUrl } from '../../utils/mediaUrl';
 import VideoFeedPreview from '../../components/VideoFeedPreview';
 import { useWideScreenLayout } from '../../utils/responsiveLayout';
-import { useTabBarCollapse } from '../../context/TabBarCollapseContext';
 
 const PAGE_SIZE = 16;
 const GRID_PAD = 10;
@@ -64,7 +63,6 @@ function clipWords(text: string, max = 10) {
 
 const ExplorePeopleScreen = ({ navigation }: any) => {
   const insets = useSafeAreaInsets();
-  const { tabBarHeight } = useTabBarCollapse();
   const { width: windowWidth } = useWindowDimensions();
   const wide = useWideScreenLayout(720);
   const numColumns = wide.isWide ? 3 : 2;
@@ -304,7 +302,7 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
           numColumns={numColumns}
           columnWrapperStyle={{ gap: GRID_GAP, paddingHorizontal: GRID_PAD, marginBottom: GRID_GAP }}
           contentContainerStyle={[
-            { paddingTop: 4, paddingBottom: 24 + tabBarHeight },
+            { paddingTop: 4, paddingBottom: 24 + insets.bottom },
             wide.contentCap,
           ]}
           onEndReached={() => load('more')}

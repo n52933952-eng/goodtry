@@ -2116,7 +2116,14 @@ const Post: React.FC<PostProps> = ({
         ) : (
           <View style={styles.headerInfo}>
             <View style={styles.headerTop}>
-              <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>
+              <Text
+                style={[
+                  styles.name,
+                  { color: colors.text },
+                  !isChannelPostFlag && styles.romanName,
+                ]}
+                numberOfLines={1}
+              >
                 {post.postedBy?.name || 'Unknown'}
               </Text>
               {post.isCollaborative && (
@@ -2138,7 +2145,9 @@ const Post: React.FC<PostProps> = ({
               )}
             </View>
             <Text style={[styles.username, { color: colors.textGray }]} numberOfLines={1}>
-              @{post.postedBy?.username}
+              <Text style={isChannelPostFlag ? undefined : styles.romanUser}>
+                @{post.postedBy?.username}
+              </Text>
               {` · ${formatTime(post.createdAt)}`}
               {post.editedAt ? ` · ${t('editedPost')}` : ''}
             </Text>
@@ -3721,6 +3730,15 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     flexShrink: 1,
     minWidth: 0,
+  },
+  romanName: {
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  romanUser: {
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontStyle: 'italic',
   },
   authorOnlineDot: {
     position: 'absolute',
