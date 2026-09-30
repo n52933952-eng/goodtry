@@ -20,6 +20,7 @@ interface User {
   following: string[];
   weatherCities: string[];
   country?: string;
+  instagram?: string;
   admin?: boolean;
 }
 

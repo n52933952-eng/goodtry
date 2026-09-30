@@ -13,6 +13,7 @@ import {
   DeviceEventEmitter,
   Modal,
   TextInput,
+  Linking,
   Pressable,
   KeyboardAvoidingView,
   Platform,
@@ -52,6 +53,16 @@ import { mergePostUpdate, postBelongsToProfile, upsertProfilePost } from '../../
 import { usePost } from '../../context/PostContext';
 import { injectFollowedUserPostsIntoFeed } from '../../utils/injectFollowedUserPostsIntoFeed';
 
+function InstagramMark() {
+  return (
+    <Image
+      source={require('../../assets/instagram-3d.png')}
+      style={{ width: 22, height: 22 }}
+      resizeMode="contain"
+    />
+  );
+}
+
 const UserProfileScreen = ({ route, navigation }: any) => {
   const { username: usernameParam, userId: userIdParam } = route.params || {};
   const { user: currentUser, updateUser, logout, refetchSessionUser } = useUser();
@@ -86,6 +97,9 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   const [deletingAccount, setDeletingAccount] = useState(false);
   /** Full-screen profile photo (Instagram-style). */
   const [profilePicPreviewOpen, setProfilePicPreviewOpen] = useState(false);
+  const [showInstagramInput, setShowInstagramInput] = useState(false);
+  const [instagramUrl, setInstagramUrl] = useState('');
+  const [savingInstagram, setSavingInstagram] = useState(false);
   
   // Pagination state
   const [loadingMore, setLoadingMore] = useState(false);
@@ -448,6 +462,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
             username: currentUser.username,
             bio: currentUser.bio,
             country: currentUser.country,
+            instagram: currentUser.instagram,
             email: currentUser.email,
             // Preserve counts to avoid resetting them
             followersCount: prev.followersCount,
@@ -457,7 +472,7 @@ const UserProfileScreen = ({ route, navigation }: any) => {
         return prev;
       });
     }
-  }, [currentUser?.profilePic, currentUser?.name, currentUser?.username, currentUser?.bio, currentUser?.country, username]);
+  }, [currentUser?.profilePic, currentUser?.name, currentUser?.username, currentUser?.bio, currentUser?.country, currentUser?.instagram, username]);
 
   const buildFollowingSet = (followingList?: unknown[]) => {
     const ids = (followingList ?? currentUser?.following ?? []).map((id: unknown) => toUserIdStr(id)).filter(Boolean);
@@ -673,6 +688,42 @@ const UserProfileScreen = ({ route, navigation }: any) => {
   };
 
   const isOwnProfile = profileUser?._id === currentUser?._id;
+
+  useEffect(() => {
+    setInstagramUrl(profileUser?.instagram || '');
+  }, [profileUser?.instagram]);
+
+  const openInstagram = () => {
+    const raw = String(profileUser?.instagram || '').trim();
+    if (!raw) return;
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    Linking.openURL(url).catch(() => {});
+  };
+
+  const closeInstagramEditor = () => {
+    setShowInstagramInput(false);
+    setInstagramUrl(profileUser?.instagram || '');
+  };
+
+  const handleSaveInstagram = async () => {
+    if (!isOwnProfile || !currentUser?._id) return;
+    setSavingInstagram(true);
+    try {
+      const saved = instagramUrl.trim();
+      const data = await apiService.put(`${ENDPOINTS.UPDATE_USER}/${currentUser._id}`, {
+        instagram: saved,
+      });
+      const next = data?.instagram !== undefined ? data.instagram : saved;
+      setProfileUser((prev: any) => (prev ? { ...prev, instagram: next } : prev));
+      updateUser({ instagram: next });
+      setShowInstagramInput(false);
+      showToast(t('success'), 'Instagram saved', 'success');
+    } catch (error: any) {
+      showToast(t('error'), error?.message || 'Failed to save Instagram', 'error');
+    } finally {
+      setSavingInstagram(false);
+    }
+  };
 
   const checkProfileLiveStatus = useCallback(async () => {
     if (!profileUserId) {
@@ -1034,7 +1085,10 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                   </Text>
                 </View>
               </View>
-              {(!!profileUser.bio || !!String(profileUser.country || '').trim()) && (
+              {(!!profileUser.bio ||
+                !!String(profileUser.country || '').trim() ||
+                !!String(profileUser.instagram || '').trim() ||
+                isOwnProfile) && (
                 <View style={styles.bioBlock}>
                   {!!String(profileUser.country || '').trim() && (
                     <View style={[styles.countryChip, { backgroundColor: colors.background, borderColor: colors.border }]}>
@@ -1042,6 +1096,46 @@ const UserProfileScreen = ({ route, navigation }: any) => {
                       <Text style={[styles.countryName, { color: colors.textGray }]} numberOfLines={1}>
                         {String(profileUser.country).trim()}
                       </Text>
+                    </View>
+                  )}
+                  {(!!String(profileUser.instagram || '').trim() || isOwnProfile) && (
+                    <View style={styles.instagramRow}>
+                      <TouchableOpacity
+                        style={styles.instagramLink}
+                        onPress={
+                          String(profileUser?.instagram || '').trim()
+                            ? openInstagram
+                            : () => setShowInstagramInput(true)
+                        }
+                        activeOpacity={0.7}
+                      >
+                        <InstagramMark />
+                        <Text
+                          style={[
+                            styles.instagramText,
+                            {
+                              color: String(profileUser?.instagram || '').trim()
+                                ? colors.text
+                                : colors.textGray,
+                            },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {String(profileUser?.instagram || '').trim()
+                            ? String(profileUser?.name || profileUser?.username || 'Instagram').trim()
+                            : 'Add Instagram'}
+                        </Text>
+                      </TouchableOpacity>
+                      {isOwnProfile && !!String(profileUser?.instagram || '').trim() ? (
+                        <TouchableOpacity
+                          onPress={() => setShowInstagramInput(true)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          accessibilityRole="button"
+                          accessibilityLabel="Edit Instagram"
+                        >
+                          <Text style={[styles.instagramEdit, { color: colors.textGray }]}>Edit</Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   )}
                   {!!profileUser.bio && (
@@ -1272,6 +1366,60 @@ const UserProfileScreen = ({ route, navigation }: any) => {
           </Svg>
         </TouchableOpacity>
       </Animated.View>
+
+      <Modal
+        visible={showInstagramInput}
+        transparent
+        animationType="fade"
+        onRequestClose={closeInstagramEditor}
+      >
+        <KeyboardAvoidingView
+          style={styles.igModalRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <Pressable style={styles.igModalBackdrop} onPress={closeInstagramEditor} />
+          <View style={[styles.igSheet, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
+            <Text style={[styles.igSheetTitle, { color: colors.text }]}>Instagram</Text>
+            <Text style={[styles.igSheetHint, { color: colors.textGray }]}>
+              Paste the link to your Instagram profile
+            </Text>
+            <TextInput
+              style={[
+                styles.instagramInput,
+                { color: colors.text, borderColor: colors.border, backgroundColor: colors.background },
+              ]}
+              placeholder="instagram.com/username"
+              placeholderTextColor={colors.textGray}
+              value={instagramUrl}
+              onChangeText={setInstagramUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              autoComplete="off"
+              importantForAutofill="no"
+              textContentType="none"
+              keyboardType="url"
+              autoFocus
+            />
+            <View style={styles.igSheetActions}>
+              <TouchableOpacity onPress={closeInstagramEditor} style={styles.igSheetCancel}>
+                <Text style={[styles.instagramCancel, { color: colors.textGray }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.instagramSave, { backgroundColor: colors.primary }]}
+                onPress={handleSaveInstagram}
+                disabled={savingInstagram}
+              >
+                {savingInstagram ? (
+                  <ActivityIndicator color={colors.buttonText} size="small" />
+                ) : (
+                  <Text style={[styles.instagramSaveText, { color: colors.buttonText }]}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Modal
         visible={profilePicPreviewOpen && !!profileUser?.profilePic}
@@ -1560,6 +1708,89 @@ const styles = StyleSheet.create({
   statLabel: {
     fontSize: 14,
     color: COLORS.textGray,
+  },
+  instagramRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 8,
+    gap: 12,
+  },
+  instagramLink: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  instagramText: {
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  instagramEdit: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  igModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  igModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  igSheet: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 28,
+  },
+  igSheetTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  igSheetHint: {
+    fontSize: 13,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  igSheetActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 14,
+    gap: 16,
+  },
+  igSheetCancel: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  instagramInput: {
+    width: '100%',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+  },
+  instagramSave: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  instagramSaveText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  instagramCancel: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   /** Same height/radius as halfButton — full width for Follow / Following */
   followButtonFullWidth: {
