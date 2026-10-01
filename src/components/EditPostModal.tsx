@@ -30,9 +30,17 @@ import {
 } from '../utils/videoDuration';
 import { isCarouselPost, MAX_POST_CAROUSEL_IMAGES } from '../utils/postCarousel';
 import { mediaDisplayUrl } from '../utils/mediaUrl';
+import { getExternalVideoEmbed, getYouTubeVideoId, isPlainPageLink } from '../utils/channelPostUtils';
 import { uploadMediaToR2, uploadManyMediaToR2 } from '../utils/directR2Upload';
 
 const MAX_LEN = 500;
+
+function isExternalShareImg(url?: string) {
+  const img = String(url || '').trim();
+  if (!/^https?:\/\//i.test(img)) return false;
+  if (/r2\.cloudflarestorage|\.r2\.dev/i.test(img)) return false;
+  return isPlainPageLink(img) || !!getYouTubeVideoId(img) || !!getExternalVideoEmbed(img) || /\.(mp4|webm|ogg)(\?|$)/i.test(img);
+}
 
 type CarouselEditSlot =
   | { key: string; kind: 'existing'; url: string }
@@ -51,6 +59,8 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   const insets = useSafeAreaInsets();
   const showToast = useShowToast();
   const [text, setText] = useState('');
+  const [link, setLink] = useState('');
+  const externalShare = isExternalShareImg(post?.img);
   const [saving, setSaving] = useState(false);
   const [carouselSlots, setCarouselSlots] = useState<CarouselEditSlot[]>([]);
   const {
@@ -87,6 +97,7 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
   useEffect(() => {
     if (visible && post) {
       setText(post.text || '');
+      setLink(String(post.img || ''));
       clearImage();
       resetCarouselSlots();
     }
@@ -186,7 +197,12 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     const trimmed = text.trim();
     const willUploadNew = !captionOnlyEdit && !isCarousel && !!(imageUri && imageData);
 
-    if (!trimmed && !hasRemoteMedia && !willUploadNew) {
+    if (externalShare) {
+      if (!link.trim()) {
+        showToast(t('error'), 'Paste a link', 'error');
+        return;
+      }
+    } else if (!trimmed && !hasRemoteMedia && !willUploadNew) {
       showToast(t('error'), t('pleaseAddTextOrImage'), 'error');
       return;
     }
@@ -206,7 +222,20 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
 
     setSaving(true);
     try {
-      if (isCarousel) {
+      if (externalShare) {
+        const data = await apiService.put(`${ENDPOINTS.UPDATE_POST}/${post._id}`, {
+          text: trimmed,
+          img: link.trim(),
+        });
+        const updated = data?.post ?? data;
+        if (updated?._id) {
+          showToast(t('success'), t('postUpdatedSuccessfully'), 'success');
+          onSaved(updated);
+          onClose();
+        } else {
+          showToast(t('error'), t('failedToUpdatePost'), 'error');
+        }
+      } else if (isCarousel) {
         const newSlots = carouselSlots.filter((s) => s.kind === 'new');
         const uploadedUrls =
           newSlots.length > 0
@@ -288,6 +317,8 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
     post?._id,
     saving,
     text,
+    link,
+    externalShare,
     isCarousel,
     carouselSlots,
     captionOnlyEdit,
@@ -378,7 +409,20 @@ const EditPostModal: React.FC<Props> = ({ visible, onClose, post, onSaved }) => 
               {text?.length || 0}/{MAX_LEN}
             </Text>
 
-            {isCollaborative ? (
+            {externalShare ? (
+              <TextInput
+                style={[
+                  styles.input,
+                  { color: colors.text, borderColor: colors.border, backgroundColor: colors.background, minHeight: 48 },
+                ]}
+                value={link}
+                onChangeText={setLink}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="Link"
+                placeholderTextColor={colors.textGray}
+              />
+            ) : isCollaborative ? (
               <Text style={[styles.collabHint, { color: colors.textGray }]}>
                 {t('collaborativeEditTextHint')}
               </Text>

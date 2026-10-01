@@ -3,11 +3,13 @@ import {
   View,
   Text,
   Modal,
+  Pressable,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
   ActivityIndicator,
   Image,
+  TextInput,
 } from 'react-native';
 import { COLORS } from '../utils/constants';
 import { apiService } from '../services/api';
@@ -21,10 +23,19 @@ interface Channel {
   username: string;
   bio: string;
   category: string;
+  thumbnail?: string;
   streams: Array<{
     name: string;
     buttonColor: string;
+    thumbnail?: string;
   }>;
+}
+
+interface SavedLink {
+  _id: string;
+  title?: string;
+  thumbnail?: string;
+  provider?: string;
 }
 
 interface ChannelsModalProps {
@@ -44,6 +55,10 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
   const showToast = useShowToast();
   
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [links, setLinks] = useState<SavedLink[]>([]);
+  const [addUrl, setAddUrl] = useState('');
+  const [caption, setCaption] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [streamLoading, setStreamLoading] = useState<{ [key: string]: boolean }>({});
   const [expandedChannel, setExpandedChannel] = useState<string | null>(null);
@@ -61,6 +76,9 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       if (channelsData?.channels) {
         setChannels(channelsData.channels);
       }
+      if (Array.isArray(channelsData?.links)) {
+        setLinks(channelsData.links);
+      }
     } catch (error) {
       console.error('Error fetching channels:', error);
       showToast('Error', 'Failed to load channels', 'error');
@@ -76,17 +94,17 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       setStreamLoading(prev => ({ ...prev, [loadingKey]: true }));
 
       const data = await apiService.post(
-        `/api/news/post/livestream?channelId=${encodeURIComponent(channelId)}&streamIndex=${streamIndex}`
+        `/api/news/post/livestream?channelId=${encodeURIComponent(channelId)}&streamIndex=${streamIndex}`,
+        { text: caption.trim() },
       );
 
       const channel = channels.find(c => c.id === channelId);
+      onClose();
       if (data?.posted === false) {
         showToast('Info', data?.message || 'Already in your feed', 'info');
-      } else {
-        showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
+        return;
       }
-      onClose();
-      // Instant callback (no 500ms delay) so feed inject + scroll feel immediate.
+      showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
       onChannelFollowed?.(
         data?.postId ? String(data.postId) : undefined,
         data?.post || undefined,
@@ -96,6 +114,74 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       showToast('Error', 'Failed to add live stream', 'error');
     } finally {
       setStreamLoading(prev => ({ ...prev, [loadingKey]: false }));
+    }
+  };
+
+  const saveLink = async () => {
+    const typed = addUrl.trim();
+    const url = /^https?:\/\//i.test(typed) ? typed : `https://${typed}`;
+    if (!typed || addBusy) return;
+    setAddBusy(true);
+    try {
+      const data = await apiService.post('/api/news/links', { url });
+      if (data?.link) {
+        setLinks((prev) => [data.link, ...prev.filter((item) => item._id !== data.link._id)]);
+      }
+      setAddUrl('');
+      showToast('Success', 'Link added', 'success');
+    } catch (error: any) {
+      showToast('Error', error?.message || 'Could not add link', 'error');
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const hideChannel = async (channelId: string) => {
+    try {
+      await apiService.post('/api/news/channels/hide', { channelId });
+      setChannels((prev) => prev.filter((c) => c.id !== channelId));
+      setExpandedChannel(null);
+    } catch (error: any) {
+      showToast('Error', error?.message || 'Could not remove channel', 'error');
+    }
+  };
+
+  const watchLink = async (link: SavedLink) => {
+    const loadingKey = `link-${link._id}`;
+    setStreamLoading((prev) => ({ ...prev, [loadingKey]: true }));
+    try {
+      const data = await apiService.post(`/api/news/links/${link._id}/watch`, { text: caption.trim() });
+      onClose();
+      if (data?.posted === false) {
+        showToast('Info', 'Already in your feed', 'info');
+        return;
+      }
+      showToast('Success', 'Added to your feed', 'success');
+      onChannelFollowed?.(data?.postId ? String(data.postId) : undefined, data?.post);
+    } catch (error: any) {
+      showToast('Error', error?.message || 'Could not add to feed', 'error');
+    } finally {
+      setStreamLoading((prev) => ({ ...prev, [loadingKey]: false }));
+    }
+  };
+
+  const shareVideo = async (body: { linkId?: string; channelId?: string; streamIndex?: number }) => {
+    try {
+      const data = await apiService.post('/api/news/share', { ...body, text: caption.trim() });
+      showToast('Success', 'Shared to your followers', 'success');
+      onClose();
+    } catch (error: any) {
+      showToast('Error', error?.message || 'Could not share', 'error');
+    }
+  };
+
+  const removeLink = async (linkId: string) => {
+    try {
+      await apiService.delete(`/api/news/links/${linkId}`);
+      setLinks((prev) => prev.filter((item) => item._id !== linkId));
+      setExpandedChannel(null);
+    } catch (error: any) {
+      showToast('Error', error?.message || 'Could not remove link', 'error');
     }
   };
 
@@ -126,12 +212,12 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
       animationType="slide"
       onRequestClose={onClose}
     >
-      <View style={styles.modalOverlay}>
-        <View style={[styles.modalContent, { backgroundColor: colors.backgroundLight }]}>
+      <Pressable style={styles.modalOverlay} onPress={onClose}>
+        <Pressable style={[styles.modalContent, { backgroundColor: colors.backgroundLight }]} onPress={() => {}}>
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>📺 Channels</Text>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={[styles.modalCloseButton, { color: colors.textGray }]}>✕</Text>
+            <TouchableOpacity style={styles.removeX} onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.removeXText}>✕</Text>
             </TouchableOpacity>
           </View>
 
@@ -146,28 +232,57 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
               showsVerticalScrollIndicator={false}
             >
               {/* Live Stream Channels */}
-              {channels.length > 0 && (
+              <View style={styles.addRow}>
+                <View style={styles.addInputWrap}>
+                <TextInput
+                  style={[styles.addInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }, addUrl ? styles.addInputWithClear : null]}
+                  placeholder="Paste any link"
+                  placeholderTextColor={colors.textGray}
+                  value={addUrl}
+                  onChangeText={setAddUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  showSoftInputOnFocus={false}
+                  caretHidden={false}
+                />
+                {addUrl ? (
+                  <TouchableOpacity style={styles.clearLink} onPress={() => setAddUrl('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={styles.clearLinkText}>✕</Text>
+                  </TouchableOpacity>
+                ) : null}
+                </View>
+                <TouchableOpacity style={[styles.addButton, { backgroundColor: colors.primary }]} onPress={saveLink} disabled={addBusy}>
+                  {addBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addButtonText}>+</Text>}
+                </TouchableOpacity>
+              </View>
+              {(channels.length > 0 || links.length > 0) && (
                 <View style={styles.liveChannelsSection}>
                   <Text style={[styles.sectionTitle, { color: colors.text }]}>🔴 Live Channels</Text>
                   <View style={styles.liveChannelsGrid}>
                     {channels.map((channel) => (
-                      <TouchableOpacity
+                      <View
                         key={channel.id}
                         style={[
                           styles.liveChannelCard,
                           { backgroundColor: colors.cardBg, borderColor: colors.border },
                           expandedChannel === channel.id && styles.expandedChannelCard,
                         ]}
-                        onPress={() =>
-                          setExpandedChannel(expandedChannel === channel.id ? null : channel.id)
-                        }
                       >
-                        <View style={styles.liveChannelHeader}>
+                        <TouchableOpacity
+                          style={styles.liveChannelHeader}
+                          onPress={() =>
+                            setExpandedChannel(expandedChannel === channel.id ? null : channel.id)
+                          }
+                        >
+                          {channel.thumbnail ? (
+                            <Image source={{ uri: channel.thumbnail }} style={styles.thumb} />
+                          ) : (
                           <View style={[styles.liveChannelAvatar, { backgroundColor: colors.avatarBg }]}>
                             <Text style={styles.liveChannelAvatarText}>
                               {channel.name.charAt(0).toUpperCase()}
                             </Text>
                           </View>
+                          )}
                           <View style={styles.liveChannelInfo}>
                             <Text style={[styles.liveChannelName, { color: colors.cardText }]} numberOfLines={1}>
                               {channel.name}
@@ -176,50 +291,154 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
                               {getCategoryIcon(channel.category)}
                             </Text>
                           </View>
-                        </View>
+                          <TouchableOpacity
+                            style={styles.removeX}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            onPress={() => hideChannel(channel.id)}
+                          >
+                            <Text style={styles.removeXText}>✕</Text>
+                          </TouchableOpacity>
+                        </TouchableOpacity>
 
                         {expandedChannel === channel.id && (
                           <View style={styles.expandedContent}>
                             <Text style={[styles.channelBio, { color: colors.cardText }]}>{channel.bio}</Text>
+                            <TextInput
+                              style={[styles.addInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background, marginBottom: 10 }]}
+                              placeholder="Write something (optional)"
+                              placeholderTextColor={colors.textGray}
+                              value={caption}
+                              onChangeText={setCaption}
+                            />
                             <View style={styles.streamsContainer}>
                               {channel.streams.map((stream, index) => {
                                 const loadingKey = `${channel.id}-${index}`;
                                 const isLoading = streamLoading[loadingKey];
+                                const showLanguage = channel.streams.length > 1 && !!stream.name;
                                 return (
-                                  <TouchableOpacity
-                                    key={index}
-                                    style={[
-                                      styles.streamButton,
-                                      { backgroundColor: colorMap[stream.buttonColor] || COLORS.primary },
-                                    ]}
-                                    onPress={() => handleStreamClick(channel.id, index)}
-                                    disabled={isLoading}
-                                  >
-                                    {isLoading ? (
-                                      <ActivityIndicator size="small" color="#FFFFFF" />
-                                    ) : (
-                                      <>
-                                        <View style={styles.liveDot} />
-                                        <Text style={styles.streamButtonText}>
-                                          Watch Live {stream.name && `(${stream.name})`}
-                                        </Text>
-                                      </>
-                                    )}
-                                  </TouchableOpacity>
+                                  <View key={index} style={styles.streamGroup}>
+                                    {showLanguage ? (
+                                      <Text style={[styles.streamLanguage, { color: colors.text }]}>{stream.name}</Text>
+                                    ) : null}
+                                    <TouchableOpacity
+                                      style={[
+                                        styles.streamButton,
+                                        { backgroundColor: colorMap[stream.buttonColor] || COLORS.primary },
+                                      ]}
+                                      onPress={() => handleStreamClick(channel.id, index)}
+                                      disabled={isLoading}
+                                    >
+                                      {isLoading ? (
+                                        <ActivityIndicator size="small" color="#FFFFFF" />
+                                      ) : (
+                                        <>
+                                          <View style={styles.liveDot} />
+                                          <Text style={styles.streamButtonText}>Add to my feed</Text>
+                                        </>
+                                      )}
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={[styles.streamButton, { backgroundColor: colors.border }]}
+                                      onPress={() => shareVideo({ channelId: channel.id, streamIndex: index })}
+                                    >
+                                      <Text style={[styles.streamButtonText, { color: colors.text }]}>Share to feed</Text>
+                                    </TouchableOpacity>
+                                  </View>
                                 );
                               })}
+                              <TouchableOpacity onPress={() => hideChannel(channel.id)}>
+                                <Text style={{ color: colors.textGray, textAlign: 'center', fontWeight: '600' }}>Remove</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[styles.streamButton, { backgroundColor: colors.border }]}
+                                onPress={() => setExpandedChannel(null)}
+                              >
+                                <Text style={[styles.streamButtonText, { color: colors.text }]}>Close</Text>
+                              </TouchableOpacity>
                             </View>
                           </View>
                         )}
-                      </TouchableOpacity>
+                      </View>
+                    ))}
+                    {links.map((link) => (
+                      <View
+                        key={link._id}
+                        style={[
+                          styles.liveChannelCard,
+                          { backgroundColor: colors.cardBg, borderColor: colors.border },
+                          expandedChannel === `link:${link._id}` && styles.expandedChannelCard,
+                        ]}
+                      >
+                        <TouchableOpacity
+                          style={styles.liveChannelHeader}
+                          onPress={() => setExpandedChannel(expandedChannel === `link:${link._id}` ? null : `link:${link._id}`)}
+                        >
+                          {link.thumbnail ? (
+                            <Image source={{ uri: link.thumbnail }} style={styles.thumb} />
+                          ) : (
+                            <View style={[styles.liveChannelAvatar, { backgroundColor: colors.avatarBg }]}>
+                              <Text style={styles.liveChannelAvatarText}>▶</Text>
+                            </View>
+                          )}
+                          <View style={styles.liveChannelInfo}>
+                            <Text style={[styles.liveChannelName, { color: colors.cardText }]} numberOfLines={1}>
+                              {link.title || 'Video'}
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={styles.removeX}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            onPress={() => removeLink(link._id)}
+                          >
+                            <Text style={styles.removeXText}>✕</Text>
+                          </TouchableOpacity>
+                        </TouchableOpacity>
+                        {expandedChannel === `link:${link._id}` && (
+                          <View style={styles.expandedContent}>
+                            <TextInput
+                              style={[styles.addInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background, marginBottom: 10 }]}
+                              placeholder="Write something (optional)"
+                              placeholderTextColor={colors.textGray}
+                              value={caption}
+                              onChangeText={setCaption}
+                            />
+                            <TouchableOpacity
+                              style={[styles.streamButton, { backgroundColor: colors.primary }]}
+                              onPress={() => watchLink(link)}
+                              disabled={!!streamLoading[`link-${link._id}`]}
+                            >
+                              {streamLoading[`link-${link._id}`] ? (
+                                <ActivityIndicator color="#fff" size="small" />
+                              ) : (
+                                <Text style={styles.streamButtonText}>Add to my feed</Text>
+                              )}
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.streamButton, { backgroundColor: colors.border }]}
+                              onPress={() => shareVideo({ linkId: link._id })}
+                            >
+                              <Text style={[styles.streamButtonText, { color: colors.text }]}>Share to feed</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => removeLink(link._id)}>
+                              <Text style={{ color: colors.textGray, textAlign: 'center', fontWeight: '600' }}>Remove</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.streamButton, { backgroundColor: colors.border }]}
+                              onPress={() => setExpandedChannel(null)}
+                            >
+                              <Text style={[styles.streamButtonText, { color: colors.text }]}>Close</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
                     ))}
                   </View>
                 </View>
               )}
             </ScrollView>
           )}
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 };
@@ -298,6 +517,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  removeX: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#E11D48',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  removeXText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
   liveChannelAvatar: {
     width: 40,
     height: 40,
@@ -306,6 +540,59 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
+  },
+  thumb: {
+    width: 56,
+    height: 40,
+    borderRadius: 6,
+    marginRight: 12,
+    backgroundColor: '#111',
+  },
+  addRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 15,
+    paddingTop: 12,
+  },
+  addInputWrap: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  addInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  addInputWithClear: {
+    paddingRight: 36,
+  },
+  clearLink: {
+    position: 'absolute',
+    right: 8,
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearLinkText: {
+    color: '#E11D48',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  addButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addButtonText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '700',
   },
   liveChannelAvatarText: {
     color: '#FFFFFF',
@@ -337,7 +624,14 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   streamsContainer: {
-    gap: 10,
+    gap: 14,
+  },
+  streamGroup: {
+    gap: 8,
+  },
+  streamLanguage: {
+    fontSize: 15,
+    fontWeight: '700',
   },
   streamButton: {
     flexDirection: 'row',

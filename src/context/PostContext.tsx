@@ -467,10 +467,22 @@ export const PostProvider = ({ children }: { children: ReactNode }) => {
       }
     }
 
-    const withoutDup = safeArray.filter((p) => {
+    const existingIdx = safeArray.findIndex((p) => {
       const pId = p?._id?.toString?.() ?? String(p._id);
-      return pId && pId !== newId;
+      return pId && pId === newId;
     });
+    if (existingIdx >= 0) {
+      const prev = safeArray[existingIdx] as any;
+      const nextText = (post as any)?.text;
+      if (nextText && nextText !== prev?.text) {
+        const next = [...safeArray];
+        next[existingIdx] = { ...prev, text: nextText };
+        return next;
+      }
+      return safeArray;
+    }
+
+    const withoutDup = safeArray;
 
     const newAuthorId =
       (post as any)?.postedBy?._id?.toString?.() ??

@@ -14,6 +14,7 @@ export const SYSTEM_COLLABORATOR_USERNAMES = new Set([
   'NatGeoAnimals',
   'MBCDrama',
   'Fox11',
+  'VideoShelf',
 ]);
 
 export type CollaboratorUser = {

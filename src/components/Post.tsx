@@ -8,6 +8,7 @@ import {
   Alert,
   useWindowDimensions,
   ActivityIndicator,
+  Animated,
   Linking,
   ScrollView,
   Modal,
@@ -16,6 +17,7 @@ import {
   Pressable,
   Platform,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { useNavigation, CommonActions, useFocusEffect } from '@react-navigation/native';
@@ -70,6 +72,10 @@ import {
   getYouTubeVideoId,
   isChannelPost,
   hideChannelPostComments,
+  getExternalVideoEmbed,
+  isPlainPageLink,
+  pageLinkHost,
+  pagePreviewCandidates,
 } from '../utils/channelPostUtils';
 import {
   getPostCarouselSlides,
@@ -78,6 +84,8 @@ import {
   getMyCollaboratorImage,
   isCarouselPost,
 } from '../utils/postCarousel';
+
+const SILENT_PAGE = { html: '<!DOCTYPE html><html><body></body></html>' };
 
 const INLINE_VIDEO_CONTAIN_CSS = `
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -106,6 +114,112 @@ function formatCompactCount(count: number): string {
   if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
   const val = Math.round((n / 1_000_000) * 10) / 10;
   return val % 1 === 0 ? `${val}m` : `${val.toFixed(1)}m`;
+}
+
+const OWN_LINK_COLORS = ['#1D4ED8', '#7C3AED', '#0F766E', '#B45309', '#BE123C', '#0369A1'];
+
+function ownLinkColor(host: string): string {
+  let n = 0;
+  for (let i = 0; i < host.length; i++) n = (n + host.charCodeAt(i)) % OWN_LINK_COLORS.length;
+  return OWN_LINK_COLORS[n];
+}
+
+function PageLinkCard({
+  url,
+  thumb,
+  borderColor,
+}: {
+  url: string;
+  thumb?: string;
+  borderColor: string;
+  backgroundColor: string;
+  textColor: string;
+}) {
+  const host = pageLinkHost(url);
+  const candidates = useMemo(() => pagePreviewCandidates(url, thumb), [url, thumb]);
+  const [index, setIndex] = useState(0);
+  const [shotTry, setShotTry] = useState(0);
+  const [ready, setReady] = useState(false);
+  const current = candidates[index];
+  const src = current
+    ? current.kind === 'shot' && shotTry > 0
+      ? `${current.uri}&r=${shotTry}`
+      : current.uri
+    : '';
+  const showPhoto = !!current && ready;
+
+  useEffect(() => {
+    setIndex(0);
+    setShotTry(0);
+    setReady(false);
+  }, [url, thumb]);
+
+  useEffect(() => {
+    if (!current || ready) return undefined;
+    if (current.kind !== 'shot') {
+      setReady(true);
+      return undefined;
+    }
+    const timer = setTimeout(() => setIndex((i) => i + 1), 4500);
+    return () => clearTimeout(timer);
+  }, [current, index, ready]);
+
+  const open = (e: any) => {
+    e.stopPropagation();
+    Linking.openURL(url).catch(() => {});
+  };
+
+  const advance = () => {
+    setReady(false);
+    setShotTry(0);
+    setIndex((i) => i + 1);
+  };
+
+  return (
+    <TouchableOpacity
+      style={[styles.pageLinkShot, { borderColor, backgroundColor: showPhoto && current?.kind !== 'icon' ? '#111' : ownLinkColor(host) }]}
+      activeOpacity={0.9}
+      onPress={open}
+    >
+      {src ? (
+        <Image
+          source={{ uri: src }}
+          style={
+            !ready
+              ? styles.pageLinkProbe
+              : current?.kind === 'icon'
+                ? styles.pageLinkIcon
+                : styles.pageLinkImage
+          }
+          resizeMode={current?.kind === 'icon' ? 'contain' : 'cover'}
+          onError={advance}
+          onLoad={(e) => {
+            if (!current || current.kind !== 'shot') return;
+            const width = e?.nativeEvent?.source?.width || 0;
+            if (width >= 600 && shotTry > 0) {
+              setReady(true);
+              return;
+            }
+            if (shotTry < 2) {
+              setShotTry((n) => n + 1);
+              return;
+            }
+            advance();
+          }}
+        />
+      ) : null}
+      {!showPhoto ? (
+        <View style={styles.pageLinkOwn}>
+          <Text style={styles.pageLinkOwnLetter}>{host.charAt(0).toUpperCase()}</Text>
+        </View>
+      ) : null}
+      <View style={styles.pageLinkBar}>
+        <Text style={styles.pageLinkBarText} numberOfLines={1}>
+          {host}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
 }
 
 interface PostProps {
@@ -305,7 +419,7 @@ const Post: React.FC<PostProps> = ({
   const [collabMenuOpen, setCollabMenuOpen] = useState(false);
   const [carouselMenuOpen, setCarouselMenuOpen] = useState(false);
   const [feedMenuOpen, setFeedMenuOpen] = useState(false);
-  const [feedMenuStep, setFeedMenuStep] = useState<'menu' | 'report'>('menu');
+  const [feedMenuStep, setFeedMenuStep] = useState<'menu' | 'report' | 'remove'>('menu');
   const [storyMenu, setStoryMenu] = useState<{ userId: string; username: string } | null>(null);
   const [suggestedFollowed, setSuggestedFollowed] = useState(false);
   const [suggestedFollowBusy, setSuggestedFollowBusy] = useState(false);
@@ -401,9 +515,13 @@ const Post: React.FC<PostProps> = ({
   const [imageAspect, setImageAspect] = useState<number | null>(null);
   const feedVideoWebViewRef = useRef<WebView>(null);
   const detailVideoWebViewRef = useRef<WebView>(null);
+  const externalWebRef = useRef<WebView>(null);
+  const youtubeRef = useRef<any>(null);
   const mediaShouldPlay = autoPlayMedia && screenFocused;
   const mediaShouldPlayRef = useRef(mediaShouldPlay);
   mediaShouldPlayRef.current = mediaShouldPlay;
+  /** Stays on for a moment after leave so the player can be silenced before it is removed. */
+  const [playerOn, setPlayerOn] = useState(mediaShouldPlay);
   const lastFeedVideoTimeRef = useRef(0);
   const lastFeedVideoTimeUpdateRef = useRef(0);
 
@@ -453,6 +571,32 @@ const Post: React.FC<PostProps> = ({
     setIsFeedVideoPlaying(false);
   }, [stopFeedVideoWebView]);
 
+  const stopExternalEmbed = useCallback(() => {
+    try {
+      externalWebRef.current?.injectJavaScript(`
+        (function () {
+          try {
+            var list = document.querySelectorAll('video,audio');
+            for (var i = 0; i < list.length; i++) {
+              list[i].pause();
+              list[i].muted = true;
+              list[i].src = '';
+            }
+          } catch (e) {}
+          try { window.location.replace('about:blank'); } catch (e) {}
+        })();
+        true;
+      `);
+      externalWebRef.current?.stopLoading?.();
+    } catch (_) {}
+  }, []);
+
+  const stopYoutubePlayer = useCallback(() => {
+    try {
+      youtubeRef.current?.stopVideo?.();
+    } catch (_) {}
+  }, []);
+
   const resumeFeedVideo = () => {
     setIsFeedVideoPausedByUser(false);
     setIsFeedVideoPlaying(true);
@@ -475,6 +619,8 @@ const Post: React.FC<PostProps> = ({
   }, [post?._id]);
   const [isDeleting, setIsDeleting] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [sharingToFeed, setSharingToFeed] = useState(false);
+  const shareSpin = useRef(new Animated.Value(0)).current;
   const [conversations, setConversations] = useState<any[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
@@ -875,35 +1021,40 @@ const Post: React.FC<PostProps> = ({
   }, [post?._id]);
 
   useEffect(() => {
-    // New post or leaving viewport should reset manual pause so auto-play feels consistent.
-    if (!mediaShouldPlay) {
-      pauseFeedVideo();
-      setIsFeedVideoPausedByUser(false);
-      setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
+    if (mediaShouldPlay) {
+      setPlayerOn(true);
+      return;
     }
-  }, [mediaShouldPlay, post?._id, pauseFeedVideo]);
-
-  useEffect(() => {
-    if (!disableNavigation) return;
-    if (!mediaShouldPlay) {
-      pauseDetailVideo();
-      setYoutubePlaying(false);
-    }
-  }, [disableNavigation, mediaShouldPlay, pauseDetailVideo]);
+    // Leave the player mounted, blank it, then remove it. Android keeps sound if it is destroyed while playing.
+    pauseFeedVideo();
+    pauseDetailVideo();
+    stopExternalEmbed();
+    stopYoutubePlayer();
+    setYoutubePlaying(false);
+    setIsFeedVideoPausedByUser(false);
+    setIsFeedVideoPlaying(false);
+    setFeedVideoPreviewTimeMs(Math.max(1000, Math.floor(lastFeedVideoTimeRef.current * 1000)));
+    const timer = setTimeout(() => setPlayerOn(false), 400);
+    return () => clearTimeout(timer);
+  }, [mediaShouldPlay, post?._id, pauseFeedVideo, pauseDetailVideo, stopExternalEmbed, stopYoutubePlayer]);
 
   // Hard-stop any playing WebView media when this post cell unmounts (navigation away / list recycle).
   useEffect(() => {
     return () => {
       stopFeedVideoWebView();
       pauseDetailVideo();
+      stopExternalEmbed();
+      stopYoutubePlayer();
     };
-  }, [stopFeedVideoWebView, pauseDetailVideo]);
+  }, [stopFeedVideoWebView, pauseDetailVideo, stopExternalEmbed, stopYoutubePlayer]);
 
   // Immediate hard-stop when any screen blurs — don't wait for React re-render (Android WebView audio).
   useEffect(() => {
     const pauseSub = DeviceEventEmitter.addListener(FEED_VIDEO_PAUSE_ALL, () => {
       stopFeedVideoWebView();
       pauseDetailVideo();
+      stopExternalEmbed();
+      stopYoutubePlayer();
       setYoutubePlaying(false);
       setIsFeedVideoPlaying(false);
     });
@@ -920,7 +1071,7 @@ const Post: React.FC<PostProps> = ({
       pauseSub.remove();
       soundSub.remove();
     };
-  }, [stopFeedVideoWebView, pauseDetailVideo, injectFeedVideoMute]);
+  }, [stopFeedVideoWebView, pauseDetailVideo, stopExternalEmbed, stopYoutubePlayer, injectFeedVideoMute]);
 
   // Active feed video — apply global sound preference when this post becomes focused.
   useEffect(() => {
@@ -1015,6 +1166,7 @@ const Post: React.FC<PostProps> = ({
 
   const youtubeVideoId = getYouTubeVideoId(post.img || '');
   const isYouTubePost = !!youtubeVideoId;
+  const externalEmbed = !isYouTubePost ? getExternalVideoEmbed(post.img) : null;
   const isChannelPostFlag = isChannelPost(post);
   const hideChannelPostCommentsFlag = hideChannelPostComments(post);
 
@@ -1245,6 +1397,42 @@ const Post: React.FC<PostProps> = ({
     } finally {
       if (loadMore) setLoadingMoreConversations(false);
       else setLoadingConversations(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!sharingToFeed) {
+      shareSpin.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(shareSpin, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: true,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [sharingToFeed, shareSpin]);
+
+  const sharePostToFeed = async () => {
+    if (sharingToFeed || !post?._id) return;
+    setSharingToFeed(true);
+    try {
+      const data = await apiService.post('/api/news/share', {
+        postId: post._id,
+        text: post.text || '',
+        embedUrl: post.img || '',
+      });
+      showToast(t('success'), data?.already ? 'Already on your feed' : 'Shared', 'success');
+      if (!data?.already) deletePostContext(post._id);
+      return true;
+    } catch (error: any) {
+      showToast(t('error'), error?.message || 'Could not share to feed', 'error');
+      return false;
+    } finally {
+      setSharingToFeed(false);
     }
   };
 
@@ -1627,40 +1815,25 @@ const Post: React.FC<PostProps> = ({
     ]);
   };
 
-  const hideChannelOrWeatherFromFeed = () => {
-    Alert.alert(
-      t('removeFromFeed'),
-      t('removeFromFeedHint'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('removeFromFeedConfirm'),
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              // Channels you add are real DB posts scoped to you (`channelAddedBy`).
-              // Deleting them server-side prevents them from "coming back" when you follow Football/refresh feed.
-              if (isMyChannelFeedCard && post?._id) {
-                await apiService.delete(`${ENDPOINTS.DELETE_POST}/${String(post._id)}`);
-                deletePostContext(String(post._id));
-                onPostDeleted?.(String(post._id));
-              } else {
-                // Football/Weather cards are global/system posts; hide only.
-                const uname = post?.postedBy?.username;
-                if (uname === 'Football' || uname === 'Weather') {
-                  hideFeedSourceFromFeed(String(uname));
-                } else {
-                  await hideFeedPostFromFeed(String(post._id));
-                }
-              }
-              showToast(t('success'), t('removedFromFeed'), 'success');
-            } catch (e: any) {
-              showToast(t('error'), e?.message || 'Failed', 'error');
-            }
-          },
-        },
-      ]
-    );
+  const confirmRemoveFromFeed = async () => {
+    closeFeedMenu();
+    try {
+      if (isMyChannelFeedCard && post?._id) {
+        await apiService.delete(`${ENDPOINTS.DELETE_POST}/${String(post._id)}`);
+        deletePostContext(String(post._id));
+        onPostDeleted?.(String(post._id));
+      } else {
+        const uname = post?.postedBy?.username;
+        if (uname === 'Football' || uname === 'Weather') {
+          hideFeedSourceFromFeed(String(uname));
+        } else {
+          await hideFeedPostFromFeed(String(post._id));
+        }
+      }
+      showToast(t('success'), t('removedFromFeed'), 'success');
+    } catch (e: any) {
+      showToast(t('error'), e?.message || 'Failed', 'error');
+    }
   };
 
   const reportThisPost = async () => {
@@ -1699,8 +1872,7 @@ const Post: React.FC<PostProps> = ({
   };
 
   const onFeedMenuRemoveChannel = () => {
-    closeFeedMenu();
-    hideChannelOrWeatherFromFeed();
+    setFeedMenuStep('remove');
   };
 
   const onFeedMenuAdminDelete = () => {
@@ -1974,6 +2146,10 @@ const Post: React.FC<PostProps> = ({
       navigateToFootballTab();
       return;
     }
+    if (isMyChannelFeedCard && user?.username) {
+      navigateToUserProfile(user.username);
+      return;
+    }
     if (isChannelPostFlag && post?._id) {
       navigateToPostDetail(post._id);
       return;
@@ -2036,7 +2212,10 @@ const Post: React.FC<PostProps> = ({
           >
           {(() => {
             // Use current user's profilePic if it's own post (for immediate updates)
-            const avatarPic = isOwner && user?.profilePic 
+            const showMine = isMyChannelFeedCard && !isFootballPost;
+            const avatarPic = showMine
+              ? user?.profilePic
+              : isOwner && user?.profilePic 
               ? user.profilePic 
               : (post.postedBy?.profilePic && !isChannelPostFlag ? post.postedBy.profilePic : null);
             
@@ -2050,8 +2229,8 @@ const Post: React.FC<PostProps> = ({
                 <Text style={styles.avatarText} includeFontPadding={false}>
                   {(() => {
                     // For channels, use first two letters of username or name
-                    const name = post.postedBy?.name || post.postedBy?.username || '';
-                    if (isChannelPostFlag && name.length >= 2) {
+                    const name = (isMyChannelFeedCard && !isFootballPost ? user?.name : post.postedBy?.name) || post.postedBy?.username || '';
+                    if (isChannelPostFlag && !isMyChannelFeedCard && name.length >= 2) {
                       return name.substring(0, 2).toUpperCase();
                     }
                     // For regular users, use first letter
@@ -2120,11 +2299,11 @@ const Post: React.FC<PostProps> = ({
                 style={[
                   styles.name,
                   { color: colors.text },
-                  !isChannelPostFlag && styles.romanName,
+                  (!isChannelPostFlag || isMyChannelFeedCard) && styles.romanName,
                 ]}
                 numberOfLines={1}
               >
-                {post.postedBy?.name || 'Unknown'}
+                {(isMyChannelFeedCard && !isFootballPost ? user?.name : post.postedBy?.name) || 'Unknown'}
               </Text>
               {post.isCollaborative && (
                 <Text style={styles.collaborativeBadge}>👥</Text>
@@ -2145,8 +2324,8 @@ const Post: React.FC<PostProps> = ({
               )}
             </View>
             <Text style={[styles.username, { color: colors.textGray }]} numberOfLines={1}>
-              <Text style={isChannelPostFlag ? undefined : styles.romanUser}>
-                @{post.postedBy?.username}
+              <Text style={isChannelPostFlag && !isMyChannelFeedCard ? undefined : styles.romanUser}>
+                @{isMyChannelFeedCard && !isFootballPost ? user?.username : post.postedBy?.username}
               </Text>
               {` · ${formatTime(post.createdAt)}`}
               {post.editedAt ? ` · ${t('editedPost')}` : ''}
@@ -2296,12 +2475,13 @@ const Post: React.FC<PostProps> = ({
 
       {post.img && isYouTubePost && youtubeVideoId ? (
         disableNavigation ? (
-          mediaShouldPlay ? (
+          playerOn ? (
           <View style={videoContainerStyle}>
             <YoutubePlayer
+            ref={youtubeRef}
             height={feedMediaHeight}
             videoId={youtubeVideoId}
-            play={youtubePlaying}
+            play={mediaShouldPlay && youtubePlaying}
             mute={false}
             webViewProps={{
               allowsInlineMediaPlayback: true,
@@ -2365,14 +2545,80 @@ const Post: React.FC<PostProps> = ({
             </View>
           </TouchableOpacity>
         )
+      ) : post.img && externalEmbed ? (
+        disableNavigation ? (
+          playerOn ? (
+          <View style={videoContainerStyle}>
+            <WebView
+              ref={externalWebRef}
+              source={
+                mediaShouldPlay
+                  ? {
+                      uri: externalEmbed.src,
+                      headers: externalEmbed.src.includes('dailymotion.com')
+                        ? { Referer: 'https://www.dailymotion.com/' }
+                        : undefined,
+                    }
+                  : SILENT_PAGE
+              }
+              style={styles.youtubeThumbnail}
+              allowsInlineMediaPlayback
+              mediaPlaybackRequiresUserAction={false}
+              javaScriptEnabled
+              domStorageEnabled
+              allowsFullscreenVideo
+            />
+          </View>
+          ) : (
+            <View style={videoContainerStyle}>
+              {externalEmbed.thumb ? (
+                <SafeImage
+                  source={{ uri: externalEmbed.thumb }}
+                  style={styles.youtubeThumbnail}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.youtubeThumbnail, { backgroundColor: '#111' }]} />
+              )}
+              <View style={styles.youtubeOverlay} pointerEvents="none">
+                <View style={styles.youtubePlayButton}>
+                  <Text style={styles.youtubePlayIcon}>▶</Text>
+                </View>
+              </View>
+            </View>
+          )
+        ) : (
+          <TouchableOpacity
+            onPress={() => navigateToPostDetail(post._id)}
+            activeOpacity={0.9}
+          >
+            <View style={videoContainerStyle}>
+              {externalEmbed.thumb ? (
+                <SafeImage
+                  source={{ uri: externalEmbed.thumb }}
+                  style={styles.youtubeThumbnail}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.youtubeThumbnail, { backgroundColor: '#111' }]} />
+              )}
+              <View style={styles.youtubeOverlay}>
+                <View style={styles.youtubePlayButton}>
+                  <Text style={styles.youtubePlayIcon}>▶</Text>
+                </View>
+                <Text style={styles.youtubeWatchText}>Tap to watch</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        )
       ) : post.img && isVideoPost ? (
         disableNavigation ? (
-          mediaShouldPlay ? (
+          playerOn ? (
           <View style={videoOnlyContainerStyle}>
             <WebView
-            key={`detail-vid-${String(post._id)}-${mediaShouldPlay ? 'on' : 'off'}`}
+            key={`detail-vid-${String(post._id)}`}
             ref={detailVideoWebViewRef}
-            source={{
+            source={mediaShouldPlay ? {
               html: `
                 <!DOCTYPE html>
                 <html>
@@ -2418,7 +2664,7 @@ const Post: React.FC<PostProps> = ({
                   </body>
                 </html>
               `
-            }}
+            } : SILENT_PAGE}
             style={styles.videoWebView}
             allowsFullscreenVideo={true}
             mediaPlaybackRequiresUserAction={!(disableNavigation && mediaShouldPlay)}
@@ -2484,7 +2730,7 @@ const Post: React.FC<PostProps> = ({
             </View>
           )
         ) : (
-          mediaShouldPlay && !feedVideoErrored ? (
+          playerOn && !feedVideoErrored ? (
             <View style={videoOnlyContainerStyle}>
               {(!feedVideoReady || !isFeedVideoPlaying || isFeedVideoPausedByUser) && (
                 <View style={styles.feedVideoPreviewOverlay} pointerEvents="box-none">
@@ -2510,9 +2756,9 @@ const Post: React.FC<PostProps> = ({
                 </View>
               )}
               <WebView
-                key={`feed-vid-${String(post._id)}-${mediaShouldPlay ? 'on' : 'off'}`}
+                key={`feed-vid-${String(post._id)}`}
                 ref={feedVideoWebViewRef}
-                source={feedAutoPlaySource}
+                source={mediaShouldPlay ? feedAutoPlaySource : SILENT_PAGE}
                 style={styles.videoWebView}
                 pointerEvents="none"
                 allowsFullscreenVideo={false}
@@ -2524,6 +2770,10 @@ const Post: React.FC<PostProps> = ({
                 originWhitelist={['*']}
                 onLoadStart={() => setFeedVideoReady(false)}
                 onLoadEnd={() => {
+                  if (!mediaShouldPlayRef.current) {
+                    stopFeedVideoWebView();
+                    return;
+                  }
                   feedVideoWebViewRef.current?.injectJavaScript(`
                     (function () {
                       var v = document.getElementById('v');
@@ -2690,6 +2940,14 @@ const Post: React.FC<PostProps> = ({
             onPressSlide={() => navigateToPostDetail(post._id)}
           />
         )
+      ) : isPlainPageLink(post.img) ? (
+        <PageLinkCard
+          url={String(post.img)}
+          thumb={post.linkThumb}
+          borderColor={colors.border}
+          backgroundColor={colors.background}
+          textColor={colors.textGray}
+        />
       ) : post.img ? (
         disableNavigation ? (
           <>
@@ -3010,13 +3268,14 @@ const Post: React.FC<PostProps> = ({
           {/* Feed: 💬 locked by likes. Profile/detail: 💬 on the right edge. */}
           <View
             style={[
-              styles.footerPrimaryActions,
+              showFeedExtras ? styles.footerPrimaryActionsInline : styles.footerPrimaryActions,
               !showFeedExtras && styles.footerPrimaryActionsWide,
             ]}
           >
+            {!(isMyChannelFeedCard && !isFootballPost) ? (
             <View
               style={[
-                styles.likeActionCluster,
+                showFeedExtras ? styles.likeActionClusterFeed : styles.likeActionCluster,
                 !showFeedExtras && styles.likeActionClusterFlow,
               ]}
             >
@@ -3057,7 +3316,7 @@ const Post: React.FC<PostProps> = ({
                 disabled={localLikesCount <= 0}
                 hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
                 style={[
-                  styles.likeMetaSlot,
+                  showFeedExtras ? styles.likeMetaSlotFeed : styles.likeMetaSlot,
                   localLikesCount <= 0 && styles.likeMetaSlotIdle,
                 ]}
               >
@@ -3093,11 +3352,12 @@ const Post: React.FC<PostProps> = ({
                 </Text>
               </TouchableOpacity>
             </View>
+            ) : null}
 
             {!hideChannelPostCommentsFlag ? (
               <TouchableOpacity
                 style={[
-                  styles.commentActionCluster,
+                  showFeedExtras ? styles.commentActionClusterInline : styles.commentActionCluster,
                   !showFeedExtras && styles.commentActionClusterEnd,
                 ]}
                 onPress={(e) => {
@@ -3169,42 +3429,79 @@ const Post: React.FC<PostProps> = ({
                   )}
                 </View>
               </TouchableOpacity>
-            ) : (
+            ) : !(isMyChannelFeedCard && !isFootballPost) ? (
               <View
                 style={[
-                  styles.commentActionCluster,
+                  showFeedExtras ? styles.commentActionClusterInline : styles.commentActionCluster,
                   !showFeedExtras && styles.commentActionClusterEnd,
                 ]}
               />
-            )}
+            ) : null}
           </View>
 
           {showFeedExtras ? (
             <View style={styles.footerSecondaryActions}>
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  openShareModal();
-                }}
-              >
-                <Text style={styles.actionIcon}>📤</Text>
-                <Text style={[styles.actionText, { color: colors.textGray }]}>Share</Text>
-              </TouchableOpacity>
-
-              {isCapsuleEligiblePost ? (
+              {(() => {
+                if (!isMyChannelFeedCard || !String(post?.img || '').trim()) return null;
+                return (
+                  <View style={styles.footerActionSlot}>
+                    <TouchableOpacity
+                      style={styles.actionButton}
+                      disabled={sharingToFeed}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        sharePostToFeed();
+                      }}
+                    >
+                      <Animated.View
+                        style={{
+                          transform: [{
+                            rotate: shareSpin.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: ['0deg', '360deg'],
+                            }),
+                          }],
+                        }}
+                      >
+                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                        <Path d="M17 1l4 4-4 4" stroke={colors.textGray} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                        <Path d="M3 11V9a4 4 0 0 1 4-4h14" stroke={colors.textGray} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                        <Path d="M7 23l-4-4 4-4" stroke={colors.textGray} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                        <Path d="M21 13v2a4 4 0 0 1-4 4H3" stroke={colors.textGray} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                      </Animated.View>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })()}
+              <View style={styles.footerActionSlot}>
                 <TouchableOpacity
-                  style={styles.actionButton}
+                  style={[styles.actionButton, styles.footerActionButton]}
                   onPress={(e) => {
                     e.stopPropagation();
-                    openCapsuleModal();
+                    openShareModal();
                   }}
                 >
-                  <Text style={styles.actionIcon}>{capsuleSealed ? '🔔' : '🕰️'}</Text>
-                  <Text style={[styles.actionText, { color: colors.textGray }]}>
-                    {capsuleSealed ? (capsuleSelectedLabel || 'Set') : 'Remind'}
-                  </Text>
+                  <Text style={styles.actionIcon}>📤</Text>
+                  <Text style={[styles.actionText, styles.footerActionLabel, { color: colors.textGray }]} numberOfLines={1}>Share</Text>
                 </TouchableOpacity>
+              </View>
+
+              {isCapsuleEligiblePost ? (
+                <View style={styles.footerActionSlot}>
+                  <TouchableOpacity
+                    style={[styles.actionButton, styles.footerActionButton]}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      openCapsuleModal();
+                    }}
+                  >
+                    <Text style={styles.actionIcon}>{capsuleSealed ? '🔔' : '🕰️'}</Text>
+                    <Text style={[styles.actionText, styles.footerActionLabel, { color: colors.textGray }]} numberOfLines={1}>
+                      {capsuleSealed ? (capsuleSelectedLabel || 'Set') : 'Remind'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               ) : null}
             </View>
           ) : null}
@@ -3219,7 +3516,24 @@ const Post: React.FC<PostProps> = ({
       >
         <View style={styles.overlay}>
           <View style={[styles.modalCard, { backgroundColor: colors.backgroundLight, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Share to chat</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Share</Text>
+            {isMyChannelFeedCard && post?.img ? (
+              <TouchableOpacity
+                style={[styles.modalRow, { borderColor: colors.border, marginBottom: 8 }]}
+                disabled={sharingToFeed}
+                onPress={async () => {
+                  const ok = await sharePostToFeed();
+                  if (ok) setShareModalVisible(false);
+                }}
+              >
+                {sharingToFeed ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Text style={{ color: colors.text, fontWeight: '700' }}>Share to feed</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
+            <Text style={[styles.modalSub, { color: colors.textGray, marginBottom: 8 }]}>Share to message</Text>
             {loadingConversations ? (
               <View style={styles.modalLoading}>
                 <ActivityIndicator size="small" color={colors.primary} />
@@ -3460,7 +3774,36 @@ const Post: React.FC<PostProps> = ({
             <View style={styles.feedMenuGrabberWrap}>
               <View style={[styles.feedMenuGrabber, { backgroundColor: colors.border }]} />
             </View>
-            {feedMenuStep === 'report' ? (
+            {feedMenuStep === 'remove' ? (
+              <>
+                <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
+                  <Text style={[styles.collabMenuTitle, { color: colors.text }]}>
+                    {t('removeFromFeed') || 'Remove from feed'}
+                  </Text>
+                  <TouchableOpacity onPress={closeFeedMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={[styles.collabMenuClose, { color: colors.textGray }]}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={[styles.feedMenuHint, { color: colors.textGray }]}>
+                  {t('removeFromFeedHint') || 'This card leaves your home feed.'}
+                </Text>
+                <TouchableOpacity
+                  style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
+                  onPress={() => { void confirmRemoveFromFeed(); }}
+                >
+                  <Text style={styles.feedMenuEmoji}>🗑️</Text>
+                  <View style={styles.feedMenuCopy}>
+                    <Text style={[styles.collabMenuRowText, { color: colors.error }]}>
+                      {t('removeFromFeedConfirm') || 'Remove'}
+                    </Text>
+                    <Text style={[styles.feedMenuSub, { color: colors.textGray }]}>Hide this card from your home</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.feedMenuCancel} onPress={() => setFeedMenuStep('menu')}>
+                  <Text style={[styles.feedMenuCancelText, { color: colors.text }]}>Back</Text>
+                </TouchableOpacity>
+              </>
+            ) : feedMenuStep === 'report' ? (
               <>
                 <View style={[styles.collabMenuHeader, { borderBottomColor: colors.border }]}>
                   <Text style={[styles.collabMenuTitle, { color: colors.text }]}>Report post</Text>
@@ -3533,7 +3876,7 @@ const Post: React.FC<PostProps> = ({
                     </View>
                   </TouchableOpacity>
                 ) : null}
-                {isAdminUser ? (
+                {isAdminUser && !isMyChannelFeedCard ? (
                   <TouchableOpacity
                     style={[styles.feedMenuRow, { borderBottomColor: colors.border }]}
                     onPress={onFeedMenuAdminDelete}
@@ -4048,12 +4391,19 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     paddingTop: 10,
     minHeight: 34,
+    width: '100%',
   },
   /** Feed: fixed left rail so likes don't shove 💬. */
   footerPrimaryActions: {
     width: 158,
     height: 24,
     position: 'relative',
+    flexShrink: 0,
+  },
+  footerPrimaryActionsInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 24,
     flexShrink: 0,
   },
   /** Profile / post detail: full width so 💬 can sit on the right edge. */
@@ -4066,11 +4416,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerSecondaryActions: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginLeft: 'auto',
-    flexShrink: 0,
+    marginLeft: 8,
+    minWidth: 0,
+  },
+  footerActionSlot: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footerActionLabel: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  footerActionButton: {
+    maxWidth: '100%',
+    flexShrink: 1,
   },
   actionButton: {
     flexDirection: 'row',
@@ -4090,6 +4456,12 @@ const styles = StyleSheet.create({
     position: 'relative',
     left: undefined,
     top: undefined,
+  },
+  likeActionClusterFeed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 24,
+    flexShrink: 0,
   },
   likeHeartSlot: {
     width: 24,
@@ -4126,6 +4498,14 @@ const styles = StyleSheet.create({
   likeMetaSlotIdle: {
     opacity: 0,
   },
+  likeMetaSlotFeed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+    marginLeft: 4,
+    width: 60,
+    flexShrink: 0,
+  },
   likePreviewAvatarWrap: {
     width: 20,
     height: 20,
@@ -4147,6 +4527,15 @@ const styles = StyleSheet.create({
     top: undefined,
     marginLeft: 'auto',
     width: undefined,
+  },
+  commentActionClusterInline: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 24,
+    marginLeft: 10,
+    flexShrink: 1,
+    minWidth: 0,
   },
   commentMetaSlot: {
     minWidth: 40,
@@ -4354,6 +4743,69 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     padding: 14,
+  },
+  pageLinkCard: {
+    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  pageLinkShot: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  pageLinkImage: {
+    width: '100%',
+    height: 200,
+    backgroundColor: '#111',
+  },
+  pageLinkOwn: {
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pageLinkOwnLetter: {
+    color: '#fff',
+    fontSize: 64,
+    fontWeight: '700',
+  },
+  pageLinkIcon: {
+    width: '100%',
+    height: 200,
+    padding: 48,
+  },
+  pageLinkProbe: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 200,
+    opacity: 0,
+  },
+  pageLinkBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  pageLinkBarText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  pageLinkHost: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  pageLinkUrl: {
+    fontSize: 13,
+    marginTop: 4,
   },
   modalTitle: {
     fontSize: 16,
