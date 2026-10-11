@@ -146,6 +146,10 @@ export const ENDPOINTS = {
   STORY_BY_USER: '/api/story/user',
   STORY_STATUS: '/api/story/status',
   STORY_VIEWERS: '/api/story',
+
+  // Video Messages (private 1-to-1, replies pinned to a second)
+  VIDEO_MESSAGES: '/api/video-message',
+  VIDEO_MESSAGE_UNSEEN_COUNT: '/api/video-message/unseen-count',
 };
 
 /** DeviceEventEmitter — refetch `/api/story/feed-strip` (rings red/gray, new slides) */

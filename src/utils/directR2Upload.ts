@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import ImageResizer from '@bam.tech/react-native-image-resizer';
+import { backgroundUpload, UploadType } from 'react-native-compressor';
 import { apiService } from '../services/api';
 import { ENDPOINTS } from './constants';
 
@@ -7,7 +8,8 @@ export type DirectUploadFolder =
   | 'posts'
   | 'messages'
   | 'stories'
-  | 'profile-pics';
+  | 'profile-pics'
+  | 'video-messages';
 
 export type LocalMediaInput = {
   uri: string;
@@ -87,7 +89,29 @@ async function blobFromUri(uri: string, mime: string): Promise<Blob> {
   return blob.size ? blob : new Blob([blob], { type: mime });
 }
 
+/**
+ * Android's normal uploader cannot open the shrunk video ("Could not retrieve
+ * file for uri"). The compressor uploader reads that file directly and sends
+ * its real size, which Cloudflare requires.
+ */
+async function putVideoFile(uploadUrl: string, uri: string, mime: string): Promise<void> {
+  const result = await backgroundUpload(uploadUrl, uri, {
+    httpMethod: 'PUT',
+    uploadType: UploadType.BINARY_CONTENT,
+    mimeType: mime,
+  });
+  const status = Number(result?.status);
+  if (!Number.isFinite(status) || status < 200 || status >= 300) {
+    const body = String(result?.body || '').trim();
+    throw new Error(body || `Upload failed (${Number.isFinite(status) ? status : 'network'})`);
+  }
+}
+
 async function putToR2(uploadUrl: string, uri: string, mime: string): Promise<void> {
+  if (String(mime || '').startsWith('video/')) {
+    await putVideoFile(uploadUrl, uri, mime);
+    return;
+  }
   const body = await blobFromUri(uri, mime);
   const res = await fetch(uploadUrl, {
     method: 'PUT',

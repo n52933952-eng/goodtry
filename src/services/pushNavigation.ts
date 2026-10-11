@@ -8,7 +8,7 @@
  * `navigate()` that happens before the target navigator registered its screens, and
  * react-navigation only logs a warning — so the caller verifies instead of assuming.
  */
-export const VERIFIABLE_PUSH_ROUTES = ['ChatScreen', 'PostDetail', 'ChessGame', 'UserProfile'];
+export const VERIFIABLE_PUSH_ROUTES = ['ChatScreen', 'PostDetail', 'ChessGame', 'UserProfile', 'VideoMessagesHome'];
 
 /** @returns the route name we navigated to, or null when the payload isn't a deep link. */
 export function navigateFromPushData(
@@ -133,6 +133,15 @@ export function navigateFromPushData(
 
     if (type === 'missed_call') {
       return null;
+    }
+
+    /** Always the list. A reply, reaction, or video may already be deleted. */
+    if (type === 'video_message') {
+      nav.navigate('MainTabs', {
+        screen: 'VideoMessages',
+        params: { screen: 'VideoMessagesHome' },
+      });
+      return 'VideoMessagesHome';
     }
 
     /** Live alert — home feed only (stream may have ended by the time user opens the app). */

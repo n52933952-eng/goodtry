@@ -45,6 +45,8 @@ import CardScreen from '../screens/Card/CardScreen';
 import CardGameScreen from '../screens/Card/CardGameScreen';
 import ActivityScreen from '../screens/Activity/ActivityScreen';
 import ExplorePeopleScreen from '../screens/Explore/ExplorePeopleScreen';
+import VideoMessagesScreen from '../screens/VideoMessages/VideoMessagesScreen';
+import VideoMessageWatchScreen from '../screens/VideoMessages/VideoMessageWatchScreen';
 import CreateStoryScreen from '../screens/Stories/CreateStoryScreen';
 import StoryViewerScreen from '../screens/Stories/StoryViewerScreen';
 import { useSocket } from '../context/SocketContext';
@@ -321,6 +323,9 @@ const MainTabsNavigator = ({
       if (focusedRoute?.name === 'Explore' && (!nestedName || nestedName === 'ExploreHome')) {
         return null;
       }
+      if (focusedRoute?.name === 'VideoMessages') {
+        return null;
+      }
       // Filter out hidden tabs (routes with tabBarButton: () => null)
       const visibleRoutes = props.state.routes.filter((route) => {
         const { options } = props.descriptors[route.key];
@@ -506,6 +511,11 @@ const MainTabsNavigator = ({
       options={{ tabBarButton: () => null }}
     />
     <Tab.Screen
+      name="VideoMessages"
+      component={VideoMessagesStack}
+      options={{ tabBarButton: () => null }}
+    />
+    <Tab.Screen
       name="Chess"
       component={ChessScreen}
       options={{ tabBarButton: () => null }}
@@ -687,6 +697,22 @@ const ExploreStack = () => {
         }}
       />
       <Stack.Screen name="FollowList" component={FollowListScreen} />
+    </Stack.Navigator>
+  );
+};
+
+const VideoMessagesStack = () => {
+  const { colors } = useTheme();
+  return (
+    <Stack.Navigator
+      detachInactiveScreens={true}
+      screenOptions={{
+        headerShown: false,
+        cardStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Screen name="VideoMessagesHome" component={VideoMessagesScreen} />
+      <Stack.Screen name="VideoMessageWatch" component={VideoMessageWatchScreen} />
     </Stack.Navigator>
   );
 };
@@ -1280,6 +1306,7 @@ const AppNavigator = () => {
       data.userId || '',
       data.username || '',
       data.gameId || '',
+      data.nonce || '',
     ].join(':');
     if (handledPushKeyRef.current === dedupeKey) {
       pendingPushNavRef.current = null;

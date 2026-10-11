@@ -1,0 +1,50 @@
+diff --git a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Utils/Utils.kt b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Utils/Utils.kt
+--- a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Utils/Utils.kt
++++ b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Utils/Utils.kt
+@@ -51,7 +51,8 @@ object Utils {
+           }
+ 
+           override fun onSuccess(index: Int, size: Long, path: String?) {
+-            val fileUrl = "file://$destinationPath"
++            val resolved = if (!path.isNullOrBlank()) path else destinationPath
++            val fileUrl = if (resolved.startsWith("file://")) resolved else "file://$resolved"
+             //convert finish,result(true is success,false is fail)
+             promise.resolve(fileUrl)
+             MediaCache.removeCompletedImagePath(fileUrl)
+diff --git a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressor/VideoCompressorClass.kt b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressor/VideoCompressorClass.kt
+--- a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressor/VideoCompressorClass.kt
++++ b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressor/VideoCompressorClass.kt
+@@ -29,7 +29,8 @@ class VideoCompressorClass(private val context: ReactApplicationContext) {
+     val uris = mutableListOf<Uri>()
+     val uri = Uri.parse(srcPath)
+     uris.add(uri)
+-    val isStreamable: Boolean = false
++    // Players need the moov atom at the front or the video never starts.
++    val isStreamable: Boolean = true
+     doVideoCompression(
+       uris,
+       isStreamable,
+@@ -61,7 +62,7 @@ class VideoCompressorClass(private val context: ReactApplicationContext) {
+       job = CoroutineScope(Dispatchers.Main).launch {
+         val desFile = File(destPath)
+ 
+-        if (isStreamable)
+-          streamableFile = File(destPath)
++        if (isStreamable)
++          streamableFile = File("$destPath.fast.mp4")
+ 
+         desFile?.let {
+diff --git a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressorHelper.kt b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressorHelper.kt
+--- a/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressorHelper.kt
++++ b/node_modules/react-native-compressor/android/src/main/java/com/reactnativecompressor/Video/VideoCompressorHelper.kt
+@@ -112,7 +112,9 @@ class VideoCompressorHelper {
+                     }
+                 }
+                 val videoBitRate = if (options.bitrate > 0) options.bitrate else (height * width * 1.5).toFloat()
+-                Utils.compressVideo(srcPath!!, destinationPath, width, height, videoBitRate, options.uuid!!,options.progressDivider!!, promise, reactContext)
++                val evenWidth = if (width % 2 == 0) width else width - 1
++                val evenHeight = if (height % 2 == 0) height else height - 1
++                Utils.compressVideo(srcPath!!, destinationPath, evenWidth, evenHeight, videoBitRate, options.uuid!!,options.progressDivider!!, promise, reactContext)
+             } catch (ex: Exception) {
+                 promise.reject(ex)
+             }

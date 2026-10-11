@@ -90,6 +90,13 @@ const NotificationsScreen: React.FC<NotificationsScreenProps> = ({ navigation })
 
     const handleNotificationDeleted = (data: any) => {
       console.log('🗑️ Notification deleted via socket:', data);
+      // Like / comment undone: server sends the exact ids it removed.
+      // Badge count is refreshed by SocketContext on this same event.
+      if (Array.isArray(data?.ids) && data.ids.length) {
+        const gone = new Set<string>(data.ids.map(String));
+        setNotifications(prev => prev.filter(n => !gone.has(String(n._id))));
+        return;
+      }
       // Remove follow notifications from the specified user
       if (data.type === 'follow' && data.from) {
         setNotifications(prev => {

@@ -80,7 +80,7 @@ const FeedScreen = ({ navigation }: any) => {
     pendingNewPostsCount,
   } = usePost();
   const { user, logout } = useUser();
-  const { socket, isUserOnline, notificationCount, refreshNotificationCount, setPresenceWatchUserIds, refreshPresenceSubscription } = useSocket();
+  const { socket, isUserOnline, notificationCount, videoMessageUnseenCount, refreshNotificationCount, setPresenceWatchUserIds, refreshPresenceSubscription } = useSocket();
   const { isLive } = useLiveBroadcast();
   const { t } = useLanguage();
   const { theme, toggleTheme, colors } = useTheme();
@@ -1140,6 +1140,23 @@ const FeedScreen = ({ navigation }: any) => {
         >
           <Text style={styles.quickAccessIcon}>👥</Text>
           <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Explore</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.quickAccessButton, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+          onPress={() => navigation.navigate('VideoMessages', { screen: 'VideoMessagesHome' })}
+        >
+          <View style={styles.notificationIconContainer}>
+            <Text style={styles.quickAccessIcon}>🎥</Text>
+            {videoMessageUnseenCount > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>
+                  {videoMessageUnseenCount > 99 ? '99+' : videoMessageUnseenCount}
+                </Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.quickAccessLabel, { color: colors.cardText }]}>Videos</Text>
         </TouchableOpacity>
 
         <TouchableOpacity

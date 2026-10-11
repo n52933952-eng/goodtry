@@ -131,10 +131,19 @@ const ActivityModal: React.FC<ActivityModalProps> = ({
       });
     };
 
+    // Like / comment undone by someone we follow: drop those rows.
+    const handleActivityDeleted = (data: any) => {
+      if (!Array.isArray(data?.ids) || !data.ids.length) return;
+      const gone = new Set<string>(data.ids.map(String));
+      setActivities(prev => prev.filter(a => !gone.has(String(a?._id))));
+    };
+
     socket.on('newActivity', handleNewActivity);
+    socket.on('activityDeleted', handleActivityDeleted);
 
     return () => {
       socket.off('newActivity', handleNewActivity);
+      socket.off('activityDeleted', handleActivityDeleted);
     };
   }, [socket, visible, user?.following]);
 

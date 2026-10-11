@@ -14,7 +14,8 @@ export function isVideoAsset(asset: Asset): boolean {
 }
 
 /** Returns duration in seconds, or null when the picker did not report it. */
-export function getVideoDurationSeconds(asset: Asset): number | null {
+export function getVideoDurationSeconds(asset: Asset | null | undefined): number | null {
+  if (!asset) return null;
   const dur = asset.duration;
   if (typeof dur !== 'number' || !Number.isFinite(dur) || dur <= 0) {
     return null;

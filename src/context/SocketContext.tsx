@@ -35,6 +35,9 @@ interface SocketContextType {
   clearCardChallenge: (challengeFrom?: string) => void;
   notificationCount: number;
   setNotificationCount: (count: number | ((prev: number) => number)) => void;
+  videoMessageUnseenCount: number;
+  setVideoMessageUnseenCount: (count: number | ((prev: number) => number)) => void;
+  refreshVideoMessageUnseenCount: () => Promise<void>;
   /** Re-fetch unread notification count from server (badge on feed). */
   refreshNotificationCount: () => Promise<void>;
   unreadMessageCount: number;
@@ -77,6 +80,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
   const [chessChallenges, setChessChallenges] = useState<any[]>([]);
   const [cardChallenges,  setCardChallenges]  = useState<any[]>([]);
   const [notificationCount, setNotificationCount] = useState<number>(0);
+  const [videoMessageUnseenCount, setVideoMessageUnseenCount] = useState<number>(0);
   const [unreadMessageCount, setUnreadMessageCount] = useState<number>(0);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
@@ -121,6 +125,20 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?._id]);
 
+  const refreshVideoMessageUnseenCount = useCallback(async () => {
+    if (!user?._id) {
+      setVideoMessageUnseenCount(0);
+      return;
+    }
+    try {
+      const data = await apiService.get(ENDPOINTS.VIDEO_MESSAGE_UNSEEN_COUNT);
+      const n = typeof data?.unseenCount === 'number' ? data.unseenCount : 0;
+      setVideoMessageUnseenCount(n);
+    } catch (error) {
+      console.error('❌ [SocketContext] Error fetching video message count:', error);
+    }
+  }, [user?._id]);
+
   const refreshUnreadMessageCount = useCallback(async () => {
     if (!user?._id) return;
     try {
@@ -139,6 +157,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
 
   const refreshNotificationCountRef = useRef(refreshNotificationCount);
   refreshNotificationCountRef.current = refreshNotificationCount;
+  const refreshVideoMessageUnseenCountRef = useRef(refreshVideoMessageUnseenCount);
+  refreshVideoMessageUnseenCountRef.current = refreshVideoMessageUnseenCount;
   const refreshUnreadMessageCountRef = useRef(refreshUnreadMessageCount);
   refreshUnreadMessageCountRef.current = refreshUnreadMessageCount;
   const setPresenceWatchUserIds = useCallback((userIds: string[]) => {
@@ -247,7 +267,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     if (!user?._id) return;
     refreshNotificationCount();
     refreshUnreadMessageCount();
-  }, [user?._id, refreshNotificationCount, refreshUnreadMessageCount]);
+    refreshVideoMessageUnseenCount();
+  }, [user?._id, refreshNotificationCount, refreshUnreadMessageCount, refreshVideoMessageUnseenCount]);
 
   // Re-sync when app returns to foreground.
   useEffect(() => {
@@ -464,6 +485,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
     socketService.off(SOCKET_EVENTS.CARD_MOVE);
     socketService.off('newNotification');
+    socketService.off('videoMessage:new');
+    socketService.off('videoMessage:note');
+    socketService.off('videoMessage:deleted');
     socketService.off('unreadCountUpdate');
     socketService.off('newMessage', onNewMessageForSocket);
     socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
@@ -851,8 +875,25 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       playNotificationSound('notification');
     });
 
-    socketService.on('notificationDeleted', () => {
+    socketService.on('notificationDeleted', (data: any) => {
+      // Like / comment undone: server says how many unread it removed. Adjust locally —
+      // the unread-count API is rate-limited, so a refetch here can silently fail.
+      const removed = Number(data?.unreadRemoved);
+      if (Number.isFinite(removed) && removed > 0) {
+        setNotificationCount(prev => Math.max(0, prev - removed));
+        return;
+      }
       refreshNotificationCountRef.current?.();
+    });
+
+    socketService.on('videoMessage:new', () => {
+      setVideoMessageUnseenCount((n) => (n || 0) + 1);
+    });
+    socketService.on('videoMessage:note', (data: any) => {
+      if (data?.badge) setVideoMessageUnseenCount((n) => (n || 0) + 1);
+    });
+    socketService.on('videoMessage:deleted', (data: any) => {
+      if (data?.unseen) setVideoMessageUnseenCount((n) => Math.max(0, (n || 0) - 1));
     });
 
     socketService.on('newMessage', onNewMessageForSocket);
@@ -1099,6 +1140,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       socketService.off(SOCKET_EVENTS.CARD_CHALLENGE);
       socketService.off(SOCKET_EVENTS.CARD_MOVE);
       socketService.off('newNotification');
+      socketService.off('videoMessage:new');
+      socketService.off('videoMessage:note');
+    socketService.off('videoMessage:deleted');
       socketService.off('newMessage', onNewMessageForSocket);
       socketService.off(SOCKET_EVENTS.STORY_STRIP_CHANGED);
       socketService.off('chessGameEnded');
@@ -1191,6 +1235,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       notificationCount,
       setNotificationCount,
       refreshNotificationCount,
+      videoMessageUnseenCount,
+      setVideoMessageUnseenCount,
+      refreshVideoMessageUnseenCount,
       unreadMessageCount,
       setUnreadMessageCount,
       refreshUnreadMessageCount,
