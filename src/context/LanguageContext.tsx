@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
+import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type Language = 'en' | 'ar';
@@ -391,6 +392,69 @@ const translations: Record<Language, Record<string, string>> = {
     'noOneToAddFromFollowing': 'No one to add from your following list',
     'groupDeletedTitle': 'Group Deleted',
     'groupDeletedByAdmin': 'This group has been deleted by the admin.',
+
+    'vmVideoMessages': 'Video Messages',
+    'vmNew': 'New',
+    'vmNoYet': 'No video messages yet',
+    'vmEmptyHint': 'Send a video to one person. They can reply on any moment.',
+    'vmNewVideo': 'New video',
+    'vmOnePerson': 'One person',
+    'vmGroup': 'Group',
+    'vmUser': 'User',
+    'vmSearchFollow': 'Search people you follow',
+    'vmTo': 'To',
+    'vmChange': 'Change',
+    'vmSearchOne': 'Search someone you follow, then add a video.',
+    'vmSearchGroup': 'Search people you follow. You can add up to 9.',
+    'vmVideoReady': 'Video ready',
+    'vmGallery': 'Gallery',
+    'vmSending': 'Sending…',
+    'vmUploading': 'Uploading video…',
+    'vmAlmostDone': 'Almost done…',
+    'vmNoMatch': 'No one you follow matches',
+    'vmDeleteVideo': 'Delete video',
+    'vmDeleteBoth': 'Delete this video for both of you?',
+    'vmCouldNotPick': 'Could not pick video',
+    'vmTooLong': 'Video must be 10 minutes or less',
+    'vmSent': 'Sent',
+    'vmVideoSent': 'Video message sent',
+    'vmFailedSend': 'Failed to send',
+    'vmFailedLoad': 'Failed to load',
+    'vmFailedDelete': 'Failed to delete',
+    'vmSeen': 'Seen',
+    'vmNotOpened': 'Not opened yet',
+    'vmSentYou': 'Sent you',
+    'vmGroupCount': 'Group · {{count}}',
+    'vmReplyOne': '1 reply',
+    'vmRepliesCount': '{{count}} replies',
+    'vmReplyHere': 'Reply here',
+    'vmRecord': 'Record',
+    'vmRecordAgain': 'Record again',
+    'vmReplies': 'Replies',
+    'vmNothingYet': 'Nothing in this video yet',
+    'vmAskedYou': 'Asked you',
+    'vmReplyOrReaction': 'Reply or reaction here',
+    'vmVideoReply': 'Video reply',
+    'vmReactions': 'Reactions',
+    'vmReaction': 'Reaction',
+    'vmOnReply': 'On reply · {{time}}',
+    'vmWantsReply': 'Wants a reply or a reaction here',
+    'vmAtMoment': 'At {{time}} · record or tap a reaction',
+    'vmLookHere': 'Look here',
+    'vmExitFull': 'Exit full video',
+    'vmWatchFull': 'Watch full video',
+    'vmReplyWord': 'Reply',
+    'vmAsked': 'Asked',
+    'vmAskedAt': 'Asked for a reply at {{time}}',
+    'vmSaved': 'Saved',
+    'vmReplyPinned': 'Reply pinned at {{time}}',
+    'vmDownload': 'Download',
+    'vmPreparing': 'Preparing one video with the replies and reactions',
+    'vmCouldNotDownload': 'Could not download',
+    'vmFailed': 'Failed',
+    'vmFailedRemove': 'Failed to remove',
+    'vmFailedOpen': 'Failed to open',
+    'vmTooLongReply': 'Reply video must be 30 seconds or less',
   },
   ar: {
     // Login Screen
@@ -768,13 +832,98 @@ const translations: Record<Language, Record<string, string>> = {
     'noOneToAddFromFollowing': 'لا يوجد أحد لإضافته من قائمة متابعتك',
     'groupDeletedTitle': 'تم حذف المجموعة',
     'groupDeletedByAdmin': 'تم حذف هذه المجموعة بواسطة المشرف.',
+
+    'vmVideoMessages': 'رسائل الفيديو',
+    'vmNew': 'جديد',
+    'vmNoYet': 'لا توجد رسائل فيديو بعد',
+    'vmEmptyHint': 'أرسل فيديو لشخص واحد. يمكنه الرد على أي لحظة.',
+    'vmNewVideo': 'فيديو جديد',
+    'vmOnePerson': 'شخص واحد',
+    'vmGroup': 'مجموعة',
+    'vmUser': 'مستخدم',
+    'vmSearchFollow': 'ابحث عن أشخاص تتابعهم',
+    'vmTo': 'إلى',
+    'vmChange': 'تغيير',
+    'vmSearchOne': 'ابحث عن شخص تتابعه، ثم أضف فيديو.',
+    'vmSearchGroup': 'ابحث عن أشخاص تتابعهم. يمكنك إضافة حتى 9.',
+    'vmVideoReady': 'الفيديو جاهز',
+    'vmGallery': 'المعرض',
+    'vmSending': 'جارٍ الإرسال…',
+    'vmUploading': 'جارٍ رفع الفيديو…',
+    'vmAlmostDone': 'أوشك على الانتهاء…',
+    'vmNoMatch': 'لا يوجد أحد تتابعه بهذا الاسم',
+    'vmDeleteVideo': 'حذف الفيديو',
+    'vmDeleteBoth': 'حذف هذا الفيديو لكما؟',
+    'vmCouldNotPick': 'تعذر اختيار الفيديو',
+    'vmTooLong': 'يجب أن يكون الفيديو 10 دقائق أو أقل',
+    'vmSent': 'تم الإرسال',
+    'vmVideoSent': 'تم إرسال رسالة الفيديو',
+    'vmFailedSend': 'فشل الإرسال',
+    'vmFailedLoad': 'فشل التحميل',
+    'vmFailedDelete': 'فشل الحذف',
+    'vmSeen': 'تمت المشاهدة',
+    'vmNotOpened': 'لم يُفتح بعد',
+    'vmSentYou': 'أرسل لك',
+    'vmGroupCount': 'مجموعة · {{count}}',
+    'vmReplyOne': 'رد واحد',
+    'vmRepliesCount': '{{count}} ردود',
+    'vmReplyHere': 'رد هنا',
+    'vmRecord': 'تسجيل',
+    'vmRecordAgain': 'أعد التسجيل',
+    'vmReplies': 'الردود',
+    'vmNothingYet': 'لا يوجد شيء في هذا الفيديو بعد',
+    'vmAskedYou': 'طلب منك',
+    'vmReplyOrReaction': 'رد أو تفاعل هنا',
+    'vmVideoReply': 'رد فيديو',
+    'vmReactions': 'التفاعلات',
+    'vmReaction': 'تفاعل',
+    'vmOnReply': 'على الرد · {{time}}',
+    'vmWantsReply': 'يريد رداً أو تفاعلاً هنا',
+    'vmAtMoment': 'عند {{time}} · سجّل أو اضغط تفاعلاً',
+    'vmLookHere': 'انظر هنا',
+    'vmExitFull': 'الخروج من ملء الشاشة',
+    'vmWatchFull': 'مشاهدة الفيديو كاملاً',
+    'vmReplyWord': 'رد',
+    'vmAsked': 'طلب',
+    'vmAskedAt': 'طلب رداً عند {{time}}',
+    'vmSaved': 'تم الحفظ',
+    'vmReplyPinned': 'تم تثبيت الرد عند {{time}}',
+    'vmDownload': 'تنزيل',
+    'vmPreparing': 'جارٍ تجهيز فيديو واحد مع الردود والتفاعلات',
+    'vmCouldNotDownload': 'تعذر التنزيل',
+    'vmFailed': 'فشل',
+    'vmFailedRemove': 'تعذر الحذف',
+    'vmFailedOpen': 'تعذر الفتح',
+    'vmTooLongReply': 'يجب أن يكون رد الفيديو 30 ثانية أو أقل',
   },
 };
+
+function phoneLanguage(): Language {
+  let tag = '';
+  try {
+    if (Platform.OS === 'ios') {
+      const settings = NativeModules.SettingsManager?.settings || {};
+      tag = String(settings.AppleLocale || settings.AppleLanguages?.[0] || '');
+    } else {
+      tag = String(NativeModules.I18nManager?.localeIdentifier || '');
+    }
+  } catch {
+    tag = '';
+  }
+  if (!tag) {
+    try {
+      tag = String(Intl.DateTimeFormat().resolvedOptions().locale || '');
+    } catch {
+      tag = '';
+    }
+  }
+  return /^ar/i.test(tag) ? 'ar' : 'en';
+}
 
 const STORAGE_KEY = '@app_language';
 
 export const LanguageProvider = ({ children }: { children: ReactNode }) => {
-  const [language, setLanguageState] = useState<Language>('en');
+  const [language, setLanguageState] = useState<Language>(phoneLanguage);
 
   // Load saved language on mount
   useEffect(() => {

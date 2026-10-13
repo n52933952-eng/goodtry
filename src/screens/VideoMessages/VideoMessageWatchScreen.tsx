@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView from 'react-native-webview';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { useUser } from '../../context/UserContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useSocket } from '../../context/SocketContext';
 import { apiService } from '../../services/api';
@@ -44,7 +45,7 @@ function notesPayload(notes: any[]) {
     type: n.type,
     url: n.videoUrl ? mediaDisplayUrl(n.videoUrl) : '',
     reaction: n.reaction || '',
-    name: n.user?.name || n.user?.username || 'Reply',
+    name: n.user?.name || n.user?.username || '',
     onNote: n.onNote ? String(n.onNote) : '',
   }));
 }
@@ -165,7 +166,7 @@ function showVideoNote(n, resumeAfter){
   send('time',{t:Number(n.t)||0,d:finiteDur(),playing:false});
   main.pause();
   card.style.display='block';
-  who.textContent='Reply · '+(n.name||'');
+  who.textContent=(window.replyLabel||'Reply')+(n.name?' · '+n.name:'');
   note.onloadeddata=null;
   note.loop=false;
   notePlayed=0;
@@ -347,10 +348,11 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const listPreview = route?.params?.preview;
   const openedFromList = useRef(!!listPreview?.videoUrl);
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const wide = useWideScreenLayout();
   const { colors } = useTheme();
   const { user } = useUser();
+  const { t, tn, language } = useLanguage();
   const { socket, refreshVideoMessageUnseenCount } = useSocket();
   const showToast = useShowToast();
   const webRef = useRef<WebView>(null);
@@ -402,11 +404,16 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const headerPad = Math.max(insets.top, 8) + (compact ? 8 : 14);
   const playerH = wide.isWide ? 340 : compact ? 210 : 240;
   const chip = Math.round(Math.min(42, Math.max(34, (width - 48) / 8)));
-  const fullBtnSize = Math.round(Math.min(44, Math.max(36, width * 0.09)));
-  const fullBtnEdge = Math.max(8, Math.round(Math.min(16, width * 0.025)));
-  const fullBtnLeft = Math.max(fullBtnEdge, insets.left + fullBtnEdge);
+  const pageBg = colors.background;
+  const shortSide = Math.min(width, height);
+  const fullBtnSize = Math.round(Math.min(48, Math.max(40, shortSide * 0.1)));
+  const fullBtnEdge = Math.max(12, Math.round(shortSide * 0.03));
+  const fullBtnLeft = Math.max(
+    fullBtnEdge,
+    Math.min(width - fullBtnSize - fullBtnEdge - insets.right, insets.left + fullBtnEdge),
+  );
   const fullBtnBottom = videoFull
-    ? Math.max(fullBtnEdge, insets.bottom + fullBtnEdge)
+    ? insets.bottom + fullBtnEdge
     : fullBtnEdge;
 
   const load = useCallback(async () => {
@@ -418,16 +425,16 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       setNotes(Array.isArray(data?.notes) ? data.notes : []);
       refreshVideoMessageUnseenCount?.();
     } catch (e: any) {
-      const lastMessage = e?.message || 'Failed to open';
+      const lastMessage = e?.message || t('vmFailedOpen');
       console.log('[video-message] tap open error', id, lastMessage);
       if (!openedFromList.current) {
-        showToast('Error', lastMessage, 'error');
+        showToast(t('error'), lastMessage, 'error');
         navigation.goBack();
       }
     } finally {
       setLoading(false);
     }
-  }, [id, navigation, showToast, refreshVideoMessageUnseenCount]);
+  }, [id, navigation, showToast, refreshVideoMessageUnseenCount, t]);
 
   useEffect(() => {
     load();
@@ -441,6 +448,36 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
     });
     return () => sub.remove();
   }, [videoFull]);
+
+  const paintPlayer = useCallback(() => {
+    const top = videoFull ? Math.max(insets.top, 8) + 10 : 10;
+    const bg = colors.background;
+    const replyWord = t('vmReplyWord').replace(/\\/g, '').replace(/'/g, '');
+    const closeWord = t('close').replace(/\\/g, '').replace(/'/g, '');
+    webRef.current?.injectJavaScript(`
+      var meta=document.getElementById('meta');
+      if(meta) meta.style.top='${top}px';
+      window.replyLabel='${replyWord}';
+      var closeBtn=document.getElementById('close');
+      if(closeBtn) closeBtn.textContent='${closeWord}';
+      var bg='${bg}';
+      document.documentElement.style.background=bg;
+      document.body.style.background=bg;
+      var wrap=document.getElementById('wrap');
+      if(wrap) wrap.style.background=bg;
+      var main=document.getElementById('main');
+      if(main) main.style.background=bg;
+      var note=document.getElementById('note');
+      if(note) note.style.background=bg;
+      var card=document.getElementById('card');
+      if(card) card.style.background=bg;
+      true;
+    `);
+  }, [videoFull, insets.top, colors.background, t]);
+
+  useEffect(() => {
+    paintPlayer();
+  }, [paintPlayer]);
 
   useEffect(() => {
     if (!socket) return;
@@ -462,7 +499,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       const last = asks[asks.length - 1];
       if (!last) return;
       setAskNow(last);
-      showToast('Asked', 'They want a reply or a reaction here', 'info');
+      showToast(t('vmAsked'), t('vmWantsReply'), 'info');
     };
     socket.on('videoMessage:note', onNote);
     socket.on('videoMessage:noteDeleted', onDel);
@@ -479,7 +516,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       socket.off('videoMessage:marker', onMarker);
       socket.off('videoMessage:deleted', onDeleted);
     };
-  }, [socket, id, navigation, showToast]);
+  }, [socket, id, navigation, showToast, t]);
 
   const playerSource = useMemo(() => {
     if (!item?.videoUrl) return { html: '' };
@@ -517,7 +554,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       await apiService.delete(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/notes/${note._id}`);
       setNotes((prev) => prev.filter((n) => String(n._id) !== String(note._id)));
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed to remove', 'error');
+      showToast(t('error'), e?.message || t('vmFailedRemove'), 'error');
     }
   };
 
@@ -588,9 +625,9 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         text: 'Reply here',
       });
       if (Array.isArray(data?.markers)) setItem((prev: any) => (prev ? { ...prev, markers: data.markers } : prev));
-      showToast('Sent', `Asked for a reply at ${fmtTime(now)}`, 'success');
+      showToast(t('vmSent'), tn('vmAskedAt', { time: fmtTime(now) }), 'success');
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed', 'error');
+      showToast(t('error'), e?.message || t('vmFailed'), 'error');
     } finally {
       setBusy(false);
     }
@@ -603,7 +640,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/reply-prompt/remove`, { t });
       if (Array.isArray(data?.markers)) setItem((prev: any) => (prev ? { ...prev, markers: data.markers } : prev));
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed to remove', 'error');
+      showToast(t('error'), e?.message || t('vmFailedRemove'), 'error');
     } finally {
       setBusy(false);
     }
@@ -625,7 +662,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         playNoteNow(data.note, false);
       }
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed', 'error');
+      showToast(t('error'), e?.message || t('vmFailed'), 'error');
     } finally {
       setBusy(false);
     }
@@ -645,7 +682,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       const durationSec = getVideoDurationSeconds(asset) || 0;
       if (durationSec > 30) {
         webRef.current?.injectJavaScript('window.releasePlay(); true;');
-        Alert.alert('Too long', 'Reply video must be 30 seconds or less');
+        Alert.alert(t('error'), t('vmTooLongReply'));
         return;
       }
       if (fromCamera) setRecordUploading(true);
@@ -673,13 +710,13 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         playNoteNow(data.note);
         setRecorded(true);
       }
-      showToast('Saved', `Reply pinned at ${fmtTime(momentRef.current)}`, 'success');
+      showToast(t('vmSaved'), tn('vmReplyPinned', { time: fmtTime(momentRef.current) }), 'success');
       } finally {
         await removeTempVideo(lightUri);
       }
     } catch (e: any) {
       webRef.current?.injectJavaScript('window.releasePlay(); true;');
-      showToast('Error', e?.message || 'Failed', 'error');
+      showToast(t('error'), e?.message || t('vmFailed'), 'error');
     } finally {
       setRecordUploading(false);
       setBusy(false);
@@ -689,13 +726,13 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const downloadAll = async () => {
     if (downloading) return;
     setDownloading(true);
-    showToast('Download', 'Preparing one video with the replies and reactions', 'info');
+    showToast(t('vmDownload'), t('vmPreparing'), 'info');
     try {
       const data = await apiService.get(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/download`);
-      if (!data?.url) throw new Error('Could not download');
+      if (!data?.url) throw new Error(t('vmCouldNotDownload'));
       await Linking.openURL(String(data.url));
     } catch (e: any) {
-      showToast('Error', e?.message || 'Could not download', 'error');
+      showToast(t('error'), e?.message || t('vmCouldNotDownload'), 'error');
     } finally {
       setDownloading(false);
     }
@@ -711,29 +748,35 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   if (!item) return null;
 
   return (
-    <View style={[styles.screen, { backgroundColor: '#000', paddingTop: headerPad }]}>
-      <View style={[styles.topBar, wide.contentCap]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.back}>‹ Back</Text>
-        </TouchableOpacity>
-        <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.title} numberOfLines={1}>{partyLabel(item, user?._id)}</Text>
-          <Text style={styles.sub}>{notes.length} replies inside</Text>
+    <View style={[styles.screen, { backgroundColor: pageBg, paddingTop: videoFull ? 0 : headerPad }]}>
+      <View style={[styles.topBar, wide.contentCap, videoFull && styles.fullHidden]} pointerEvents={videoFull ? 'none' : 'auto'}>
+        <View style={styles.barSide}>
+          <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <View style={styles.backRow}>
+              <Text style={[styles.back, { color: colors.text }]}>‹</Text>
+              <Text style={[styles.back, { color: colors.text }]}>{t('back')}</Text>
+            </View>
+          </TouchableOpacity>
         </View>
+        <View style={styles.titleBlock}>
+          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{partyLabel(item, user?._id, { user: t('vmUser'), group: t('vmGroup') })}</Text>
+          <Text style={[styles.sub, { color: colors.textGray }]}>{notes.length === 1 ? t('vmReplyOne') : tn('vmRepliesCount', { count: notes.length })}</Text>
+        </View>
+        <View style={[styles.barSide, styles.barSideEnd]}>
         <TouchableOpacity
           onPress={downloadAll}
           disabled={downloading}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={{ marginRight: 8 }}
+          style={{ marginRight: 10 }}
         >
-          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 18 }}>{downloading ? '…' : '⬇'}</Text>
+          <Text style={{ color: colors.text, fontWeight: '700', fontSize: 18 }}>{downloading ? '…' : '⬇'}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => {
-            Alert.alert('Delete video', 'Delete this video for both of you?', [
-              { text: 'Cancel', style: 'cancel' },
+            Alert.alert(t('vmDeleteVideo'), t('vmDeleteBoth'), [
+              { text: t('cancel'), style: 'cancel' },
               {
-                text: 'Delete',
+                text: t('delete'),
                 style: 'destructive',
                 onPress: async () => {
                   try {
@@ -743,24 +786,25 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                       navigation.goBack();
                     }
                   } catch (e: any) {
-                    showToast('Error', e?.message || 'Failed to delete', 'error');
+                    showToast(t('error'), e?.message || t('vmFailedDelete'), 'error');
                   }
                 },
               },
             ]);
           }}
         >
-          <Text style={{ color: '#f87171', fontWeight: '700', width: 56, textAlign: 'right' }}>Delete</Text>
+          <Text style={[styles.ltrText, { color: '#f87171', fontWeight: '700' }]}>{t('delete')}</Text>
         </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={[styles.actions, wide.contentCap]}>
+      <View style={[styles.actions, wide.contentCap, videoFull && styles.fullHidden]} pointerEvents={videoFull ? 'none' : 'auto'}>
         {iAmSender ? (
           <TouchableOpacity
-            style={[styles.replyBtn, { backgroundColor: 'rgba(255,255,255,0.14)', borderColor: 'rgba(255,255,255,0.28)' }]}
+            style={[styles.replyBtn, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
             onPress={askReplyHere}
           >
-            <Text style={styles.replyBtnText}>Reply here</Text>
+            <Text style={[styles.replyBtnText, styles.ltrText, { color: colors.text }]} numberOfLines={1}>{t('vmReplyHere')}</Text>
           </TouchableOpacity>
         ) : null}
         <TouchableOpacity
@@ -773,8 +817,8 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
             addVideoNote(true);
           }}
         >
-          <Text style={[styles.replyBtnText, recordUploading && styles.recordLabelHidden]}>
-            {recorded ? 'Record again' : 'Record'}
+          <Text style={[styles.replyBtnText, styles.ltrText, recordUploading && styles.recordLabelHidden]} numberOfLines={1}>
+            {recorded ? t('vmRecordAgain') : t('vmRecord')}
           </Text>
           {recordUploading ? (
             <View style={styles.recordSpin} pointerEvents="none">
@@ -784,22 +828,22 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         </TouchableOpacity>
         {!iAmSender ? (
           <TouchableOpacity
-            style={[styles.replyBtn, { backgroundColor: 'rgba(255,255,255,0.14)', borderColor: 'rgba(255,255,255,0.28)' }]}
+            style={[styles.replyBtn, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
             onPress={() => {
               momentRef.current = now;
               webRef.current?.injectJavaScript('window.hold(); true;');
               addVideoNote(false);
             }}
           >
-            <Text style={styles.replyBtnText}>Gallery</Text>
+            <Text style={[styles.replyBtnText, styles.ltrText, { color: colors.text }]} numberOfLines={1}>{t('vmGallery')}</Text>
           </TouchableOpacity>
         ) : null}
         <TouchableOpacity
-          style={[styles.replyBtn, { backgroundColor: reactionNotesOpen ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.14)', borderColor: 'rgba(255,255,255,0.28)' }]}
+          style={[styles.replyBtn, { backgroundColor: reactionNotesOpen ? colors.border : colors.cardBg, borderColor: colors.border }]}
           onPress={() => setReactionNotesOpen((open) => !open)}
         >
-          <Text style={styles.replyBtnText}>
-            Inside {(item?.markers || []).filter((m: any) => m.type === 'reply').length + notes.length}
+          <Text style={[styles.replyBtnText, styles.ltrText, { color: colors.text }]} numberOfLines={1}>
+            {t('vmReplies')} {(item?.markers || []).filter((m: any) => m.type === 'reply').length + notes.length}
           </Text>
         </TouchableOpacity>
       </View>
@@ -807,15 +851,16 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       <View
         style={[
           styles.player,
+          { backgroundColor: pageBg },
           videoFull
-            ? { position: 'absolute', top: -headerPad, left: 0, right: 0, bottom: 0, zIndex: 40, elevation: 40 }
+            ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 40, elevation: 40 }
             : { height: playerH },
           videoFull ? null : wide.contentCap,
         ]}
       >
         <WebView
           ref={webRef}
-          style={styles.web}
+          style={[styles.web, { backgroundColor: pageBg }]}
           originWhitelist={['*']}
           source={playerSource}
           allowsInlineMediaPlayback
@@ -826,7 +871,10 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           setSupportMultipleWindows={false}
           showsVerticalScrollIndicator={false}
           showsHorizontalScrollIndicator={false}
-          onLoadEnd={() => pushNotesToPlayer(notesRef.current)}
+          onLoadEnd={() => {
+            pushNotesToPlayer(notesRef.current);
+            paintPlayer();
+          }}
           onMessage={(e) => {
             try {
               const msg = JSON.parse(e.nativeEvent.data || '{}');
@@ -876,9 +924,9 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
             },
           ]}
           onPress={() => setVideoFull((open) => !open)}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
           accessibilityRole="button"
-          accessibilityLabel={videoFull ? 'Exit full video' : 'Watch full video'}
+          accessibilityLabel={videoFull ? t('vmExitFull') : t('vmWatchFull')}
         >
           <Text style={[styles.fullBtnText, { fontSize: Math.round(fullBtnSize * 0.48), lineHeight: Math.round(fullBtnSize * 0.56) }]}>
             {videoFull ? '✕' : '⛶'}
@@ -886,14 +934,14 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         </TouchableOpacity>
         {!iAmSender && (askNow || liveMarker?.type === 'reply') ? (
           <View style={[styles.askBox, { left: fullBtnLeft + fullBtnSize + 8 }]} pointerEvents="none">
-            <Text style={styles.askTitle}>Wants a reply or a reaction here</Text>
-            <Text style={styles.askSub}>At {fmtTime((askNow || liveMarker)?.t)} · record or tap a reaction</Text>
+            <Text style={styles.askTitle}>{t('vmWantsReply')}</Text>
+            <Text style={styles.askSub}>{tn('vmAtMoment', { time: fmtTime((askNow || liveMarker)?.t) })}</Text>
           </View>
         ) : null}
         {iAmSender && liveMarker && liveMarker.type !== 'reply' ? (
           <View style={styles.chip} pointerEvents="none">
             <Text style={styles.chipText} numberOfLines={1}>
-              {liveMarker.type === 'question' ? `❓ ${liveMarker.text || ''}` : `👀 ${liveMarker.text || 'Look here'}`}
+              {liveMarker.type === 'question' ? `❓ ${liveMarker.text || ''}` : `👀 ${liveMarker.text || t('vmLookHere')}`}
             </Text>
           </View>
         ) : null}
@@ -908,17 +956,17 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
             <TouchableOpacity style={styles.centerDim} activeOpacity={1} onPress={() => setReactionNotesOpen(false)} />
             <View style={styles.centerCard}>
               <View style={styles.centerHead}>
-                <Text style={styles.centerTitle}>Inside this video</Text>
+                <Text style={[styles.centerTitle, styles.ltrText]}>{t('vmReplies')}</Text>
                 <TouchableOpacity onPress={() => setReactionNotesOpen(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Text style={styles.sideClose}>✕</Text>
                 </TouchableOpacity>
               </View>
               <ScrollView style={{ maxHeight: 320 }} contentContainerStyle={{ paddingBottom: 6 }} keyboardShouldPersistTaps="handled">
                 {notes.length === 0 && !(item?.markers || []).some((m: any) => m.type === 'reply') ? (
-                  <Text style={styles.sideEmpty}>Nothing in this video yet</Text>
+                  <Text style={styles.sideEmpty}>{t('vmNothingYet')}</Text>
                 ) : null}
                 {(item?.markers || []).some((m: any) => m.type === 'reply') ? (
-                  <Text style={styles.modalLabel}>{iAmSender ? 'Reply here' : 'Asked you'}</Text>
+                  <Text style={[styles.modalLabel, language === 'ar' && styles.modalLabelAr]}>{iAmSender ? t('vmReplyHere') : t('vmAskedYou')}</Text>
                 ) : null}
                 {(item?.markers || [])
                   .filter((m: any) => m.type === 'reply')
@@ -934,7 +982,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                     >
                       <Text style={styles.sideTimePill}>{fmtTime(m.t)}</Text>
                       <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.sideText} numberOfLines={1}>Reply or reaction here</Text>
+                        <Text style={styles.sideText} numberOfLines={1}>{t('vmReplyOrReaction')}</Text>
                       </View>
                       {iAmSender ? (
                         <TouchableOpacity
@@ -946,7 +994,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                       ) : null}
                     </TouchableOpacity>
                   ))}
-                {videoNotes.length > 0 ? <Text style={styles.modalLabel}>Replies</Text> : null}
+                {videoNotes.length > 0 ? <Text style={[styles.modalLabel, language === 'ar' && styles.modalLabelAr]}>{t('vmReplies')}</Text> : null}
                 {videoNotes.map((n) => (
                   <TouchableOpacity
                     key={n._id}
@@ -959,7 +1007,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                     <Text style={styles.sideEmoji}>🎥</Text>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.sideText} numberOfLines={1}>
-                        {n.user?.name || n.user?.username || 'Video reply'}
+                        {n.user?.name || n.user?.username || t('vmVideoReply')}
                       </Text>
                       <Text style={styles.sideTime}>{fmtTime(n.t)}</Text>
                     </View>
@@ -970,7 +1018,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                     ) : null}
                   </TouchableOpacity>
                 ))}
-                {reactionNotes.length > 0 ? <Text style={styles.modalLabel}>Reactions</Text> : null}
+                {reactionNotes.length > 0 ? <Text style={[styles.modalLabel, language === 'ar' && styles.modalLabelAr]}>{t('vmReactions')}</Text> : null}
                 {reactionNotes.map((n) => (
                   <TouchableOpacity
                     key={n._id}
@@ -990,9 +1038,9 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                     <Text style={styles.sideEmoji}>{n.reaction || '❤️'}</Text>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.sideText} numberOfLines={1}>
-                        {n.user?.name || n.user?.username || 'Reaction'}
+                        {n.user?.name || n.user?.username || t('vmReaction')}
                       </Text>
-                      <Text style={styles.sideTime}>{n.onNote ? `On reply · ${fmtTime(n.t)}` : fmtTime(n.t)}</Text>
+                      <Text style={styles.sideTime}>{n.onNote ? tn('vmOnReply', { time: fmtTime(n.t) }) : fmtTime(n.t)}</Text>
                     </View>
                     {iAmSender || uidOf(n.user) === String(user?._id) ? (
                       <TouchableOpacity onPress={() => deleteNote(n)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -1101,10 +1149,16 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     width: '100%',
   },
-  back: { color: '#fff', fontSize: 16, fontWeight: '600', width: 56 },
-  title: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  sub: { color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 1 },
+  barSide: { flex: 1, minWidth: 96, flexDirection: 'row', alignItems: 'center' },
+  barSideEnd: { justifyContent: 'flex-end' },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, writingDirection: 'ltr' },
+  back: { color: '#fff', fontSize: 16, fontWeight: '600', writingDirection: 'ltr' },
+  titleBlock: { maxWidth: '46%', alignItems: 'center' },
+  title: { color: '#fff', fontSize: 16, fontWeight: '800', textAlign: 'center', writingDirection: 'ltr' },
+  sub: { color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 1, textAlign: 'center', writingDirection: 'ltr' },
+  ltrText: { writingDirection: 'ltr' },
   player: { width: '100%', backgroundColor: '#000', overflow: 'hidden' },
+  fullHidden: { opacity: 0 },
   web: { width: '100%', height: '100%', backgroundColor: '#000' },
   chip: {
     position: 'absolute',
@@ -1157,7 +1211,9 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginTop: 8,
     marginBottom: 4,
+    writingDirection: 'ltr',
   },
+  modalLabelAr: { letterSpacing: 0, textTransform: 'none' },
   sideRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1183,7 +1239,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   sideTime: { color: 'rgba(255,255,255,0.65)', fontSize: 12, fontWeight: '700', marginTop: 2 },
-  sideText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  sideText: { color: '#fff', fontSize: 14, fontWeight: '700', writingDirection: 'ltr', textAlign: 'left' },
   sideClose: { color: 'rgba(255,255,255,0.75)', fontSize: 16, fontWeight: '700' },
   sideEmpty: { color: 'rgba(255,255,255,0.7)', fontSize: 13, paddingVertical: 14, textAlign: 'center' },
   fullBtn: {
@@ -1193,8 +1249,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.35)',
-    zIndex: 22,
-    elevation: 22,
+    zIndex: 50,
+    elevation: 50,
   },
   fullBtnText: { color: '#fff', fontWeight: '700', textAlign: 'center' },
   askBox: {
@@ -1206,8 +1262,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5,
   },
-  askTitle: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  askSub: { color: 'rgba(255,255,255,0.8)', fontSize: 10, marginTop: 1 },
+  askTitle: { color: '#fff', fontSize: 11, fontWeight: '700', writingDirection: 'ltr', textAlign: 'left' },
+  askSub: { color: 'rgba(255,255,255,0.8)', fontSize: 10, marginTop: 1, writingDirection: 'ltr', textAlign: 'left' },
   panel: { flex: 1, minHeight: 0, paddingHorizontal: 14, paddingTop: 12, width: '100%' },
   timeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   touchPad: { marginHorizontal: 12, paddingVertical: 14, marginBottom: 4 },
@@ -1253,7 +1309,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
@@ -1282,6 +1338,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   replyBtn: {
+    flexShrink: 1,
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 999,
@@ -1302,7 +1359,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  replyBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  replyBtnText: { color: '#fff', fontWeight: '700', fontSize: 13, writingDirection: 'ltr' },
   sectionLabel: {
     fontSize: 12,
     fontWeight: '700',

@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import { createThumbnail } from 'react-native-create-thumbnail';
 import { useUser } from '../../context/UserContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useSocket } from '../../context/SocketContext';
 import { apiService } from '../../services/api';
@@ -43,16 +44,16 @@ export function otherParty(item: any, meId: any) {
   return uidOf(item?.sender) === String(meId) ? item?.receiver : item?.sender;
 }
 
-export function partyLabel(item: any, meId: any) {
+export function partyLabel(item: any, meId: any, words?: { user?: string; group?: string }) {
   if (!item?.isGroup) {
     const other = otherParty(item, meId);
-    return other?.name || other?.username || 'User';
+    return other?.name || other?.username || words?.user || 'User';
   }
   const names = (item.members || [])
     .filter((m: any) => uidOf(m) && uidOf(m) !== String(meId || ''))
     .map((m: any) => m.name || m.username)
     .filter(Boolean);
-  if (!names.length) return 'Group';
+  if (!names.length) return words?.group || 'Group';
   const head = names.slice(0, 2).join(', ');
   return names.length > 2 ? `${head} +${names.length - 2}` : head;
 }
@@ -95,6 +96,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
   const thumbH = Math.round(thumbW * 1.28);
   const headerPad = Math.max(insets.top, 8) + (compact ? 10 : 16);
   const { user } = useUser();
+  const { t, tn } = useLanguage();
   const { socket, setVideoMessageUnseenCount, refreshVideoMessageUnseenCount } = useSocket();
   const showToast = useShowToast();
 
@@ -147,14 +149,14 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         return out;
       });
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed to load', 'error');
+      showToast(t('error'), e?.message || t('vmFailedLoad'), 'error');
     } finally {
       fetchingRef.current = false;
       setLoading(false);
       setRefreshing(false);
       setLoadingMore(false);
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   useFocusEffect(
     useCallback(() => {
@@ -302,7 +304,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         setThumbUri('');
       }
     } catch {
-      Alert.alert('Error', 'Could not pick video');
+      Alert.alert(t('error'), t('vmCouldNotPick'));
     }
   };
 
@@ -313,10 +315,10 @@ const VideoMessagesScreen = ({ navigation }: any) => {
     try {
       const duration = getVideoDurationSeconds(pickedAsset) || 0;
       if (duration > 600) {
-        showToast('Error', 'Video must be 10 minutes or less', 'error');
+        showToast(t('error'), t('vmTooLong'), 'error');
         return;
       }
-      setSendHint('Uploading video…');
+      setSendHint(t('vmUploading'));
       const lightUri = await shrinkVideoForMessage(pickedAsset.uri);
       let thumbUri = '';
       try {
@@ -329,7 +331,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         },
         'video-messages',
       );
-      setSendHint('Almost done…');
+      setSendHint(t('vmAlmostDone'));
       let thumbnailUrl = '';
       try {
         const thumb = await createThumbnail({
@@ -370,13 +372,13 @@ const VideoMessagesScreen = ({ navigation }: any) => {
       setGroupMode(false);
       setPickedAsset(null);
       setThumbUri('');
-      showToast('Sent', 'Video message sent', 'success');
+      showToast(t('vmSent'), t('vmVideoSent'), 'success');
       } finally {
         await removeTempVideo(lightUri);
         if (thumbUri) await removeTempVideo(thumbUri);
       }
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed to send', 'error');
+      showToast(t('error'), e?.message || t('vmFailedSend'), 'error');
     } finally {
       setSending(false);
       setSendHint('');
@@ -413,49 +415,49 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={styles.nameRow}>
-            <Text style={[styles.name, { color: colors.text, flex: 1 }]} numberOfLines={1}>
-              {partyLabel(item, user?._id)}
+            <Text style={[styles.name, styles.ltr, { color: colors.text, flex: 1 }]} numberOfLines={1}>
+              {partyLabel(item, user?._id, { user: t('vmUser'), group: t('vmGroup') })}
             </Text>
             {unseen ? (
               <View style={[styles.newPill, { backgroundColor: colors.primary }]}>
-                <Text style={styles.newPillText}>{fresh > 1 ? fresh : 'New'}</Text>
+                <Text style={styles.newPillText}>{fresh > 1 ? fresh : t('vmNew')}</Text>
               </View>
             ) : null}
           </View>
-          <Text style={{ color: colors.textGray, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
+          <Text style={[styles.ltr, { color: colors.textGray, fontSize: 13, marginTop: 2 }]} numberOfLines={1}>
             {item.isGroup
-              ? `Group · ${item.memberCount || (item.members || []).length}`
+              ? tn('vmGroupCount', { count: item.memberCount || (item.members || []).length })
               : mine
                 ? item.seenAt
-                  ? 'Seen'
-                  : 'Not opened yet'
-                : 'Sent you'}
+                  ? t('vmSeen')
+                  : t('vmNotOpened')
+                : t('vmSentYou')}
           </Text>
-          <Text style={{ color: colors.textGray, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
-            {item.noteCount || 0} {item.noteCount === 1 ? 'reply' : 'replies'}
+          <Text style={[styles.ltr, { color: colors.textGray, fontSize: 12, marginTop: 2 }]} numberOfLines={1}>
+            {(item.noteCount || 0) === 1 ? t('vmReplyOne') : tn('vmRepliesCount', { count: item.noteCount || 0 })}
           </Text>
         </View>
         <TouchableOpacity
           style={styles.rowDelete}
           onPress={() => {
-            Alert.alert('Delete video', 'Delete this video for both of you?', [
-              { text: 'Cancel', style: 'cancel' },
+            Alert.alert(t('vmDeleteVideo'), t('vmDeleteBoth'), [
+              { text: t('cancel'), style: 'cancel' },
               {
-                text: 'Delete',
+                text: t('delete'),
                 style: 'destructive',
                 onPress: async () => {
                   try {
                     await apiService.delete(`${ENDPOINTS.VIDEO_MESSAGES}/${item._id}`);
                     setItems((prev) => prev.filter((x) => String(x._id) !== String(item._id)));
                   } catch (e: any) {
-                    showToast('Error', e?.message || 'Failed to delete', 'error');
+                    showToast(t('error'), e?.message || t('vmFailedDelete'), 'error');
                   }
                 },
               },
             ]);
           }}
         >
-          <Text style={{ color: '#e11d48', fontWeight: '700', fontSize: 12 }}>Delete</Text>
+          <Text style={{ color: '#e11d48', fontWeight: '700', fontSize: 12 }}>{t('delete')}</Text>
         </TouchableOpacity>
       </TouchableOpacity>
     );
@@ -464,20 +466,27 @@ const VideoMessagesScreen = ({ navigation }: any) => {
   return (
     <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: headerPad }]}>
       <View style={[styles.topBar, wide.contentCap]}>
-        <TouchableOpacity
-          onPress={() => {
-            if (navigation.canGoBack()) navigation.goBack();
-            else navigation.navigate('Feed', { screen: 'FeedScreen' });
-          }}
-        >
-          <Text style={[styles.back, { color: colors.text }]}>‹ Back</Text>
-        </TouchableOpacity>
+        <View style={styles.barSide}>
+          <TouchableOpacity
+            onPress={() => {
+              if (navigation.canGoBack()) navigation.goBack();
+              else navigation.navigate('Feed', { screen: 'FeedScreen' });
+            }}
+          >
+            <View style={styles.backRow}>
+              <Text style={[styles.back, { color: colors.text }]}>‹</Text>
+              <Text style={[styles.back, { color: colors.text }]}>{t('back')}</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
         <Text style={[styles.title, { color: colors.text, fontSize: compact ? 16 : 18 }]} numberOfLines={1}>
-          Video Messages
+          {t('vmVideoMessages')}
         </Text>
-        <TouchableOpacity onPress={() => setSendOpen(true)} style={[styles.sendPill, { backgroundColor: colors.primary }]}>
-          <Text style={styles.sendPillText}>New</Text>
-        </TouchableOpacity>
+        <View style={[styles.barSide, styles.barSideEnd]}>
+          <TouchableOpacity onPress={() => setSendOpen(true)} style={[styles.sendPill, { backgroundColor: colors.primary }]}>
+            <Text style={styles.sendPillText}>{t('vmNew')}</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading && items.length === 0 ? (
@@ -496,9 +505,9 @@ const VideoMessagesScreen = ({ navigation }: any) => {
           ListEmptyComponent={
             <View style={{ paddingTop: 48, alignItems: 'center' }}>
               <Text style={{ fontSize: 28, marginBottom: 8 }}>📹</Text>
-              <Text style={{ color: colors.text, fontWeight: '700', marginBottom: 4 }}>No video messages yet</Text>
+              <Text style={{ color: colors.text, fontWeight: '700', marginBottom: 4 }}>{t('vmNoYet')}</Text>
               <Text style={{ color: colors.textGray, textAlign: 'center' }}>
-                Send a video to one person. They can reply on any moment.
+                {t('vmEmptyHint')}
               </Text>
             </View>
           }
@@ -509,11 +518,13 @@ const VideoMessagesScreen = ({ navigation }: any) => {
       <Modal visible={sendOpen} animationType="slide" onRequestClose={() => setSendOpen(false)}>
         <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: headerPad }]}>
           <View style={[styles.topBar, wide.contentCap]}>
-            <TouchableOpacity onPress={() => setSendOpen(false)}>
-              <Text style={[styles.back, { color: colors.text }]}>Close</Text>
-            </TouchableOpacity>
-            <Text style={[styles.title, { color: colors.text }]}>New video</Text>
-            <View style={{ width: 64 }} />
+            <View style={styles.barSide}>
+              <TouchableOpacity onPress={() => setSendOpen(false)}>
+                <Text style={[styles.back, styles.ltr, { color: colors.text }]}>{t('close')}</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{t('vmNewVideo')}</Text>
+            <View style={styles.barSide} />
           </View>
           <View style={[{ flex: 1, width: '100%' }, wide.contentCap]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginTop: 8 }}>
@@ -521,13 +532,13 @@ const VideoMessagesScreen = ({ navigation }: any) => {
               onPress={() => { setGroupMode(false); setPickedUsers([]); }}
               style={[styles.modeChip, { backgroundColor: groupMode ? colors.cardBg : colors.primary, borderColor: groupMode ? colors.border : colors.primary }]}
             >
-              <Text style={{ color: groupMode ? colors.text : '#fff', fontWeight: '700' }}>One person</Text>
+              <Text style={{ color: groupMode ? colors.text : '#fff', fontWeight: '700', textAlign: 'center', writingDirection: 'ltr' }}>{t('vmOnePerson')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => { setGroupMode(true); setPickedUser(null); }}
               style={[styles.modeChip, { backgroundColor: groupMode ? colors.primary : colors.cardBg, borderColor: groupMode ? colors.primary : colors.border }]}
             >
-              <Text style={{ color: groupMode ? '#fff' : colors.text, fontWeight: '700' }}>Group</Text>
+              <Text style={{ color: groupMode ? '#fff' : colors.text, fontWeight: '700', textAlign: 'center', writingDirection: 'ltr' }}>{t('vmGroup')}</Text>
             </TouchableOpacity>
             {groupMode ? (
               <Text style={{ color: colors.textGray, fontWeight: '700' }}>{pickedUsers.length}/9</Text>
@@ -548,7 +559,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                     style={[styles.nameChip, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
                   >
                     <Text style={[styles.nameChipText, { color: colors.text }]} numberOfLines={1}>
-                      {(p.name || p.username || 'User') + '  ✕'}
+                      {(p.name || p.username || t('vmUser')) + '  ✕'}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -557,7 +568,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
           ) : null}
           {(!pickedUser || groupMode) ? (
             <TextInput
-              placeholder="Search people you follow"
+              placeholder={t('vmSearchFollow')}
               placeholderTextColor={colors.textGray}
               value={query}
               onChangeText={setQuery}
@@ -578,18 +589,18 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                   <View style={[styles.avatar, { backgroundColor: colors.border }]} />
                 )}
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: colors.textGray, fontSize: 12 }}>To</Text>
+                  <Text style={{ color: colors.textGray, fontSize: 12 }}>{t('vmTo')}</Text>
                   <Text style={{ color: colors.text, fontWeight: '700' }} numberOfLines={1}>
                     {pickedUser.name || pickedUser.username}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => setPickedUser(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={{ color: colors.primary, fontWeight: '700' }}>Change</Text>
+                  <Text style={{ color: colors.primary, fontWeight: '700' }}>{t('vmChange')}</Text>
                 </TouchableOpacity>
               </View>
             ) : (
-              <Text style={{ color: colors.textGray, fontSize: 14 }}>
-                {groupMode ? 'Search people you follow. You can add up to 9.' : 'Search someone you follow, then add a video.'}
+              <Text style={[styles.ltr, { color: colors.textGray, fontSize: 14 }]}>
+                {groupMode ? t('vmSearchGroup') : t('vmSearchOne')}
               </Text>
             )}
             {thumbUri || pickedAsset?.uri ? (
@@ -600,7 +611,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                   <View style={[styles.previewImg, { backgroundColor: '#111' }]} />
                 )}
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: colors.text, fontWeight: '700' }}>Video ready</Text>
+                  <Text style={{ color: colors.text, fontWeight: '700' }}>{t('vmVideoReady')}</Text>
                   <Text style={{ color: colors.textGray, fontSize: 13, marginTop: 4 }}>
                     {fmtTime((pickedAsset && getVideoDurationSeconds(pickedAsset)) || 0)}
                   </Text>
@@ -611,10 +622,10 @@ const VideoMessagesScreen = ({ navigation }: any) => {
           <View style={[styles.bottomStick, { paddingBottom: 12 + insets.bottom, borderTopColor: colors.border, backgroundColor: colors.background }]}>
             <View style={styles.pickRow}>
               <TouchableOpacity style={[styles.btn, { borderColor: colors.border, backgroundColor: colors.cardBg }]} onPress={() => pickVideo(false)}>
-                <Text style={{ color: colors.text, fontWeight: '700' }}>Gallery</Text>
+                <Text style={[styles.btnText, { color: colors.text }]}>{t('vmGallery')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.btn, { borderColor: colors.border, backgroundColor: colors.cardBg }]} onPress={() => pickVideo(true)}>
-                <Text style={{ color: colors.text, fontWeight: '700' }}>Camera</Text>
+                <Text style={[styles.btnText, { color: colors.text }]}>{t('camera')}</Text>
               </TouchableOpacity>
             </View>
             <TouchableOpacity
@@ -625,10 +636,10 @@ const VideoMessagesScreen = ({ navigation }: any) => {
               {sending ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <ActivityIndicator color="#fff" />
-                  <Text style={{ color: '#fff', fontWeight: '600' }}>{sendHint || 'Sending…'}</Text>
+                  <Text style={{ color: '#fff', fontWeight: '600' }}>{sendHint || t('vmSending')}</Text>
                 </View>
               ) : (
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Send</Text>
+                <Text style={styles.sendLabel}>{t('send')}</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -645,7 +656,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                 onEndReachedThreshold={0.4}
                 ListEmptyComponent={
                   peopleLoading ? null : (
-                    <Text style={{ color: colors.textGray, padding: 12 }}>No one you follow matches</Text>
+                    <Text style={{ color: colors.textGray, padding: 12 }}>{t('vmNoMatch')}</Text>
                   )
                 }
                 ListFooterComponent={
@@ -713,8 +724,12 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     width: '100%',
   },
-  back: { fontSize: 16, fontWeight: '600', width: 64 },
-  title: { flex: 1, textAlign: 'center', fontWeight: '800' },
+  barSide: { flex: 1, minWidth: 88, flexDirection: 'row', alignItems: 'center' },
+  barSideEnd: { justifyContent: 'flex-end' },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, writingDirection: 'ltr' },
+  back: { fontSize: 16, fontWeight: '600', writingDirection: 'ltr' },
+  ltr: { writingDirection: 'ltr', textAlign: 'left' },
+  title: { maxWidth: '52%', textAlign: 'center', fontWeight: '800', writingDirection: 'ltr' },
   sendPill: { minWidth: 64, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 14, alignItems: 'center' },
   sendPillText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   modeChip: {
@@ -804,6 +819,8 @@ const styles = StyleSheet.create({
   previewImg: { width: 72, height: 96, borderRadius: 12, backgroundColor: '#111' },
   pickRow: { flexDirection: 'row', gap: 10 },
   btn: { flex: 1, borderWidth: 1, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginTop: 10 },
+  btnText: { fontWeight: '700', textAlign: 'center', writingDirection: 'ltr' },
+  sendLabel: { color: '#fff', fontWeight: '700', textAlign: 'center', writingDirection: 'ltr' },
   sendBtn: { marginTop: 18, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
 });
 
