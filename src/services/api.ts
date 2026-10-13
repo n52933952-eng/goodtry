@@ -54,10 +54,23 @@ const getErrorMessage = (error: any) => {
 
 export const apiService = {
   get: async (url: string, config?: AxiosRequestConfig) => {
+    const openingVideo = /\/api\/video-message\/[a-f0-9]{24}/i.test(String(url));
     try {
+      if (openingVideo) console.log('[video-message] open', `${API_URL}${url}`);
       const res = await client.get(url, config);
+      if (openingVideo) console.log('[video-message] open ok', res.status);
       return res.data;
     } catch (e) {
+      if (openingVideo) {
+        const ax = axios.isAxiosError(e) ? e : null;
+        console.log('[video-message] open failed', {
+          url: `${API_URL}${url}`,
+          message: ax?.message || (e as any)?.message,
+          code: ax?.code,
+          status: ax?.response?.status,
+          data: ax?.response?.data,
+        });
+      }
       throw new Error(getErrorMessage(e));
     }
   },

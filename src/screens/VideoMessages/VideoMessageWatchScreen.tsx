@@ -7,6 +7,9 @@ import {
   ActivityIndicator,
   ScrollView,
   Alert,
+  Modal,
+  BackHandler,
+  Linking,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,7 +26,7 @@ import { getVideoDurationSeconds } from '../../utils/videoDuration';
 import { removeTempVideo, shrinkVideoForMessage } from '../../utils/lightVideo';
 import { useShowToast } from '../../hooks/useShowToast';
 import { useWideScreenLayout } from '../../utils/responsiveLayout';
-import { fmtTime, otherParty, uidOf } from './VideoMessagesScreen';
+import { fmtTime, otherParty, partyLabel, uidOf } from './VideoMessagesScreen';
 
 const REACTIONS = ['❤️', '😂', '🔥', '😮', '😢', '👏', '😍', '🎉', '👍', '💯', '🙏', '😭', '🤣', '😎', '💪', '✨'];
 
@@ -42,6 +45,7 @@ function notesPayload(notes: any[]) {
     url: n.videoUrl ? mediaDisplayUrl(n.videoUrl) : '',
     reaction: n.reaction || '',
     name: n.user?.name || n.user?.username || 'Reply',
+    onNote: n.onNote ? String(n.onNote) : '',
   }));
 }
 
@@ -60,24 +64,27 @@ video::-webkit-media-controls,video::-webkit-media-controls-enclosure,video::-we
 #note{background:#000}
 #meta{position:absolute;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center}
 #who,#close{background:rgba(0,0,0,.55);color:#fff;font-size:12px;padding:5px 10px;border-radius:999px}
-#react{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:64px;display:none;pointer-events:none}
+#react,#reactReply{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:64px;display:none;pointer-events:none;z-index:6}
 </style></head><body><div id="wrap">
 <video id="main" playsinline webkit-playsinline preload="metadata" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback ${poster ? `poster="${String(poster).replace(/"/g, '&quot;')}"` : ''} src="${safe}"></video>
 <div id="shield"></div>
 <div id="dim"></div>
 <div id="react"></div>
-<div id="card"><video id="note" playsinline webkit-playsinline preload="auto" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback></video><div id="meta"><span id="who"></span><span id="close">Close</span></div></div>
+<div id="card"><video id="note" playsinline webkit-playsinline preload="auto" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback></video><div id="reactReply"></div><div id="meta"><span id="who"></span><span id="close">Close</span></div></div>
 </div><script>
 var main=document.getElementById('main');
 var note=document.getElementById('note');
 main.controls=false;
 note.controls=false;
+main.loop=false;
+note.loop=false;
 main.removeAttribute('controls');
 note.removeAttribute('controls');
 document.getElementById('shield').onclick=function(){ window.toggle(); };
 var card=document.getElementById('card');
 var dim=document.getElementById('dim');
 var reactEl=document.getElementById('react');
+var reactReply=document.getElementById('reactReply');
 var who=document.getElementById('who');
 var notes=${json};
 var shown={};
@@ -89,6 +96,8 @@ var playingId='';
 function send(type, extra){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(Object.assign({type:type}, extra||{}))); }
 var primedUrl='';
 var held=false;
+var finishedId='';
+var notePlayed=0;
 function finiteDur(){
   var d=main.duration;
   if(!isFinite(d)||d<=0||d>100000) return 0;
@@ -113,18 +122,22 @@ function dismissReply(){
 }
 function hideOverlay(resume){
   playingId='';
+  note.loop=false;
   try{ note.pause(); }catch(e){}
   note.onended=null;
   note.onloadeddata=null;
-  if(Math.abs((main.currentTime||0)-pinnedT)>0.2){
-    try{ main.currentTime=pinnedT; }catch(e){}
+  var end=finiteDur();
+  var land=end?Math.min(end, pinnedT):pinnedT;
+  if(Math.abs((main.currentTime||0)-land)>0.05){
+    try{ main.currentTime=land; }catch(e){}
   }
-  lastT=pinnedT;
+  lastT=land;
   overlayOn=false;
   card.style.display='none';
   dim.style.display='none';
-  send('time',{t:pinnedT,d:finiteDur(),playing:!held});
-  if(resume!==false && !held) main.play().catch(function(){});
+  var atEnd=end && land>=end-0.35;
+  send('time',{t:land,d:end,playing:!held && !atEnd});
+  if(resume!==false && !held && !atEnd) main.play().catch(function(){});
 }
 function nextReply(afterT){
   var best=null;
@@ -144,6 +157,9 @@ function showVideoNote(n, resumeAfter){
   overlayOn=true;
   playingId=n.id;
   shown[n.id]=true;
+  noteLast=0;
+  notes.forEach(function(x){ if(x.onNote===n.id) delete shown[x.id]; });
+  send('overlay', {id:n.id});
   pinnedT=(Number(n.t)||0)+0.15;
   try{ main.currentTime=pinnedT; }catch(e){}
   send('time',{t:Number(n.t)||0,d:finiteDur(),playing:false});
@@ -151,10 +167,15 @@ function showVideoNote(n, resumeAfter){
   card.style.display='block';
   who.textContent='Reply · '+(n.name||'');
   note.onloadeddata=null;
+  note.loop=false;
+  notePlayed=0;
   note.onended=function(){
-    if((note.currentTime||0)<0.2) return;
+    note.loop=false;
+    try{ note.pause(); }catch(e){}
+    if(notePlayed<0.2 && (note.currentTime||0)<0.2) return;
+    finishedId=n.id;
     var nxt=nextReply(n.t||0);
-    if(nxt){ showVideoNote(nxt, resumeAfter); return; }
+    if(nxt && nxt.id!==n.id && nxt.url!==n.url){ showVideoNote(nxt, resumeAfter); return; }
     hideOverlay(resumeAfter!==false);
     send('overlayEnd');
   };
@@ -169,11 +190,13 @@ function showVideoNote(n, resumeAfter){
     else note.onloadeddata=start;
   } else start();
 }
+var noteLast=0;
 function showReact(n){
   shown[n.id]=true;
-  reactEl.textContent=n.reaction||'❤️';
-  reactEl.style.display='block';
-  setTimeout(function(){ reactEl.style.display='none'; }, 1500);
+  var el=(n.onNote&&overlayOn)?reactReply:reactEl;
+  el.textContent=n.reaction||'❤️';
+  el.style.display='block';
+  setTimeout(function(){ el.style.display='none'; }, 1500);
 }
 main.addEventListener('timeupdate', function(){
   if(scrubbing) return;
@@ -188,6 +211,8 @@ main.addEventListener('timeupdate', function(){
   lastT=t;
   send('time', {t:t,d:finiteDur(),playing:!main.paused});
   if(t+0.05<prev){
+    if(prev-t<0.75) return;
+    finishedId='';
     notes.forEach(function(n){ if(n.t>t+0.2) delete shown[n.id]; });
     return;
   }
@@ -198,22 +223,36 @@ main.addEventListener('timeupdate', function(){
     if(shown[n.id]) continue;
     var reached=n.t>prev-0.08 && n.t<=t+0.08;
     if(n.type==='video' && n.url && reached){
+      if(n.id===finishedId) continue;
       showVideoNote(n, true);
       send('overlay', {id:n.id});
       return;
     }
     if(n.type==='video' && n.url && !upcoming && n.t>t && n.t-t<8) upcoming=n;
-    if(n.type==='reaction' && reached){
+    if(n.type==='reaction' && !n.onNote && reached){
       showReact(n);
     }
   }
   // Pre-buffer the next reply ~8s early so it plays the instant its moment arrives.
   if(upcoming) prime(upcoming);
 });
-main.addEventListener('play', function(){ send('play'); });
-main.addEventListener('pause', function(){ send('pause'); });
+main.addEventListener('play', function(){
+  if(overlayOn){ try{ main.pause(); }catch(e){} return; }
+  send('play');
+});
+main.addEventListener('pause', function(){ if(!overlayOn) send('pause'); });
+note.addEventListener('play', function(){ if(overlayOn) send('play'); });
+note.addEventListener('pause', function(){ if(overlayOn) send('pause'); });
 document.getElementById('close').onclick=function(){ hideOverlay(true); send('overlayEnd'); };
-window.toggle=function(){ if(overlayOn||held) return; if(main.paused) main.play(); else main.pause(); };
+window.toggle=function(){
+  if(held) return;
+  if(overlayOn){
+    if(note.paused) note.play().catch(function(){});
+    else note.pause();
+    return;
+  }
+  if(main.paused) main.play(); else main.pause();
+};
 window.hold=function(){ held=true; main.pause(); };
 window.pauseOnly=function(){ main.pause(); };
 window.releasePlay=function(){ held=false; if(!overlayOn) main.play().catch(function(){}); };
@@ -226,7 +265,12 @@ window.seekTo=function(t, soft){
   scrubbing=!!soft;
   lastT=t;
   if(!soft){
+    if(finishedId){
+      var done=notes.find(function(x){ return x.id===finishedId; });
+      if(!done || (done.t||0)>t+0.25) finishedId='';
+    }
     notes.forEach(function(n){
+      if(n.onNote) return;
       if((n.t||0)>t+0.25) delete shown[n.id];
       else shown[n.id]=true;
     });
@@ -235,7 +279,8 @@ window.seekTo=function(t, soft){
     try { main.fastSeek(t); return; } catch(e){}
   }
   try { main.currentTime=t; } catch(e){}
-  if(!soft && keepPlaying && !held) main.play().catch(function(){});
+  var end=finiteDur();
+  if(!soft && keepPlaying && !held && !(end && t>=end-0.35)) main.play().catch(function(){});
 };
 window.openNote=function(id){
   var n=notes.find(function(x){ return x.id===String(id); });
@@ -248,11 +293,35 @@ window.playNote=function(raw){
   var n=typeof raw==='string'?JSON.parse(raw):raw;
   if(!n||!n.id) return;
   if(!notes.some(function(x){ return x.id===n.id; })) notes.push(n);
+  if(n.type==='reaction'){
+    if(n.seek && !overlayOn){
+      try { main.currentTime=n.t||0; } catch(e){}
+    }
+    showReact(n);
+    return;
+  }
   delete shown[n.id];
   main.currentTime=n.t||0;
   if(n.type==='video') showVideoNote(n, true);
-  else if(n.type==='reaction') showReact(n);
 };
+note.addEventListener('timeupdate', function(){
+  if(!overlayOn||!playingId) return;
+  var t=note.currentTime||0;
+  var prev=noteLast;
+  noteLast=t;
+  if(t>notePlayed) notePlayed=t;
+  if((t*4|0)!==(prev*4|0)) send('replyTime',{id:playingId,t:t});
+  if(t+0.05<prev){
+    notes.forEach(function(n){ if(n.onNote===playingId && n.t>t+0.2) delete shown[n.id]; });
+    return;
+  }
+  if(t-prev>2.5) return;
+  for(var i=0;i<notes.length;i++){
+    var n=notes[i];
+    if(n.type!=='reaction'||n.onNote!==playingId||shown[n.id]) continue;
+    if(n.t>prev-0.08 && n.t<=t+0.08) showReact(n);
+  }
+});
 window.setNotes=function(raw){
   try { notes = typeof raw==='string' ? JSON.parse(raw) : raw; } catch(e) {}
 };
@@ -275,6 +344,8 @@ main.addEventListener('loadedmetadata', function(){
 
 const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const id = String(route?.params?.id || '');
+  const listPreview = route?.params?.preview;
+  const openedFromList = useRef(!!listPreview?.videoUrl);
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const wide = useWideScreenLayout();
@@ -290,16 +361,19 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const lastSeekAtRef = useRef(0);
   const grantXRef = useRef(0);
 
-  const [item, setItem] = useState<any>(null);
+  const [item, setItem] = useState<any>(listPreview?.videoUrl ? listPreview : null);
   const [notes, setNotes] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!listPreview?.videoUrl);
   const [now, setNow] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [recordUploading, setRecordUploading] = useState(false);
   const [recorded, setRecorded] = useState(false);
   const [askNow, setAskNow] = useState<any>(null);
   const [reactionNotesOpen, setReactionNotesOpen] = useState(false);
+  const [videoFull, setVideoFull] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const other = item ? otherParty(item, user?._id) : null;
   const iAmSender = item ? uidOf(item.sender) === String(user?._id) : false;
@@ -308,6 +382,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const notesRef = useRef<any[]>([]);
   const leavingRef = useRef(false);
   const momentRef = useRef(0);
+  const replyAtRef = useRef<{ id: string; t: number } | null>(null);
   const askedRef = useRef<Set<string>>(new Set());
   const lastTRef = useRef(0);
   notesRef.current = notes;
@@ -317,25 +392,38 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
     webRef.current?.injectJavaScript(`window.setNotes(${JSON.stringify(raw)}); true;`);
   }, []);
 
-  const playNoteNow = useCallback((note: any) => {
+  const playNoteNow = useCallback((note: any, seek = true) => {
     const packed = notesPayload([note])[0];
     if (!packed) return;
+    (packed as any).seek = seek ? 1 : 0;
     webRef.current?.injectJavaScript(`window.playNote(${JSON.stringify(JSON.stringify(packed))}); true;`);
   }, []);
   const compact = width < 380;
   const headerPad = Math.max(insets.top, 8) + (compact ? 8 : 14);
   const playerH = wide.isWide ? 340 : compact ? 210 : 240;
   const chip = Math.round(Math.min(42, Math.max(34, (width - 48) / 8)));
+  const fullBtnSize = Math.round(Math.min(44, Math.max(36, width * 0.09)));
+  const fullBtnEdge = Math.max(8, Math.round(Math.min(16, width * 0.025)));
+  const fullBtnLeft = Math.max(fullBtnEdge, insets.left + fullBtnEdge);
+  const fullBtnBottom = videoFull
+    ? Math.max(fullBtnEdge, insets.bottom + fullBtnEdge)
+    : fullBtnEdge;
 
   const load = useCallback(async () => {
+    const url = `${ENDPOINTS.VIDEO_MESSAGES}/${id}`;
     try {
-      const data = await apiService.get(`${ENDPOINTS.VIDEO_MESSAGES}/${id}`);
+      console.log('[video-message] tap open', id);
+      const data = await apiService.get(url);
       setItem(data);
       setNotes(Array.isArray(data?.notes) ? data.notes : []);
       refreshVideoMessageUnseenCount?.();
     } catch (e: any) {
-      showToast('Error', e?.message || 'Failed to open', 'error');
-      navigation.goBack();
+      const lastMessage = e?.message || 'Failed to open';
+      console.log('[video-message] tap open error', id, lastMessage);
+      if (!openedFromList.current) {
+        showToast('Error', lastMessage, 'error');
+        navigation.goBack();
+      }
     } finally {
       setLoading(false);
     }
@@ -344,6 +432,15 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!videoFull) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setVideoFull(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [videoFull]);
 
   useEffect(() => {
     if (!socket) return;
@@ -514,16 +611,18 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
 
   const addReaction = async (emoji: string) => {
     if (busy) return;
+    const reply = replyAtRef.current;
     setBusy(true);
     try {
       const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/notes`, {
         type: 'reaction',
         reaction: emoji,
-        t: now,
+        t: reply ? reply.t : now,
+        ...(reply ? { onNote: reply.id } : {}),
       });
       if (data?.note) {
         setNotes((prev) => [...prev, data.note].sort((a, b) => a.t - b.t));
-        playNoteNow(data.note);
+        playNoteNow(data.note, false);
       }
     } catch (e: any) {
       showToast('Error', e?.message || 'Failed', 'error');
@@ -549,6 +648,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         Alert.alert('Too long', 'Reply video must be 30 seconds or less');
         return;
       }
+      if (fromCamera) setRecordUploading(true);
       setBusy(true);
       const lightUri = await shrinkVideoForMessage(asset.uri);
       let videoUrl = '';
@@ -581,7 +681,23 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       webRef.current?.injectJavaScript('window.releasePlay(); true;');
       showToast('Error', e?.message || 'Failed', 'error');
     } finally {
+      setRecordUploading(false);
       setBusy(false);
+    }
+  };
+
+  const downloadAll = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    showToast('Download', 'Preparing one video with the replies and reactions', 'info');
+    try {
+      const data = await apiService.get(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/download`);
+      if (!data?.url) throw new Error('Could not download');
+      await Linking.openURL(String(data.url));
+    } catch (e: any) {
+      showToast('Error', e?.message || 'Could not download', 'error');
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -601,9 +717,17 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           <Text style={styles.back}>‹ Back</Text>
         </TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.title} numberOfLines={1}>{other?.name || other?.username || 'Video'}</Text>
+          <Text style={styles.title} numberOfLines={1}>{partyLabel(item, user?._id)}</Text>
           <Text style={styles.sub}>{notes.length} replies inside</Text>
         </View>
+        <TouchableOpacity
+          onPress={downloadAll}
+          disabled={downloading}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ marginRight: 8 }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 18 }}>{downloading ? '…' : '⬇'}</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           onPress={() => {
             Alert.alert('Delete video', 'Delete this video for both of you?', [
@@ -640,14 +764,23 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           </TouchableOpacity>
         ) : null}
         <TouchableOpacity
-          style={[styles.replyBtn, { backgroundColor: '#e11d48', borderColor: '#e11d48' }]}
+          disabled={recordUploading}
+          style={[styles.replyBtn, styles.recordBtn, { backgroundColor: '#e11d48', borderColor: '#e11d48' }]}
           onPress={() => {
+            if (recordUploading) return;
             momentRef.current = now;
             webRef.current?.injectJavaScript('window.hold(); true;');
             addVideoNote(true);
           }}
         >
-          <Text style={styles.replyBtnText}>{recorded ? 'Record again' : 'Record'}</Text>
+          <Text style={[styles.replyBtnText, recordUploading && styles.recordLabelHidden]}>
+            {recorded ? 'Record again' : 'Record'}
+          </Text>
+          {recordUploading ? (
+            <View style={styles.recordSpin} pointerEvents="none">
+              <ActivityIndicator color="#fff" size="small" />
+            </View>
+          ) : null}
         </TouchableOpacity>
         {!iAmSender ? (
           <TouchableOpacity
@@ -665,11 +798,21 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           style={[styles.replyBtn, { backgroundColor: reactionNotesOpen ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.14)', borderColor: 'rgba(255,255,255,0.28)' }]}
           onPress={() => setReactionNotesOpen((open) => !open)}
         >
-          <Text style={styles.replyBtnText}>Reactions {reactionNotes.length}</Text>
+          <Text style={styles.replyBtnText}>
+            Inside {(item?.markers || []).filter((m: any) => m.type === 'reply').length + notes.length}
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={[styles.player, { height: playerH }, wide.contentCap]}>
+      <View
+        style={[
+          styles.player,
+          videoFull
+            ? { position: 'absolute', top: -headerPad, left: 0, right: 0, bottom: 0, zIndex: 40, elevation: 40 }
+            : { height: playerH },
+          videoFull ? null : wide.contentCap,
+        ]}
+      >
         <WebView
           ref={webRef}
           style={styles.web}
@@ -715,11 +858,34 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                 }
               } else if (msg.type === 'play') setPlaying(true);
               else if (msg.type === 'pause') setPlaying(false);
+              else if (msg.type === 'replyTime' && msg.id) replyAtRef.current = { id: String(msg.id), t: Number(msg.t) || 0 };
+              else if (msg.type === 'overlayEnd') replyAtRef.current = null;
+              else if (msg.type === 'overlay' && msg.id) replyAtRef.current = { id: String(msg.id), t: 0 };
             } catch {}
           }}
         />
+        <TouchableOpacity
+          style={[
+            styles.fullBtn,
+            {
+              left: fullBtnLeft,
+              bottom: fullBtnBottom,
+              width: fullBtnSize,
+              height: fullBtnSize,
+              borderRadius: fullBtnSize / 2,
+            },
+          ]}
+          onPress={() => setVideoFull((open) => !open)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          accessibilityRole="button"
+          accessibilityLabel={videoFull ? 'Exit full video' : 'Watch full video'}
+        >
+          <Text style={[styles.fullBtnText, { fontSize: Math.round(fullBtnSize * 0.48), lineHeight: Math.round(fullBtnSize * 0.56) }]}>
+            {videoFull ? '✕' : '⛶'}
+          </Text>
+        </TouchableOpacity>
         {!iAmSender && (askNow || liveMarker?.type === 'reply') ? (
-          <View style={styles.askBox} pointerEvents="none">
+          <View style={[styles.askBox, { left: fullBtnLeft + fullBtnSize + 8 }]} pointerEvents="none">
             <Text style={styles.askTitle}>Wants a reply or a reaction here</Text>
             <Text style={styles.askSub}>At {fmtTime((askNow || liveMarker)?.t)} · record or tap a reaction</Text>
           </View>
@@ -731,16 +897,57 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
             </Text>
           </View>
         ) : null}
-        {reactionNotesOpen ? (
+        <Modal
+          visible={reactionNotesOpen}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setReactionNotesOpen(false)}
+        >
           <View style={styles.centerWrap}>
             <TouchableOpacity style={styles.centerDim} activeOpacity={1} onPress={() => setReactionNotesOpen(false)} />
             <View style={styles.centerCard}>
-              <Text style={styles.centerTitle}>Reactions</Text>
-              <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ paddingBottom: 4 }} keyboardShouldPersistTaps="handled">
-                {reactionNotes.length === 0 ? (
-                  <Text style={styles.sideEmpty}>No reactions yet</Text>
+              <View style={styles.centerHead}>
+                <Text style={styles.centerTitle}>Inside this video</Text>
+                <TouchableOpacity onPress={() => setReactionNotesOpen(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={styles.sideClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={{ maxHeight: 320 }} contentContainerStyle={{ paddingBottom: 6 }} keyboardShouldPersistTaps="handled">
+                {notes.length === 0 && !(item?.markers || []).some((m: any) => m.type === 'reply') ? (
+                  <Text style={styles.sideEmpty}>Nothing in this video yet</Text>
                 ) : null}
-                {reactionNotes.map((n) => (
+                {(item?.markers || []).some((m: any) => m.type === 'reply') ? (
+                  <Text style={styles.modalLabel}>{iAmSender ? 'Reply here' : 'Asked you'}</Text>
+                ) : null}
+                {(item?.markers || [])
+                  .filter((m: any) => m.type === 'reply')
+                  .map((m: any, i: number) => (
+                    <TouchableOpacity
+                      key={`ask-${i}`}
+                      style={styles.sideRow}
+                      onPress={() => {
+                        setReactionNotesOpen(false);
+                        setAskNow(m);
+                        seekTo(Number(m.t) || 0);
+                      }}
+                    >
+                      <Text style={styles.sideTimePill}>{fmtTime(m.t)}</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.sideText} numberOfLines={1}>Reply or reaction here</Text>
+                      </View>
+                      {iAmSender ? (
+                        <TouchableOpacity
+                          onPress={() => removeReplyHere(Number(m.t) || 0)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={styles.sideClose}>✕</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </TouchableOpacity>
+                  ))}
+                {videoNotes.length > 0 ? <Text style={styles.modalLabel}>Replies</Text> : null}
+                {videoNotes.map((n) => (
                   <TouchableOpacity
                     key={n._id}
                     style={styles.sideRow}
@@ -749,15 +956,46 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                       playNoteNow(n);
                     }}
                   >
+                    <Text style={styles.sideEmoji}>🎥</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.sideText} numberOfLines={1}>
+                        {n.user?.name || n.user?.username || 'Video reply'}
+                      </Text>
+                      <Text style={styles.sideTime}>{fmtTime(n.t)}</Text>
+                    </View>
+                    {iAmSender || uidOf(n.user) === String(user?._id) ? (
+                      <TouchableOpacity onPress={() => deleteNote(n)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Text style={styles.sideClose}>✕</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </TouchableOpacity>
+                ))}
+                {reactionNotes.length > 0 ? <Text style={styles.modalLabel}>Reactions</Text> : null}
+                {reactionNotes.map((n) => (
+                  <TouchableOpacity
+                    key={n._id}
+                    style={styles.sideRow}
+                    onPress={() => {
+                      setReactionNotesOpen(false);
+                      if (n.onNote) {
+                        const parent = notes.find((x) => String(x._id) === String(n.onNote));
+                        if (parent) {
+                          playNoteNow(parent);
+                          return;
+                        }
+                      }
+                      playNoteNow(n);
+                    }}
+                  >
                     <Text style={styles.sideEmoji}>{n.reaction || '❤️'}</Text>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.sideText} numberOfLines={1}>
                         {n.user?.name || n.user?.username || 'Reaction'}
                       </Text>
-                      <Text style={styles.sideTime}>{fmtTime(n.t)}</Text>
+                      <Text style={styles.sideTime}>{n.onNote ? `On reply · ${fmtTime(n.t)}` : fmtTime(n.t)}</Text>
                     </View>
                     {iAmSender || uidOf(n.user) === String(user?._id) ? (
-                      <TouchableOpacity onPress={() => deleteNote(n)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                      <TouchableOpacity onPress={() => deleteNote(n)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                         <Text style={styles.sideClose}>✕</Text>
                       </TouchableOpacity>
                     ) : null}
@@ -766,7 +1004,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
               </ScrollView>
             </View>
           </View>
-        ) : null}
+        </Modal>
       </View>
 
       <View style={[styles.panel, { backgroundColor: colors.background, paddingBottom: insets.bottom + 36 }, wide.contentCap]}>
@@ -815,7 +1053,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                 ))
               : null}
             {barReady > 0
-              ? notes.map((n) => (
+              ? notes.filter((n) => !n.onNote).map((n) => (
                   <View
                     key={n._id}
                     style={[
@@ -847,57 +1085,6 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           ))}
         </View>
 
-        <ScrollView style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ paddingBottom: 8 }}>
-          {(item.markers || []).some((m: any) => m.type === 'reply') ? (
-            <Text style={[styles.sectionLabel, { color: colors.textGray }]}>
-              {iAmSender ? 'Reply here' : 'Asked you'}
-            </Text>
-          ) : null}
-          {(item.markers || [])
-            .filter((m: any) => m.type === 'reply')
-            .map((m: any, i: number) => (
-              <TouchableOpacity
-                key={`ask-${i}`}
-                style={[styles.noteRow, { borderColor: colors.border }]}
-                onPress={() => {
-                  setAskNow(m);
-                  seekTo(Number(m.t) || 0);
-                }}
-              >
-                <Text style={[styles.timeChip, { color: colors.text, backgroundColor: colors.cardBg }]}>{fmtTime(m.t)}</Text>
-                <Text style={{ color: colors.text, flex: 1, fontWeight: '600' }}>Reply or reaction here</Text>
-                {iAmSender ? (
-                  <TouchableOpacity
-                    onPress={() => removeReplyHere(Number(m.t) || 0)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Text style={{ color: colors.textGray, fontSize: 16 }}>✕</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </TouchableOpacity>
-            ))}
-          {videoNotes.length > 0 ? (
-            <Text style={[styles.sectionLabel, { color: colors.textGray }]}>Replies</Text>
-          ) : null}
-          {videoNotes.map((n) => (
-            <TouchableOpacity
-              key={n._id}
-              style={[styles.noteRow, { borderColor: colors.border }]}
-              onPress={() => playNoteNow(n)}
-            >
-              <Text style={[styles.timeChip, { color: colors.text, backgroundColor: colors.cardBg }]}>{fmtTime(n.t)}</Text>
-              <Text style={{ color: colors.text, flex: 1 }} numberOfLines={1}>
-                Video reply
-                {n.user?.name || n.user?.username ? `  ${n.user?.name || n.user?.username}` : ''}
-              </Text>
-              {iAmSender || uidOf(n.user) === String(user?._id) ? (
-                <TouchableOpacity onPress={() => deleteNote(n)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={{ color: colors.textGray, fontSize: 16 }}>✕</Text>
-                </TouchableOpacity>
-              ) : null}
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
       </View>
     </View>
   );
@@ -931,15 +1118,10 @@ const styles = StyleSheet.create({
   },
   chipText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   centerWrap: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 8,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
   },
   centerDim: {
     position: 'absolute',
@@ -947,45 +1129,85 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
   centerCard: {
     width: '100%',
-    maxWidth: 320,
-    backgroundColor: 'rgba(18,18,18,0.96)',
-    borderRadius: 18,
+    maxWidth: 340,
+    backgroundColor: 'rgba(16,16,16,0.97)',
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.16)',
+    borderColor: 'rgba(255,255,255,0.14)',
     paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 8,
+    paddingTop: 12,
+    paddingBottom: 10,
   },
-  centerTitle: { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 8 },
+  centerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  centerTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  modalLabel: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginTop: 8,
+    marginBottom: 4,
+  },
   sideRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.12)',
+    paddingHorizontal: 8,
+    marginBottom: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  sideEmoji: { fontSize: 26, width: 34, textAlign: 'center' },
+  sideEmoji: { fontSize: 22, width: 32, textAlign: 'center' },
+  sideTimePill: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    minWidth: 44,
+    textAlign: 'center',
+    overflow: 'hidden',
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    fontVariant: ['tabular-nums'],
+  },
   sideTime: { color: 'rgba(255,255,255,0.65)', fontSize: 12, fontWeight: '700', marginTop: 2 },
   sideText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  sideClose: { color: 'rgba(255,255,255,0.7)', fontSize: 16 },
-  sideEmpty: { color: 'rgba(255,255,255,0.7)', fontSize: 13, paddingVertical: 10 },
+  sideClose: { color: 'rgba(255,255,255,0.75)', fontSize: 16, fontWeight: '700' },
+  sideEmpty: { color: 'rgba(255,255,255,0.7)', fontSize: 13, paddingVertical: 14, textAlign: 'center' },
+  fullBtn: {
+    position: 'absolute',
+    backgroundColor: 'rgba(0,0,0,0.52)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+    zIndex: 22,
+    elevation: 22,
+  },
+  fullBtnText: { color: '#fff', fontWeight: '700', textAlign: 'center' },
   askBox: {
     position: 'absolute',
-    left: 12,
-    right: 12,
-    bottom: 12,
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    right: 10,
+    bottom: 8,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
-  askTitle: { color: '#fff', fontSize: 14, fontWeight: '800' },
-  askSub: { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 2 },
+  askTitle: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  askSub: { color: 'rgba(255,255,255,0.8)', fontSize: 10, marginTop: 1 },
   panel: { flex: 1, minHeight: 0, paddingHorizontal: 14, paddingTop: 12, width: '100%' },
   timeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   touchPad: { marginHorizontal: 12, paddingVertical: 14, marginBottom: 4 },
@@ -1064,6 +1286,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 999,
     borderWidth: 1,
+  },
+  recordBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+  },
+  recordLabelHidden: { opacity: 0 },
+  recordSpin: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   replyBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   sectionLabel: {

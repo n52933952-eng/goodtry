@@ -43,6 +43,20 @@ export function otherParty(item: any, meId: any) {
   return uidOf(item?.sender) === String(meId) ? item?.receiver : item?.sender;
 }
 
+export function partyLabel(item: any, meId: any) {
+  if (!item?.isGroup) {
+    const other = otherParty(item, meId);
+    return other?.name || other?.username || 'User';
+  }
+  const names = (item.members || [])
+    .filter((m: any) => uidOf(m) && uidOf(m) !== String(meId || ''))
+    .map((m: any) => m.name || m.username)
+    .filter(Boolean);
+  if (!names.length) return 'Group';
+  const head = names.slice(0, 2).join(', ');
+  return names.length > 2 ? `${head} +${names.length - 2}` : head;
+}
+
 export function fmtTime(sec: number) {
   const n = Number(sec);
   if (!Number.isFinite(n) || n < 0) return '0:00';
@@ -55,6 +69,12 @@ export function fmtTime(sec: number) {
 
 function unseenAmount(item: any, meId: any) {
   const me = String(meId);
+  if (item?.isGroup) {
+    let n = 0;
+    if (uidOf(item.sender) !== me && !item.mySeenAt) n += 1;
+    if ((item.myUnseenNotes || 0) > 0) n += item.myUnseenNotes;
+    return n;
+  }
   let n = 0;
   if (uidOf(item.receiver) === me && !item.seenAt) n += 1;
   if (uidOf(item.receiver) === me && (item.receiverUnseenNotes || 0) > 0) n += item.receiverUnseenNotes;
@@ -95,6 +115,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
   const peopleBusyRef = useRef(false);
   const peopleReqRef = useRef(0);
   const [pickedUser, setPickedUser] = useState<any | null>(null);
+  const [groupMode, setGroupMode] = useState(false);
+  const [pickedUsers, setPickedUsers] = useState<any[]>([]);
   const [pickedAsset, setPickedAsset] = useState<any | null>(null);
   const [thumbUri, setThumbUri] = useState('');
   const [sending, setSending] = useState(false);
@@ -160,9 +182,11 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                 ...x,
                 noteCount: (x.noteCount || 0) + 1,
                 ...(payload?.badge
-                  ? uidOf(x.sender) === String(user?._id)
-                    ? { senderHasNewNotes: true, senderUnseenNotes: (x.senderUnseenNotes || 0) + 1 }
-                    : { receiverUnseenNotes: (x.receiverUnseenNotes || 0) + 1 }
+                  ? x.isGroup
+                    ? { myUnseenNotes: (x.myUnseenNotes || 0) + 1 }
+                    : uidOf(x.sender) === String(user?._id)
+                      ? { senderHasNewNotes: true, senderUnseenNotes: (x.senderUnseenNotes || 0) + 1 }
+                      : { receiverUnseenNotes: (x.receiverUnseenNotes || 0) + 1 }
                   : {}),
               }
             : x,
@@ -283,7 +307,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
   };
 
   const handleSend = async () => {
-    if (!pickedUser?._id || !pickedAsset?.uri || sending) return;
+    const targets = groupMode ? pickedUsers : pickedUser ? [pickedUser] : [];
+    if (!targets.length || !pickedAsset?.uri || sending) return;
     setSending(true);
     try {
       const duration = getVideoDurationSeconds(pickedAsset) || 0;
@@ -329,7 +354,9 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         thumbnailUrl = '';
       }
       const data = await apiService.post(ENDPOINTS.VIDEO_MESSAGES, {
-        receiverId: pickedUser._id,
+        ...(targets.length > 1
+          ? { memberIds: targets.map((p) => p._id) }
+          : { receiverId: targets[0]._id }),
         videoUrl,
         thumbnailUrl: thumbnailUrl || undefined,
         duration: Math.round(duration),
@@ -339,6 +366,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
       setQuery('');
       setPeople([]);
       setPickedUser(null);
+      setPickedUsers([]);
+      setGroupMode(false);
       setPickedAsset(null);
       setThumbUri('');
       showToast('Sent', 'Video message sent', 'success');
@@ -356,7 +385,6 @@ const VideoMessagesScreen = ({ navigation }: any) => {
 
   const renderItem = ({ item }: { item: any }) => {
     if (!item) return null;
-    const other = otherParty(item, user?._id);
     const fresh = unseenAmount(item, user?._id);
     const unseen = fresh > 0;
     const mine = uidOf(item.sender) === String(user?._id);
@@ -368,7 +396,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         ]}
         onPress={() => {
           if (fresh > 0) setVideoMessageUnseenCount((n) => Math.max(0, (n || 0) - fresh));
-          navigation.navigate('VideoMessageWatch', { id: String(item._id) });
+          navigation.navigate('VideoMessageWatch', { id: String(item._id), preview: item });
         }}
       >
         <View style={[styles.thumb, { width: thumbW, height: thumbH, backgroundColor: colors.border }]}>
@@ -386,7 +414,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={styles.nameRow}>
             <Text style={[styles.name, { color: colors.text, flex: 1 }]} numberOfLines={1}>
-              {other?.name || other?.username || 'User'}
+              {partyLabel(item, user?._id)}
             </Text>
             {unseen ? (
               <View style={[styles.newPill, { backgroundColor: colors.primary }]}>
@@ -395,7 +423,13 @@ const VideoMessagesScreen = ({ navigation }: any) => {
             ) : null}
           </View>
           <Text style={{ color: colors.textGray, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
-            {mine ? (item.seenAt ? 'Seen' : 'Not opened yet') : 'Sent you'}
+            {item.isGroup
+              ? `Group · ${item.memberCount || (item.members || []).length}`
+              : mine
+                ? item.seenAt
+                  ? 'Seen'
+                  : 'Not opened yet'
+                : 'Sent you'}
           </Text>
           <Text style={{ color: colors.textGray, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
             {item.noteCount || 0} {item.noteCount === 1 ? 'reply' : 'replies'}
@@ -482,65 +516,59 @@ const VideoMessagesScreen = ({ navigation }: any) => {
             <View style={{ width: 64 }} />
           </View>
           <View style={[{ flex: 1, width: '100%' }, wide.contentCap]}>
-          {!pickedUser ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginTop: 8 }}>
+            <TouchableOpacity
+              onPress={() => { setGroupMode(false); setPickedUsers([]); }}
+              style={[styles.modeChip, { backgroundColor: groupMode ? colors.cardBg : colors.primary, borderColor: groupMode ? colors.border : colors.primary }]}
+            >
+              <Text style={{ color: groupMode ? colors.text : '#fff', fontWeight: '700' }}>One person</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { setGroupMode(true); setPickedUser(null); }}
+              style={[styles.modeChip, { backgroundColor: groupMode ? colors.primary : colors.cardBg, borderColor: groupMode ? colors.primary : colors.border }]}
+            >
+              <Text style={{ color: groupMode ? '#fff' : colors.text, fontWeight: '700' }}>Group</Text>
+            </TouchableOpacity>
+            {groupMode ? (
+              <Text style={{ color: colors.textGray, fontWeight: '700' }}>{pickedUsers.length}/9</Text>
+            ) : null}
+          </View>
+          {groupMode ? (
+            <View style={styles.nameSlot}>
+              <ScrollView
+                horizontal
+                keyboardShouldPersistTaps="handled"
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.nameSlotContent}
+              >
+                {pickedUsers.map((p) => (
+                  <TouchableOpacity
+                    key={String(p._id)}
+                    onPress={() => setPickedUsers((prev) => prev.filter((x) => String(x._id) !== String(p._id)))}
+                    style={[styles.nameChip, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+                  >
+                    <Text style={[styles.nameChipText, { color: colors.text }]} numberOfLines={1}>
+                      {(p.name || p.username || 'User') + '  ✕'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
+          {(!pickedUser || groupMode) ? (
             <TextInput
               placeholder="Search people you follow"
               placeholderTextColor={colors.textGray}
               value={query}
               onChangeText={setQuery}
-              style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.cardBg, marginHorizontal: 16, marginTop: 8 }]}
+              style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.cardBg, marginHorizontal: 16, marginTop: 8, marginBottom: 0 }]}
             />
           ) : null}
-          {!pickedUser && query.trim().length > 0 ? (
-            <FlatList
-              data={people}
-              style={{ flex: 1 }}
-              keyboardShouldPersistTaps="handled"
-              keyExtractor={(p) => String(p._id)}
-              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 + insets.bottom }}
-              onEndReached={() => {
-                if (peopleMore && !peopleLoading) loadPeople(true);
-              }}
-              onEndReachedThreshold={0.4}
-              ListEmptyComponent={
-                peopleLoading ? null : (
-                  <Text style={{ color: colors.textGray, padding: 12 }}>No one you follow matches</Text>
-                )
-              }
-              ListFooterComponent={
-                peopleLoading ? <ActivityIndicator color={colors.primary} style={{ marginVertical: 8 }} /> : null
-              }
-              renderItem={({ item: p }) => (
-                <TouchableOpacity
-                  style={[styles.personCard, { borderColor: colors.border, backgroundColor: colors.cardBg }]}
-                  onPress={() => {
-                    setPickedUser(p);
-                    setPeople([]);
-                    setPeopleMore(false);
-                    setQuery('');
-                  }}
-                >
-                  {p.profilePic ? (
-                    <Image source={{ uri: mediaDisplayUrl(p.profilePic) }} style={styles.avatar} />
-                  ) : (
-                    <View style={styles.avatar} />
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: colors.text, fontWeight: '700' }} numberOfLines={1}>
-                      {p.name || p.username}
-                    </Text>
-                    {p.username ? (
-                      <Text style={{ color: colors.textGray, fontSize: 12 }}>@{p.username}</Text>
-                    ) : null}
-                  </View>
-                </TouchableOpacity>
-              )}
-            />
-          ) : (
+          <View style={{ flex: 1 }}>
           <ScrollView
             style={{ flex: 1 }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ padding: 16, paddingBottom: 24 + insets.bottom }}
+            contentContainerStyle={{ padding: 16, paddingBottom: 8 }}
           >
             {pickedUser ? (
               <View style={[styles.personCard, { borderColor: colors.border, backgroundColor: colors.cardBg }]}>
@@ -560,8 +588,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                 </TouchableOpacity>
               </View>
             ) : (
-              <Text style={{ color: colors.textGray, fontSize: 14, marginBottom: 12 }}>
-                Search someone you follow, then add a video.
+              <Text style={{ color: colors.textGray, fontSize: 14 }}>
+                {groupMode ? 'Search people you follow. You can add up to 9.' : 'Search someone you follow, then add a video.'}
               </Text>
             )}
             {thumbUri || pickedAsset?.uri ? (
@@ -579,6 +607,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                 </View>
               </View>
             ) : null}
+          </ScrollView>
+          <View style={[styles.bottomStick, { paddingBottom: 12 + insets.bottom, borderTopColor: colors.border, backgroundColor: colors.background }]}>
             <View style={styles.pickRow}>
               <TouchableOpacity style={[styles.btn, { borderColor: colors.border, backgroundColor: colors.cardBg }]} onPress={() => pickVideo(false)}>
                 <Text style={{ color: colors.text, fontWeight: '700' }}>Gallery</Text>
@@ -588,8 +618,8 @@ const VideoMessagesScreen = ({ navigation }: any) => {
               </TouchableOpacity>
             </View>
             <TouchableOpacity
-              style={[styles.sendBtn, { backgroundColor: colors.primary, opacity: pickedUser && pickedAsset && !sending ? 1 : 0.5 }]}
-              disabled={!pickedUser || !pickedAsset || sending}
+              style={[styles.sendBtn, { backgroundColor: colors.primary, opacity: (groupMode ? pickedUsers.length > 0 : !!pickedUser) && pickedAsset && !sending ? 1 : 0.5 }]}
+              disabled={(groupMode ? pickedUsers.length < 1 : !pickedUser) || !pickedAsset || sending}
               onPress={handleSend}
             >
               {sending ? (
@@ -601,8 +631,70 @@ const VideoMessagesScreen = ({ navigation }: any) => {
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Send</Text>
               )}
             </TouchableOpacity>
-          </ScrollView>
-          )}
+          </View>
+          {(!pickedUser || groupMode) && query.trim().length > 0 ? (
+            <View style={[styles.peopleModal, { backgroundColor: colors.background }]}>
+              <FlatList
+                data={people}
+                keyboardShouldPersistTaps="handled"
+                keyExtractor={(p) => String(p._id)}
+                contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 }}
+                onEndReached={() => {
+                  if (peopleMore && !peopleLoading) loadPeople(true);
+                }}
+                onEndReachedThreshold={0.4}
+                ListEmptyComponent={
+                  peopleLoading ? null : (
+                    <Text style={{ color: colors.textGray, padding: 12 }}>No one you follow matches</Text>
+                  )
+                }
+                ListFooterComponent={
+                  peopleLoading ? <ActivityIndicator color={colors.primary} style={{ marginVertical: 8 }} /> : null
+                }
+                renderItem={({ item: p }) => {
+                  const chosen = groupMode && pickedUsers.some((x) => String(x._id) === String(p._id));
+                  return (
+                  <TouchableOpacity
+                    style={[styles.personCard, { borderColor: chosen ? colors.primary : colors.border, backgroundColor: colors.cardBg }]}
+                    onPress={() => {
+                      if (groupMode) {
+                        setPickedUsers((prev) => {
+                          const id = String(p._id);
+                          if (prev.some((x) => String(x._id) === id)) return prev.filter((x) => String(x._id) !== id);
+                          if (prev.length >= 9) return prev;
+                          return [...prev, p];
+                        });
+                        setPeople([]);
+                        setPeopleMore(false);
+                        setQuery('');
+                        return;
+                      }
+                      setPickedUser(p);
+                      setPeople([]);
+                      setPeopleMore(false);
+                      setQuery('');
+                    }}
+                  >
+                    {p.profilePic ? (
+                      <Image source={{ uri: mediaDisplayUrl(p.profilePic) }} style={styles.avatar} />
+                    ) : (
+                      <View style={styles.avatar} />
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.text, fontWeight: '700' }} numberOfLines={1}>
+                        {p.name || p.username}
+                      </Text>
+                      {p.username ? (
+                        <Text style={{ color: colors.textGray, fontSize: 12 }}>@{p.username}</Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                  );
+                }}
+              />
+            </View>
+          ) : null}
+          </View>
           </View>
         </View>
       </Modal>
@@ -625,6 +717,44 @@ const styles = StyleSheet.create({
   title: { flex: 1, textAlign: 'center', fontWeight: '800' },
   sendPill: { minWidth: 64, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 14, alignItems: 'center' },
   sendPillText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  modeChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  nameSlot: {
+    height: 36,
+    marginTop: 8,
+    justifyContent: 'center',
+  },
+  nameSlotContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+    alignItems: 'center',
+  },
+  nameChip: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    maxWidth: 160,
+  },
+  bottomStick: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  peopleModal: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 5,
+    elevation: 5,
+  },
+  nameChipText: { fontSize: 13, fontWeight: '600' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
