@@ -2217,7 +2217,7 @@ const Post: React.FC<PostProps> = ({
               ? user?.profilePic
               : isOwner && user?.profilePic 
               ? user.profilePic 
-              : (post.postedBy?.profilePic && !isChannelPostFlag ? post.postedBy.profilePic : null);
+              : (post.postedBy?.profilePic || null);
             
             return avatarPic ? (
               <SafeImage 
@@ -4202,27 +4202,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   youtubePlayButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255, 0, 0, 0.9)',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(225, 32, 42, 0.94)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.28,
+    shadowRadius: 4,
   },
   youtubePlayIcon: {
-    fontSize: 32,
+    fontSize: 20,
     color: '#FFFFFF',
-    marginLeft: 4, // Slight offset for play icon
+    marginLeft: 2,
   },
   youtubeWatchText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 11,
     fontWeight: '600',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    overflow: 'hidden',
   },
   videoLoading: {
     position: 'absolute',

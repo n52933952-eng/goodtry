@@ -1469,9 +1469,10 @@ const FeedScreen = ({ navigation }: any) => {
       <ChannelsModal
         visible={showChannelsModal}
         onClose={() => setShowChannelsModal(false)}
-        onChannelFollowed={(postId?: string, post?: any) => {
+        onChannelFollowed={(postId?: string, post?: any, replacedId?: string) => {
+          if (replacedId) deletePost(replacedId);
           if (postId) unhideFeedPostFromFeed(postId);
-          // Brief boost so the card is easy to find now; expires / cleared on pull-refresh.
+          // Brief boost so a new card is easy to find; expires / cleared on pull-refresh.
           if (postId) setViewerSortBoost(postId, Date.now());
 
           if (post && post._id) {

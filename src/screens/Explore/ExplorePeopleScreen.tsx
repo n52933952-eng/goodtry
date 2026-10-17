@@ -21,6 +21,7 @@ import { useShowToast } from '../../hooks/useShowToast';
 import { injectFollowedUserPostsIntoFeed } from '../../utils/injectFollowedUserPostsIntoFeed';
 import { rememberFollowProfile } from '../../utils/recentFollowProfiles';
 import { isVideoUrl, mediaDisplayUrl, videoPosterUrl } from '../../utils/mediaUrl';
+import { getYouTubeVideoId } from '../../utils/channelPostUtils';
 import VideoFeedPreview from '../../components/VideoFeedPreview';
 import { useWideScreenLayout } from '../../utils/responsiveLayout';
 
@@ -54,11 +55,34 @@ function uniqueExplorePeople(list: any[]) {
   return out;
 }
 
+function exploreStillUrl(raw: string): string {
+  const text = String(raw || '').trim();
+  const youtubeId = getYouTubeVideoId(text);
+  if (youtubeId) return `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
+  return mediaDisplayUrl(text);
+}
+
 function clipWords(text: string, max = 10) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return 'No posts yet';
   if (words.length <= max) return words.join(' ');
   return `${words.slice(0, max).join(' ')} …`;
+}
+
+const TEXT_FLAVORS = [
+  { light: '#E7F4FF', dark: '#10283A', accent: '#1DA1F2' },
+  { light: '#F3EEFF', dark: '#221838', accent: '#8B6CFF' },
+  { light: '#E8FBF2', dark: '#10281E', accent: '#1DBF73' },
+  { light: '#FFF3E6', dark: '#2C1C10', accent: '#F0A04B' },
+  { light: '#FDECEF', dark: '#2C141C', accent: '#E86B86' },
+  { light: '#E7F8F8', dark: '#102628', accent: '#2BB8C7' },
+];
+
+function textFlavor(seed: string) {
+  let n = 0;
+  const s = String(seed || '');
+  for (let i = 0; i < s.length; i += 1) n = (n + s.charCodeAt(i) * (i + 1)) % TEXT_FLAVORS.length;
+  return TEXT_FLAVORS[n];
 }
 
 const ExplorePeopleScreen = ({ navigation }: any) => {
@@ -174,34 +198,58 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
     navigation.navigate('UserProfile', { username });
   };
 
+  const openPost = (item: any) => {
+    const postId = item?.latestPost?._id;
+    if (!postId) {
+      openProfile(item);
+      return;
+    }
+    navigation.navigate('PostDetail', { postId: String(postId), fromScreen: 'Explore' });
+  };
+
   const renderItem = ({ item }: { item: any }) => {
     const preview = item.latestPost;
     const raw = String(preview?.img || '').trim();
-    const img = mediaDisplayUrl(raw);
+    const img = exploreStillUrl(raw);
     const text = String(preview?.text || '').trim();
     const video = isVideoUrl(img);
     const poster = video ? videoPosterUrl(img) : '';
     const dark = theme === 'dark';
-    const tile = { width: tileSize, height: tileSize };
+    const circleSize = Math.round(tileSize * 0.88);
+    const circleBox = {
+      width: circleSize,
+      height: circleSize,
+      borderRadius: circleSize / 2,
+      alignSelf: 'center' as const,
+    };
+    const ring = dark ? 'rgba(255,255,255,0.22)' : colors.border;
+    const displayName = String(item.name || item.username || 'User').trim();
+    const avatarUrl = String(item.profilePic || '').trim();
+    const channelUrl = String(preview?.channelPic || '').trim();
+    const imgIsAvatar = !!raw && (raw === avatarUrl || raw === channelUrl || img === avatarUrl || img === channelUrl);
+    const photo = img && !imgIsAvatar ? img : '';
     const snippet = clipWords(text, 20);
     const wordCount = snippet.replace(' …', '').trim().split(/\s+/).filter(Boolean).length;
     const shortQuote = wordCount <= 3;
-    const isText = !img && !video;
+    const sameAsName = !!text && (text === item.username || text === item.name || text === displayName);
+    const nameOnly = !photo && !video && (!text || sameAsName);
 
-    const personRow = (onPhoto: boolean) => (
-      <View style={[styles.personBar, onPhoto ? styles.personBarPhoto : styles.personBarText]} pointerEvents="box-none">
+    const flavor = textFlavor(String(item._id || displayName));
+    const letter = displayName[0]?.toUpperCase() || '?';
+    const personRow = (
+      <View style={styles.personBar} pointerEvents="box-none">
         <TouchableOpacity style={styles.personLeft} onPress={() => openProfile(item)}>
             {item.profilePic ? (
               <Image source={{ uri: item.profilePic }} style={[styles.avatar, compact && styles.avatarCompact]} />
             ) : (
-            <View style={[styles.avatar, compact && styles.avatarCompact, styles.avatarFallback, { backgroundColor: onPhoto ? 'rgba(0,0,0,0.35)' : colors.primary }]}>
+            <View style={[styles.avatar, compact && styles.avatarCompact, styles.avatarFallback, { backgroundColor: colors.primary }]}>
               <Text style={{ color: '#fff', fontWeight: '700', fontSize: compact ? 9 : 10 }}>
-                {(item.name || item.username || '?')[0]?.toUpperCase()}
+                {letter}
               </Text>
             </View>
           )}
-          <Text style={[styles.nameOnCard, compact && styles.nameCompact, !onPhoto && { color: colors.text, textShadowRadius: 0 }]} numberOfLines={1}>
-            {item.username ? `@${item.username}` : (item.name || 'User')}
+          <Text style={[styles.nameOnCard, compact && styles.nameCompact, { color: colors.text }]} numberOfLines={1}>
+            {displayName}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -217,16 +265,44 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
     );
 
     return (
-      <View style={[styles.card, { width: tileSize, backgroundColor: colors.background }]}>
-        <TouchableOpacity activeOpacity={0.9} onPress={() => openProfile(item)}>
-          {video && img ? (
-            <View style={[styles.mediaFrame, tile, { backgroundColor: dark ? '#0B0F14' : '#111827' }]}>
+      <View style={[styles.card, { width: tileSize }]}>
+        <View
+          style={[
+            styles.circleShadow,
+            circleBox,
+            { shadowOpacity: dark ? 0.4 : 0.12, backgroundColor: dark ? '#101820' : '#FFFFFF' },
+          ]}
+        >
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPress={() => openPost(item)}
+          style={[
+            styles.circleClip,
+            { borderColor: ring, borderRadius: circleSize / 2, backgroundColor: dark ? '#101820' : '#F4F8FF' },
+          ]}
+        >
+          {nameOnly ? (
+            avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={[styles.preview, styles.stillFill, { backgroundColor: dark ? '#101820' : '#F4F8FF' }]} resizeMode="contain" />
+            ) : (
+            <View
+              style={[
+                styles.nameCard,
+                styles.stillFill,
+                { backgroundColor: dark ? '#101820' : '#F4F8FF' },
+              ]}
+            >
+              <Text style={[styles.nameLetterText, { color: colors.primary }]}>{letter}</Text>
+            </View>
+            )
+          ) : video && photo ? (
+            <View style={[styles.mediaFrame, styles.stillFill, { backgroundColor: dark ? '#0B0F14' : '#111827' }]}>
               <VideoFeedPreview
-                videoUrl={img}
+                videoUrl={photo}
                 serverThumbnail={poster || null}
                 placeholderColor={dark ? '#0B0F14' : '#111827'}
                 spinnerColor="#fff"
-                resizeMode="cover"
+                resizeMode="contain"
               />
               <View style={styles.playOverlay} pointerEvents="none">
                 <View style={styles.playBadge}>
@@ -234,21 +310,21 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
                 </View>
               </View>
             </View>
-          ) : img ? (
-            <Image source={{ uri: img }} style={[styles.preview, tile]} resizeMode="cover" />
+          ) : photo ? (
+            <View style={[styles.mediaFrame, styles.stillFill, { backgroundColor: dark ? '#101820' : '#F4F8FF' }]}>
+              <Image key={photo} source={{ uri: photo }} style={styles.stillFill} resizeMode="contain" />
+            </View>
           ) : (
             <View
               style={[
                 styles.textCard,
-                tile,
-                {
-                  backgroundColor: dark ? '#101820' : '#F4F8FF',
-                  borderColor: dark ? 'rgba(29,161,242,0.22)' : 'rgba(29,155,240,0.18)',
-                },
+                styles.stillFill,
+                { backgroundColor: dark ? flavor.dark : flavor.light },
               ]}
             >
-              <View style={[styles.textAccent, { backgroundColor: colors.primary }]} />
-              <Text style={[styles.quoteMark, { color: colors.primary }]}>“</Text>
+              <View style={[styles.textBlob, styles.textBlobTop, { backgroundColor: flavor.accent }]} />
+              <View style={[styles.textBlob, styles.textBlobBottom, { backgroundColor: flavor.accent }]} />
+              <Text style={[styles.quoteMark, { color: flavor.accent }]}>“</Text>
               <Text
                 style={[
                   styles.textBody,
@@ -266,7 +342,8 @@ const ExplorePeopleScreen = ({ navigation }: any) => {
             </View>
           )}
         </TouchableOpacity>
-        {personRow(!isText)}
+        </View>
+        {personRow}
       </View>
     );
   };
@@ -337,27 +414,26 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '700' },
   refresh: { fontSize: 22, width: 70, textAlign: 'right' },
   card: {
-    borderRadius: 10,
-    overflow: 'hidden',
     position: 'relative',
   },
+  circleShadow: {
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 5 },
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  circleClip: {
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
   personBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 6,
-  },
-  personBarPhoto: {
-    backgroundColor: 'rgba(0,0,0,0.38)',
-  },
-  personBarText: {
-    backgroundColor: 'transparent',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(148,163,184,0.28)',
+    paddingHorizontal: 2,
+    paddingTop: 8,
+    paddingBottom: 2,
   },
   personLeft: {
     flex: 1,
@@ -373,20 +449,22 @@ const styles = StyleSheet.create({
   nameOnCard: {
     flex: 1,
     minWidth: 0,
-    color: '#fff',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
-    textShadowColor: 'rgba(0,0,0,0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
   },
-  nameCompact: { fontSize: 10 },
-  preview: { borderRadius: 10, backgroundColor: 'transparent' },
+  nameCompact: { fontSize: 12 },
+  preview: { backgroundColor: 'transparent' },
+  stillFill: { width: '100%', height: '100%' },
   mediaFrame: {
     overflow: 'hidden',
     position: 'relative',
-    borderRadius: 10,
   },
+  nameCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  nameLetterText: { fontSize: 42, fontWeight: '800' },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -409,34 +487,31 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   textCard: {
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 44,
-    justifyContent: 'flex-start',
-    borderWidth: 1,
-    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 12,
+    justifyContent: 'center',
     overflow: 'hidden',
   },
-  textAccent: {
+  textBlob: {
     position: 'absolute',
-    left: 0,
-    top: 16,
-    bottom: 48,
-    width: 3,
-    borderRadius: 3,
+    borderRadius: 999,
+    opacity: 0.2,
   },
+  textBlobTop: { width: 78, height: 78, top: -26, right: -18 },
+  textBlobBottom: { width: 58, height: 58, bottom: -22, left: -16 },
   quoteMark: {
-    fontSize: 28,
-    lineHeight: 28,
+    fontSize: 36,
+    lineHeight: 36,
     fontWeight: '800',
-    opacity: 0.55,
-    marginBottom: 2,
+    opacity: 0.7,
+    marginBottom: 0,
   },
   textBody: {
     fontWeight: '700',
     letterSpacing: 0.1,
   },
-  followBtnInline: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1DA1F2', flexShrink: 0 },
+  followBtnInline: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1DA1F2', flexShrink: 0 },
   followBtnCompact: { paddingHorizontal: 6, paddingVertical: 3 },
   followText: { color: '#fff', fontWeight: '700', fontSize: 11 },
   followTextCompact: { fontSize: 10 },

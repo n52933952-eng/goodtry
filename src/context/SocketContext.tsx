@@ -277,6 +277,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
       if (state === 'active') {
         refreshNotificationCountRef.current?.();
         refreshUnreadMessageCountRef.current?.();
+        refreshVideoMessageUnseenCountRef.current?.();
       }
     };
     const sub = AppState.addEventListener('change', onAppState);

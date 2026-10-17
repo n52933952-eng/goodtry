@@ -97,7 +97,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
   const headerPad = Math.max(insets.top, 8) + (compact ? 10 : 16);
   const { user } = useUser();
   const { t, tn } = useLanguage();
-  const { socket, setVideoMessageUnseenCount, refreshVideoMessageUnseenCount } = useSocket();
+  const { socket, setVideoMessageUnseenCount } = useSocket();
   const showToast = useShowToast();
 
   const [items, setItems] = useState<any[]>([]);
@@ -148,6 +148,10 @@ const VideoMessagesScreen = ({ navigation }: any) => {
         }
         return out;
       });
+      if (!more) {
+        const listed = page.reduce((sum: number, item: any) => sum + unseenAmount(item, user?._id), 0);
+        setVideoMessageUnseenCount((n) => Math.max(n || 0, listed));
+      }
     } catch (e: any) {
       showToast(t('error'), e?.message || t('vmFailedLoad'), 'error');
     } finally {
@@ -156,13 +160,12 @@ const VideoMessagesScreen = ({ navigation }: any) => {
       setRefreshing(false);
       setLoadingMore(false);
     }
-  }, [showToast, t]);
+  }, [showToast, t, user?._id, setVideoMessageUnseenCount]);
 
   useFocusEffect(
     useCallback(() => {
       load(false);
-      refreshVideoMessageUnseenCount?.();
-    }, [load, refreshVideoMessageUnseenCount]),
+    }, [load]),
   );
 
   useEffect(() => {
@@ -182,7 +185,7 @@ const VideoMessagesScreen = ({ navigation }: any) => {
           String(x._id) === id
             ? {
                 ...x,
-                noteCount: (x.noteCount || 0) + 1,
+                ...(payload?.note ? { noteCount: (x.noteCount || 0) + 1 } : {}),
                 ...(payload?.badge
                   ? x.isGroup
                     ? { myUnseenNotes: (x.myUnseenNotes || 0) + 1 }

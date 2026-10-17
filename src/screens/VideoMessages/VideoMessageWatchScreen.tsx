@@ -29,7 +29,7 @@ import { useShowToast } from '../../hooks/useShowToast';
 import { useWideScreenLayout } from '../../utils/responsiveLayout';
 import { fmtTime, otherParty, partyLabel, uidOf } from './VideoMessagesScreen';
 
-const REACTIONS = ['❤️', '😂', '🔥', '😮', '😢', '👏', '😍', '🎉', '👍', '💯', '🙏', '😭', '🤣', '😎', '💪', '✨'];
+const REACTIONS = ['❤️', '😂', '🔥', '😮', '😢', '👏', '😍', '🎉', '👍', '💯', '🙏', '😭', '🤣', '😎', '💪', '✨', '😘', '🤔', '😅', '🙌'];
 
 /** Same center for the play dot and a Reply here mark, kept fully on the bar. */
 function pinOnBar(t: number, width: number, dur: number) {
@@ -50,8 +50,9 @@ function notesPayload(notes: any[]) {
   }));
 }
 
-function playerHtml(src: string, notes: any[], poster = '') {
+function playerHtml(src: string, notes: any[], poster = '', knownDuration = 0) {
   const safe = String(src || '').replace(/"/g, '&quot;');
+  const known = Number.isFinite(knownDuration) && knownDuration > 0 && knownDuration < 1e5 ? knownDuration : 0;
   const json = JSON.stringify(notesPayload(notes)).replace(/</g, '\\u003c');
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/><style>
 html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;font-family:-apple-system,system-ui}
@@ -67,20 +68,24 @@ video::-webkit-media-controls,video::-webkit-media-controls-enclosure,video::-we
 #who,#close{background:rgba(0,0,0,.55);color:#fff;font-size:12px;padding:5px 10px;border-radius:999px}
 #react,#reactReply{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:64px;display:none;pointer-events:none;z-index:6}
 </style></head><body><div id="wrap">
-<video id="main" playsinline webkit-playsinline preload="metadata" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback ${poster ? `poster="${String(poster).replace(/"/g, '&quot;')}"` : ''} src="${safe}"></video>
+<video id="main" playsinline webkit-playsinline preload="auto" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback ${poster ? `poster="${String(poster).replace(/"/g, '&quot;')}"` : ''} src="${safe}"></video>
 <div id="shield"></div>
 <div id="dim"></div>
 <div id="react"></div>
-<div id="card"><video id="note" playsinline webkit-playsinline preload="auto" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback></video><div id="reactReply"></div><div id="meta"><span id="who"></span><span id="close">Close</span></div></div>
+<div id="card"><video id="note" playsinline webkit-playsinline preload="auto" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback></video><video id="child" playsinline webkit-playsinline preload="auto" style="display:none;position:absolute;inset:0;z-index:5;width:100%;height:100%;object-fit:contain;background:#000" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" disablepictureinpicture disableremoteplayback></video><div id="reactReply"></div><div id="meta"><span id="who"></span><span id="close">Close</span></div></div>
 </div><script>
 var main=document.getElementById('main');
 var note=document.getElementById('note');
+var child=document.getElementById('child');
 main.controls=false;
 note.controls=false;
+child.controls=false;
 main.loop=false;
 note.loop=false;
+child.loop=false;
 main.removeAttribute('controls');
 note.removeAttribute('controls');
+child.removeAttribute('controls');
 document.getElementById('shield').onclick=function(){ window.toggle(); };
 var card=document.getElementById('card');
 var dim=document.getElementById('dim');
@@ -91,6 +96,9 @@ var notes=${json};
 var shown={};
 var lastT=0;
 var overlayOn=false;
+var childOn=false;
+var childId='';
+var childBack=0;
 var scrubbing=false;
 var pinnedT=0;
 var playingId='';
@@ -99,10 +107,11 @@ var primedUrl='';
 var held=false;
 var finishedId='';
 var notePlayed=0;
+var knownDur=${known};
 function finiteDur(){
   var d=main.duration;
-  if(!isFinite(d)||d<=0||d>100000) return 0;
-  return d;
+  if(isFinite(d)&&d>0&&d<100000) return d;
+  return knownDur>0?knownDur:0;
 }
 function prime(n){
   if(!n||!n.url||primedUrl===n.url) return;
@@ -111,7 +120,8 @@ function prime(n){
   note.load();
 }
 function dismissReply(){
-  if(!overlayOn && !playingId) return;
+  if(!overlayOn && !playingId && !childOn) return;
+  hideChild(false);
   playingId='';
   overlayOn=false;
   try{ note.pause(); }catch(e){}
@@ -122,6 +132,7 @@ function dismissReply(){
   send('overlayEnd');
 }
 function hideOverlay(resume){
+  hideChild(false);
   playingId='';
   note.loop=false;
   try{ note.pause(); }catch(e){}
@@ -144,15 +155,16 @@ function nextReply(afterT){
   var best=null;
   for(var i=0;i<notes.length;i++){
     var x=notes[i];
-    if(x.type!=='video'||!x.url||shown[x.id]) continue;
+    if(x.type!=='video'||!x.url||x.onNote||shown[x.id]) continue;
     if(Math.abs((x.t||0)-afterT)>0.8) continue;
     if(!best||x.t<best.t) best=x;
   }
   return best;
 }
 function showVideoNote(n, resumeAfter){
-  if(!n||!n.url) return;
+  if(!n||!n.url||n.onNote) return;
   if(overlayOn && playingId===n.id) return;
+  hideChild(false);
   scrubbing=false;
   held=false;
   overlayOn=true;
@@ -191,6 +203,59 @@ function showVideoNote(n, resumeAfter){
     else note.onloadeddata=start;
   } else start();
 }
+function nextChild(parentId, afterT){
+  var best=null;
+  for(var i=0;i<notes.length;i++){
+    var x=notes[i];
+    if(x.type!=='video'||!x.url||x.onNote!==parentId||shown[x.id]) continue;
+    if(Math.abs((x.t||0)-afterT)>0.8) continue;
+    if(!best||x.t<best.t) best=x;
+  }
+  return best;
+}
+function hideChild(resume){
+  if(!childOn && !childId) return;
+  childOn=false;
+  childId='';
+  send('childEnd');
+  try{ child.pause(); }catch(e){}
+  child.onended=null;
+  child.onloadeddata=null;
+  child.style.display='none';
+  if(resume && overlayOn && !held){
+    try{ note.currentTime=childBack; }catch(e){}
+    note.play().catch(function(){});
+  }
+}
+function showChild(n){
+  if(!n||!n.url||!overlayOn||n.onNote!==playingId) return;
+  held=false;
+  childOn=true;
+  childId=n.id;
+  shown[n.id]=true;
+  childBack=note.currentTime||n.t||0;
+  try{ note.pause(); }catch(e){}
+  child.style.display='block';
+  send('childTime',{id:n.id,t:0});
+  child.onended=function(){
+    try{ child.pause(); }catch(e){}
+    if((child.currentTime||0)<0.2) return;
+    var nxt=nextChild(playingId, n.t||0);
+    if(nxt && nxt.id!==n.id && nxt.url!==n.url){ showChild(nxt); return; }
+    hideChild(true);
+  };
+  var start=function(){
+    child.onloadeddata=null;
+    try{ if((child.currentTime||0)>0.05) child.currentTime=0; }catch(e){}
+    child.play().catch(function(){});
+  };
+  child.onloadeddata=null;
+  if(child.getAttribute('src')!==n.url || child.readyState<2){
+    child.src=n.url;
+    child.load();
+    child.onloadeddata=start;
+  } else start();
+}
 var noteLast=0;
 function showReact(n){
   shown[n.id]=true;
@@ -219,9 +284,10 @@ main.addEventListener('timeupdate', function(){
   }
   if(t-prev>2.5) return;
   var upcoming=null;
+  var shownReact=false;
   for(var i=0;i<notes.length;i++){
     var n=notes[i];
-    if(shown[n.id]) continue;
+    if(shown[n.id]||n.onNote) continue;
     var reached=n.t>prev-0.08 && n.t<=t+0.08;
     if(n.type==='video' && n.url && reached){
       if(n.id===finishedId) continue;
@@ -230,8 +296,9 @@ main.addEventListener('timeupdate', function(){
       return;
     }
     if(n.type==='video' && n.url && !upcoming && n.t>t && n.t-t<8) upcoming=n;
-    if(n.type==='reaction' && !n.onNote && reached){
+    if(!shownReact && n.type==='reaction' && !n.onNote && Math.abs((n.t||0)-t)<=0.22){
       showReact(n);
+      shownReact=true;
     }
   }
   // Pre-buffer the next reply ~8s early so it plays the instant its moment arrives.
@@ -247,6 +314,11 @@ note.addEventListener('pause', function(){ if(overlayOn) send('pause'); });
 document.getElementById('close').onclick=function(){ hideOverlay(true); send('overlayEnd'); };
 window.toggle=function(){
   if(held) return;
+  if(childOn){
+    if(child.paused) child.play().catch(function(){});
+    else child.pause();
+    return;
+  }
   if(overlayOn){
     if(note.paused) note.play().catch(function(){});
     else note.pause();
@@ -254,9 +326,14 @@ window.toggle=function(){
   }
   if(main.paused) main.play(); else main.pause();
 };
-window.hold=function(){ held=true; main.pause(); };
+window.hold=function(){ held=true; main.pause(); try{ note.pause(); }catch(e){} try{ child.pause(); }catch(e){} };
 window.pauseOnly=function(){ main.pause(); };
-window.releasePlay=function(){ held=false; if(!overlayOn) main.play().catch(function(){}); };
+window.releasePlay=function(){
+  held=false;
+  if(childOn){ child.play().catch(function(){}); return; }
+  if(overlayOn){ note.play().catch(function(){}); return; }
+  main.play().catch(function(){});
+};
 window.seekTo=function(t, soft){
   t=Math.max(0, Number(t)||0);
   var d=finiteDur();
@@ -272,20 +349,36 @@ window.seekTo=function(t, soft){
     }
     notes.forEach(function(n){
       if(n.onNote) return;
-      if((n.t||0)>t+0.25) delete shown[n.id];
+      var nt=n.t||0;
+      if(Math.abs(nt-t)<=0.45 || nt>t+0.25) delete shown[n.id];
       else shown[n.id]=true;
     });
+  }
+  var here=null;
+  if(!soft){
+    for(var i=0;i<notes.length;i++){
+      var n=notes[i];
+      if(n.onNote||n.type!=='video'||!n.url) continue;
+      if(Math.abs((n.t||0)-t)>0.45) continue;
+      if(!here||n.t<here.t) here=n;
+    }
   }
   if(soft && typeof main.fastSeek==='function'){
     try { main.fastSeek(t); return; } catch(e){}
   }
   try { main.currentTime=t; } catch(e){}
+  if(here){ showVideoNote(here, true); return; }
   var end=finiteDur();
   if(!soft && keepPlaying && !held && !(end && t>=end-0.35)) main.play().catch(function(){});
 };
 window.openNote=function(id){
   var n=notes.find(function(x){ return x.id===String(id); });
   if(!n) return;
+  if(n.type==='video' && n.onNote){
+    var parent=notes.find(function(x){ return x.id===n.onNote && !x.onNote; });
+    if(parent) showVideoNote(parent, true);
+    return;
+  }
   main.currentTime=n.t||0;
   if(n.type==='video') showVideoNote(n, true);
   else if(n.type==='reaction') showReact(n);
@@ -302,6 +395,12 @@ window.playNote=function(raw){
     return;
   }
   delete shown[n.id];
+  if(n.type==='video' && n.onNote){
+    if(overlayOn && playingId===n.onNote){ showChild(n); return; }
+    var parent=notes.find(function(x){ return x.id===n.onNote && !x.onNote; });
+    if(parent) showVideoNote(parent, true);
+    return;
+  }
   main.currentTime=n.t||0;
   if(n.type==='video') showVideoNote(n, true);
 };
@@ -317,28 +416,36 @@ note.addEventListener('timeupdate', function(){
     return;
   }
   if(t-prev>2.5) return;
+  var shownReact=false;
   for(var i=0;i<notes.length;i++){
     var n=notes[i];
-    if(n.type!=='reaction'||n.onNote!==playingId||shown[n.id]) continue;
-    if(n.t>prev-0.08 && n.t<=t+0.08) showReact(n);
+    if(n.type==='video' && n.url && n.onNote===playingId && !shown[n.id] && !childOn){
+      if(n.t>prev-0.08 && n.t<=t+0.08){ showChild(n); return; }
+    }
+    if(shownReact||n.type!=='reaction'||n.onNote!==playingId||shown[n.id]) continue;
+    if(Math.abs((n.t||0)-t)<=0.22){ showReact(n); shownReact=true; }
   }
+});
+var childLast=0;
+child.addEventListener('timeupdate', function(){
+  if(!childOn||!childId) return;
+  var t=child.currentTime||0;
+  if((t*4|0)!==(childLast*4|0)) send('childTime',{id:childId,t:t});
+  childLast=t;
 });
 window.setNotes=function(raw){
   try { notes = typeof raw==='string' ? JSON.parse(raw) : raw; } catch(e) {}
 };
+var kicked=false;
+function kick(){
+  if(kicked) return;
+  kicked=true;
+  main.play().catch(function(){});
+}
+main.addEventListener('canplay', kick);
 main.addEventListener('loadedmetadata', function(){
-  if(isFinite(main.duration)&&main.duration>0){
-    send('time',{t:main.currentTime||0,d:main.duration,playing:!main.paused});
-    return;
-  }
-  var fix=function(){
-    main.removeEventListener('timeupdate', fix);
-    var d=finiteDur();
-    try{ main.currentTime=0; }catch(e){}
-    if(d) send('time',{t:0,d:d,playing:false});
-  };
-  main.addEventListener('timeupdate', fix);
-  try{ main.currentTime=1e101; }catch(e){}
+  var d=finiteDur();
+  if(d) send('time',{t:main.currentTime||0,d:d,playing:!main.paused});
 });
 </script></body></html>`;
 }
@@ -385,6 +492,10 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
   const leavingRef = useRef(false);
   const momentRef = useRef(0);
   const replyAtRef = useRef<{ id: string; t: number } | null>(null);
+  const childAtRef = useRef<{ id: string; t: number } | null>(null);
+  const replyPrevRef = useRef(0);
+  const childPrevRef = useRef(0);
+  const [layerId, setLayerId] = useState('');
   const askedRef = useRef<Set<string>>(new Set());
   const lastTRef = useRef(0);
   notesRef.current = notes;
@@ -497,7 +608,10 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       setItem((prev: any) => (prev ? { ...prev, markers: payload.markers } : prev));
       const asks = payload.markers.filter((m: any) => m?.type === 'reply');
       const last = asks[asks.length - 1];
-      if (!last) return;
+      if (!last || last.onNote) {
+        if (last) showToast(t('vmAsked'), t('vmWantsReply'), 'info');
+        return;
+      }
       setAskNow(last);
       showToast(t('vmAsked'), t('vmWantsReply'), 'info');
     };
@@ -524,6 +638,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
       mediaDisplayUrl(item.videoUrl),
       notes,
       item.thumbnailUrl ? mediaDisplayUrl(item.thumbnailUrl) : '',
+      Number(item.duration) || 0,
     );
     return { html };
     // notes are injected after first load so the main video does not reload
@@ -545,8 +660,16 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
 
   const liveMarker = useMemo(() => {
     const marks: any[] = item?.markers || [];
-    return marks.find((m) => Math.abs((Number(m.t) || 0) - now) < 1.2) || null;
+    return marks.find((m) => !m.onNote && Math.abs((Number(m.t) || 0) - now) < 1.2) || null;
   }, [item?.markers, now]);
+
+  useEffect(() => {
+    setAskNow((cur: any) => {
+      if (!cur?.onNote) return cur;
+      if (String(cur.onNote) === layerId) return cur;
+      return null;
+    });
+  }, [layerId]);
 
   const deleteNote = async (note: any) => {
     if (!note?._id || busy) return;
@@ -600,12 +723,12 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
     if (moved < 10) {
       const w = Math.max(1, barWidthRef.current);
       const near = (t: number) => Math.abs((Number(t) / dur) * w - x) < 18;
-      const note = notes.find((n) => near(n.t));
+      const note = notes.find((n) => !n.onNote && near(n.t));
       if (note) {
         playNoteNow(note);
         return;
       }
-      const mark = (item?.markers || []).find((m: any) => near(m.t));
+      const mark = (item?.markers || []).find((m: any) => !m.onNote && near(m.t));
       if (mark) {
         seekTo(Number(mark.t) || 0);
         return;
@@ -618,14 +741,17 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
 
   const askReplyHere = async () => {
     if (busy || !iAmSender) return;
+    const target = childAtRef.current || replyAtRef.current;
+    const at = target ? target.t : now;
     setBusy(true);
     try {
       const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/reply-prompt`, {
-        t: now,
+        t: at,
         text: 'Reply here',
+        ...(target?.id ? { onNote: target.id } : {}),
       });
       if (Array.isArray(data?.markers)) setItem((prev: any) => (prev ? { ...prev, markers: data.markers } : prev));
-      showToast(t('vmSent'), tn('vmAskedAt', { time: fmtTime(now) }), 'success');
+      showToast(t('vmSent'), tn('vmAskedAt', { time: fmtTime(at) }), 'success');
     } catch (e: any) {
       showToast(t('error'), e?.message || t('vmFailed'), 'error');
     } finally {
@@ -633,11 +759,14 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
     }
   };
 
-  const removeReplyHere = async (t: number) => {
+  const removeReplyHere = async (markT: number, onNote?: string) => {
     if (busy || !iAmSender) return;
     setBusy(true);
     try {
-      const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/reply-prompt/remove`, { t });
+      const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/reply-prompt/remove`, {
+        t: markT,
+        ...(onNote ? { onNote } : {}),
+      });
       if (Array.isArray(data?.markers)) setItem((prev: any) => (prev ? { ...prev, markers: data.markers } : prev));
     } catch (e: any) {
       showToast(t('error'), e?.message || t('vmFailedRemove'), 'error');
@@ -648,7 +777,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
 
   const addReaction = async (emoji: string) => {
     if (busy) return;
-    const reply = replyAtRef.current;
+    const reply = childAtRef.current || replyAtRef.current;
     setBusy(true);
     try {
       const data = await apiService.post(`${ENDPOINTS.VIDEO_MESSAGES}/${id}/notes`, {
@@ -668,7 +797,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
     }
   };
 
-  const addVideoNote = async (fromCamera: boolean) => {
+  const addVideoNote = async (fromCamera: boolean, onReply?: { id: string; t: number } | null) => {
     if (busy) return;
     try {
       const res = fromCamera
@@ -703,7 +832,8 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
         type: 'video',
         videoUrl,
         duration: Math.round(durationSec),
-        t: momentRef.current,
+        t: onReply ? onReply.t : momentRef.current,
+        ...(onReply?.id ? { onNote: onReply.id } : {}),
       });
       if (data?.note) {
         setNotes((prev) => [...prev, data.note].sort((a, b) => a.t - b.t));
@@ -767,9 +897,14 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           onPress={downloadAll}
           disabled={downloading}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={{ marginRight: 10 }}
+          style={styles.downloadBtn}
+          accessibilityLabel={downloading ? t('vmDownloading') : t('vmDownload')}
         >
-          <Text style={{ color: colors.text, fontWeight: '700', fontSize: 18 }}>{downloading ? '…' : '⬇'}</Text>
+          {downloading ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <Text style={[styles.downloadIcon, { color: colors.text }]}>⬇</Text>
+          )}
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => {
@@ -812,9 +947,10 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           style={[styles.replyBtn, styles.recordBtn, { backgroundColor: '#e11d48', borderColor: '#e11d48' }]}
           onPress={() => {
             if (recordUploading) return;
-            momentRef.current = now;
+            const onReply = replyAtRef.current;
+            momentRef.current = onReply ? onReply.t : now;
             webRef.current?.injectJavaScript('window.hold(); true;');
-            addVideoNote(true);
+            addVideoNote(true, onReply);
           }}
         >
           <Text style={[styles.replyBtnText, styles.ltrText, recordUploading && styles.recordLabelHidden]} numberOfLines={1}>
@@ -830,9 +966,10 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
           <TouchableOpacity
             style={[styles.replyBtn, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
             onPress={() => {
-              momentRef.current = now;
+              const onReply = replyAtRef.current;
+              momentRef.current = onReply ? onReply.t : now;
               webRef.current?.injectJavaScript('window.hold(); true;');
-              addVideoNote(false);
+              addVideoNote(false, onReply);
             }}
           >
             <Text style={[styles.replyBtnText, styles.ltrText, { color: colors.text }]} numberOfLines={1}>{t('vmGallery')}</Text>
@@ -891,27 +1028,95 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                 setPlaying(!!msg.playing);
                 if (t + 0.05 < prev) {
                   (item?.markers || []).forEach((m: any) => {
-                    if (m.t > t + 0.2) askedRef.current.delete(String(m.t));
+                    if (!m.onNote && m.t > t + 0.2) askedRef.current.delete(`${m.onNote || ''}:${m.t}`);
                   });
                 }
-                if (!iAmSender) {
+                if (!iAmSender && !replyAtRef.current) {
                   const ask = (item?.markers || []).find((m: any) => {
-                    if (m?.type !== 'reply' || askedRef.current.has(String(m.t))) return false;
+                    if (m?.type !== 'reply' || m.onNote || askedRef.current.has(`:${m.t}`)) return false;
                     return m.t >= Math.min(prev, t) - 0.05 && m.t <= Math.max(prev, t) + 0.35;
                   });
                   if (ask) {
-                    askedRef.current.add(String(ask.t));
+                    askedRef.current.add(`:${ask.t}`);
                     setAskNow(ask);
                   }
                 }
               } else if (msg.type === 'play') setPlaying(true);
               else if (msg.type === 'pause') setPlaying(false);
-              else if (msg.type === 'replyTime' && msg.id) replyAtRef.current = { id: String(msg.id), t: Number(msg.t) || 0 };
-              else if (msg.type === 'overlayEnd') replyAtRef.current = null;
-              else if (msg.type === 'overlay' && msg.id) replyAtRef.current = { id: String(msg.id), t: 0 };
+              else if (msg.type === 'replyTime' && msg.id) {
+                const rt = Number(msg.t) || 0;
+                const rprev = replyPrevRef.current;
+                replyPrevRef.current = rt;
+                replyAtRef.current = { id: String(msg.id), t: rt };
+                if (!childAtRef.current) {
+                  const noteId = String(msg.id);
+                  setLayerId((cur) => (cur === noteId ? cur : noteId));
+                  if (rt + 0.05 < rprev) {
+                    (item?.markers || []).forEach((m: any) => {
+                      if (String(m.onNote || '') === noteId && m.t > rt + 0.2) askedRef.current.delete(`${m.onNote}:${m.t}`);
+                    });
+                  } else if (!iAmSender) {
+                    const ask = (item?.markers || []).find((m: any) => {
+                      if (m?.type !== 'reply' || String(m.onNote || '') !== noteId) return false;
+                      if (askedRef.current.has(`${m.onNote}:${m.t}`)) return false;
+                      const mt = Number(m.t) || 0;
+                      return mt >= Math.min(rprev, rt) - 0.05 && mt <= Math.max(rprev, rt) + 0.35;
+                    });
+                    if (ask) {
+                      askedRef.current.add(`${ask.onNote}:${ask.t}`);
+                      setAskNow(ask);
+                    }
+                  }
+                }
+              } else if (msg.type === 'childTime' && msg.id) {
+                const ct = Number(msg.t) || 0;
+                const noteId = String(msg.id);
+                if (childAtRef.current?.id !== noteId) childPrevRef.current = 0;
+                const cprev = childPrevRef.current;
+                childPrevRef.current = ct;
+                childAtRef.current = { id: noteId, t: ct };
+                setLayerId((cur) => (cur === noteId ? cur : noteId));
+                if (!iAmSender && ct + 0.05 >= cprev) {
+                  const ask = (item?.markers || []).find((m: any) => {
+                    if (m?.type !== 'reply' || String(m.onNote || '') !== noteId) return false;
+                    if (askedRef.current.has(`${m.onNote}:${m.t}`)) return false;
+                    const mt = Number(m.t) || 0;
+                    return mt >= Math.min(cprev, ct) - 0.05 && mt <= Math.max(cprev, ct) + 0.35;
+                  });
+                  if (ask) {
+                    askedRef.current.add(`${ask.onNote}:${ask.t}`);
+                    setAskNow(ask);
+                  }
+                }
+              } else if (msg.type === 'childEnd') {
+                childAtRef.current = null;
+                childPrevRef.current = 0;
+                const back = replyAtRef.current;
+                setLayerId(back ? back.id : '');
+              } else if (msg.type === 'overlayEnd') {
+                replyAtRef.current = null;
+                childAtRef.current = null;
+                replyPrevRef.current = 0;
+                childPrevRef.current = 0;
+                setLayerId('');
+              } else if (msg.type === 'overlay' && msg.id) {
+                replyAtRef.current = { id: String(msg.id), t: 0 };
+                childAtRef.current = null;
+                replyPrevRef.current = 0;
+                childPrevRef.current = 0;
+                setLayerId(String(msg.id));
+              }
             } catch {}
           }}
         />
+        {downloading ? (
+          <View style={styles.downloadPillWrap} pointerEvents="none">
+            <View style={styles.downloadPill}>
+              <ActivityIndicator size="small" color="#fff" />
+              <Text style={styles.downloadPillText} numberOfLines={1}>{t('vmDownloading')}</Text>
+            </View>
+          </View>
+        ) : null}
         <TouchableOpacity
           style={[
             styles.fullBtn,
@@ -932,10 +1137,13 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
             {videoFull ? '✕' : '⛶'}
           </Text>
         </TouchableOpacity>
-        {!iAmSender && (askNow || liveMarker?.type === 'reply') ? (
-          <View style={[styles.askBox, { left: fullBtnLeft + fullBtnSize + 8 }]} pointerEvents="none">
-            <Text style={styles.askTitle}>{t('vmWantsReply')}</Text>
-            <Text style={styles.askSub}>{tn('vmAtMoment', { time: fmtTime((askNow || liveMarker)?.t) })}</Text>
+        {!iAmSender && ((!layerId && ((askNow?.type === 'reply' && !askNow?.onNote) || liveMarker?.type === 'reply')) || (layerId && askNow?.type === 'reply' && String(askNow?.onNote || '') === layerId)) ? (
+          <View style={styles.askPillWrap} pointerEvents="none">
+            <View style={styles.askPill}>
+              <Text style={styles.askPillText} numberOfLines={1}>
+                {tn('vmAskPill', { time: fmtTime((askNow || liveMarker)?.t) })}
+              </Text>
+            </View>
           </View>
         ) : null}
         {iAmSender && liveMarker && liveMarker.type !== 'reply' ? (
@@ -976,17 +1184,26 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
                       style={styles.sideRow}
                       onPress={() => {
                         setReactionNotesOpen(false);
+                        if (m.onNote) {
+                          const host = notes.find((n) => String(n._id) === String(m.onNote));
+                          if (host) {
+                            playNoteNow(host);
+                            return;
+                          }
+                        }
                         setAskNow(m);
                         seekTo(Number(m.t) || 0);
                       }}
                     >
                       <Text style={styles.sideTimePill}>{fmtTime(m.t)}</Text>
                       <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.sideText} numberOfLines={1}>{t('vmReplyOrReaction')}</Text>
+                        <Text style={styles.sideText} numberOfLines={1}>
+                          {m.onNote ? tn('vmOnReply', { time: fmtTime(m.t) }) : t('vmReplyOrReaction')}
+                        </Text>
                       </View>
                       {iAmSender ? (
                         <TouchableOpacity
-                          onPress={() => removeReplyHere(Number(m.t) || 0)}
+                          onPress={() => removeReplyHere(Number(m.t) || 0, m.onNote ? String(m.onNote) : '')}
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                         >
                           <Text style={styles.sideClose}>✕</Text>
@@ -1093,7 +1310,7 @@ const VideoMessageWatchScreen = ({ navigation, route }: any) => {
               />
             )}
             {barReady > 0
-              ? (item.markers || []).map((m: any, i: number) => (
+              ? (item.markers || []).filter((m: any) => !m.onNote).map((m: any, i: number) => (
                   <View
                     key={`m-${i}`}
                     style={[styles.mark, { left: pinOnBar(Number(m.t) || 0, barReady, dur) - 4, marginLeft: 0 }]}
@@ -1151,6 +1368,37 @@ const styles = StyleSheet.create({
   },
   barSide: { flex: 1, minWidth: 96, flexDirection: 'row', alignItems: 'center' },
   barSideEnd: { justifyContent: 'flex-end' },
+  downloadBtn: {
+    width: 32,
+    height: 32,
+    marginRight: 10,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  downloadIcon: { fontSize: 16, fontWeight: '700' },
+  downloadPillWrap: {
+    position: 'absolute',
+    top: 12,
+    left: 0,
+    right: 0,
+    zIndex: 8,
+    elevation: 8,
+    alignItems: 'center',
+  },
+  downloadPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  downloadPillText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, writingDirection: 'ltr' },
   back: { color: '#fff', fontSize: 16, fontWeight: '600', writingDirection: 'ltr' },
   titleBlock: { maxWidth: '46%', alignItems: 'center' },
@@ -1253,17 +1501,25 @@ const styles = StyleSheet.create({
     elevation: 50,
   },
   fullBtnText: { color: '#fff', fontWeight: '700', textAlign: 'center' },
-  askBox: {
+  askPillWrap: {
     position: 'absolute',
-    right: 10,
-    bottom: 8,
-    backgroundColor: 'rgba(0,0,0,0.38)',
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+    top: 46,
+    left: 12,
+    right: 12,
+    zIndex: 8,
+    elevation: 8,
+    alignItems: 'center',
   },
-  askTitle: { color: '#fff', fontSize: 11, fontWeight: '700', writingDirection: 'ltr', textAlign: 'left' },
-  askSub: { color: 'rgba(255,255,255,0.8)', fontSize: 10, marginTop: 1, writingDirection: 'ltr', textAlign: 'left' },
+  askPill: {
+    maxWidth: '100%',
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.28)',
+  },
+  askPillText: { color: '#fff', fontSize: 12, fontWeight: '700', writingDirection: 'ltr' },
   panel: { flex: 1, minHeight: 0, paddingHorizontal: 14, paddingTop: 12, width: '100%' },
   timeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   touchPad: { marginHorizontal: 12, paddingVertical: 14, marginBottom: 4 },

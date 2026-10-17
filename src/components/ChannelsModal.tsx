@@ -42,7 +42,7 @@ interface ChannelsModalProps {
   visible: boolean;
   onClose: () => void;
   /** postId + optional full post for instant feed inject */
-  onChannelFollowed?: (postId?: string, post?: any) => void;
+  onChannelFollowed?: (postId?: string, post?: any, replacedId?: string) => void;
 }
 
 const ChannelsModal: React.FC<ChannelsModalProps> = ({
@@ -100,14 +100,11 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
 
       const channel = channels.find(c => c.id === channelId);
       onClose();
-      if (data?.posted === false) {
-        showToast('Info', data?.message || 'Already in your feed', 'info');
-        return;
-      }
       showToast('Success', `🔴 ${channel?.name} added to your feed!`, 'success');
       onChannelFollowed?.(
         data?.postId ? String(data.postId) : undefined,
         data?.post || undefined,
+        data?.replacedId ? String(data.replacedId) : undefined,
       );
     } catch (error) {
       console.error('Error creating stream post:', error);
@@ -152,12 +149,12 @@ const ChannelsModal: React.FC<ChannelsModalProps> = ({
     try {
       const data = await apiService.post(`/api/news/links/${link._id}/watch`, { text: caption.trim() });
       onClose();
-      if (data?.posted === false) {
-        showToast('Info', 'Already in your feed', 'info');
-        return;
-      }
       showToast('Success', 'Added to your feed', 'success');
-      onChannelFollowed?.(data?.postId ? String(data.postId) : undefined, data?.post);
+      onChannelFollowed?.(
+        data?.postId ? String(data.postId) : undefined,
+        data?.post,
+        data?.replacedId ? String(data.replacedId) : undefined,
+      );
     } catch (error: any) {
       showToast('Error', error?.message || 'Could not add to feed', 'error');
     } finally {
